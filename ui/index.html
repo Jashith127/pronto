@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pronto</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <aside class="sidebar">
+        <div class="brand" data-tauri-drag-region>
+          <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
+          <span>Pronto</span>
+        </div>
+        <nav aria-label="Main navigation">
+          <button class="nav active" data-view="home">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13h3l2-7 4 13 2-6h5"/></svg><span>Dictate</span>
+          </button>
+          <button class="nav" data-view="history">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.3-5.7L4 8.5M4 4v4.5h4.5M12 8v4l3 2"/></svg><span>History</span>
+          </button>
+          <button class="nav" data-view="dictionary">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h10a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3V4Zm3 12h10M9 8h5"/></svg><span>Dictionary</span>
+          </button>
+          <button class="nav" data-view="settings">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1A8 8 0 0 0 15 6l-.3-2.6h-4L10.5 6A8 8 0 0 0 9 7.1l-2.4-1-2 3.4 2 1.5a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.4-1A8 8 0 0 0 10.5 18l.3 2.6h4L15 18a8 8 0 0 0 1.5-1.1l2.4 1 2-3.4-2-1.5a7 7 0 0 0 .1-1Z"/></svg><span>Settings</span>
+          </button>
+        </nav>
+        <div class="sidebar-foot">
+          <span class="engine-indicator"><i class="engine-dot"></i><b id="engine-short">Starting engine</b></span>
+          <small>Audio stays on this PC</small>
+        </div>
+      </aside>
+
+      <section class="shell">
+        <header class="titlebar" data-tauri-drag-region>
+          <div class="model-state" id="model-pill"><i></i><span>Loading Parakeet</span></div>
+          <div class="window-actions">
+            <button id="minimize" aria-label="Minimize">−</button>
+            <button id="close" aria-label="Close to tray">×</button>
+          </div>
+        </header>
+
+        <div class="view active" id="home">
+          <div class="page-title home-title">
+            <div><h1>Ready to speak.</h1><p id="home-instruction">Hold your shortcut, talk, then release. Pronto types the finished text for you.</p></div>
+            <button class="secondary-action" id="paste-last-home">Paste last transcript</button>
+          </div>
+
+          <section class="record-card">
+            <button class="record-button" id="push" aria-label="Hold to dictate">
+              <span class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
+            </button>
+            <div class="record-copy">
+              <strong id="status">Hold to dictate</strong>
+              <p id="message">Use the button or your shortcut from any application.</p>
+            </div>
+            <div class="shortcut-keys" id="home-hotkey" aria-label="Current dictation shortcut"></div>
+          </section>
+
+          <section class="summary" aria-label="Dictation summary">
+            <article><strong id="dictation-count">0</strong><span>dictations</span></article>
+            <article><strong id="word-count">0</strong><span>words captured</span></article>
+            <article><strong id="average-latency">—</strong><span>average latency</span></article>
+          </section>
+
+          <section class="transcripts-panel">
+            <div class="section-title"><div><h2>Recent transcripts</h2><p>Stored locally on this computer</p></div><button data-view-link="history">View all</button></div>
+            <div id="recent-list" class="history-list compact"></div>
+          </section>
+        </div>
+
+        <div class="view" id="history">
+          <div class="page-title">
+            <div><h1>History</h1><p>Your latest 100 transcripts, stored locally.</p></div>
+            <button class="text-danger" id="clear-history">Clear history</button>
+          </div>
+          <div id="history-list" class="history-list full"></div>
+        </div>
+
+        <div class="view" id="dictionary">
+          <div class="page-title"><div><h1>Dictionary</h1><p>Add names and specialist terms that Pronto should preserve.</p></div></div>
+          <form class="dictionary-form" id="dictionary-form">
+            <input id="dictionary-input" maxlength="100" placeholder="Add a word or phrase" autocomplete="off" />
+            <button type="submit">Add term</button>
+          </form>
+          <div class="dictionary-table">
+            <div class="dictionary-heading"><span>Personal terms</span><span id="term-count">0 terms</span></div>
+            <div id="dictionary-list" class="dictionary-list"></div>
+            <div class="empty" id="dictionary-empty">No personal terms yet.</div>
+          </div>
+        </div>
+
+        <div class="view" id="settings">
+          <div class="page-title"><div><h1>Settings</h1><p>Choose how Pronto listens, writes, and behaves on Windows.</p></div></div>
+          <div class="settings-stack">
+            <section class="settings-section">
+              <h2>Dictation</h2>
+              <div class="settings-card">
+                <div class="setting-row hotkey-row">
+                  <div><strong>Dictation shortcut</strong><p>Works globally, including modifier-only combinations such as Win + Ctrl.</p></div>
+                  <div class="setting-control"><div class="shortcut-keys" id="settings-hotkey"></div><button class="change-button" id="change-hotkey">Change</button></div>
+                </div>
+                <div class="setting-row">
+                  <div><strong>Activation behavior</strong><p>Hold to talk, or press once to start and again to stop.</p></div>
+                  <div class="segmented" role="group" aria-label="Activation behavior">
+                    <button type="button" data-activation="hold">Hold</button><button type="button" data-activation="toggle">Toggle</button>
+                  </div>
+                </div>
+                <div class="setting-row">
+                  <div><strong>Language</strong><p>Choose a language or let Parakeet detect it.</p></div>
+                  <select id="language"><option value="auto">Auto detect</option><option value="en">English</option><option value="de">German</option><option value="es">Spanish</option><option value="fr">French</option><option value="it">Italian</option><option value="pt">Portuguese</option><option value="nl">Dutch</option><option value="pl">Polish</option></select>
+                </div>
+                <div class="setting-row"><div><strong>Insert automatically</strong><p>Type the result where dictation began.</p></div><label class="toggle"><input type="checkbox" id="auto-insert" /><span></span></label></div>
+                <div class="setting-row"><div><strong>Clean up speech</strong><p>Remove fillers and false starts, then repair punctuation.</p></div><label class="toggle"><input type="checkbox" id="cleanup-enabled" /><span></span></label></div>
+              </div>
+            </section>
+
+            <section class="settings-section">
+              <h2>Windows</h2>
+              <div class="settings-card">
+                <div class="setting-row"><div><strong>Launch at startup</strong><p>Starts Pronto silently in the system tray without opening this window.</p></div><label class="toggle"><input type="checkbox" id="launch-at-startup" /><span></span></label></div>
+              </div>
+            </section>
+
+            <section class="settings-section">
+              <h2>System audio</h2>
+              <div class="settings-card">
+                <div class="setting-row"><div><strong>Duck other audio while dictating</strong><p>Temporarily lowers playback and restores its exact prior state when recording ends.</p></div><label class="toggle"><input type="checkbox" id="duck-audio" /><span></span></label></div>
+              </div>
+            </section>
+
+            <section class="settings-section">
+              <h2>Cleanup service</h2>
+              <div class="settings-card api-card">
+                <div class="setting-row api-row">
+                  <div><strong>DeepSeek API key</strong><p id="api-status">Not configured</p></div>
+                  <div class="api-form"><input type="password" id="api-key" placeholder="Enter API key" autocomplete="off" /><button id="save-key">Save</button></div>
+                </div>
+                <div class="setting-row engine-row"><div><strong>Local speech engine</strong><p id="engine-message">Starting NVIDIA Parakeet…</p></div><span class="private-badge">Local</span></div>
+              </div>
+            </section>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <dialog class="hotkey-dialog" id="hotkey-dialog">
+      <form method="dialog">
+        <button class="dialog-close" value="cancel" aria-label="Close">×</button>
+        <h2>Set dictation shortcut</h2>
+        <p>Press your combination, then save it. Modifier-only chords such as Win + Ctrl are supported.</p>
+        <div class="capture-box" id="hotkey-capture" tabindex="0">
+          <span class="capture-prompt">Press your shortcut</span>
+          <div class="shortcut-keys" id="capture-keys"></div>
+        </div>
+        <p class="capture-note">Use two modifiers, or Ctrl, Alt, or Win with another key. Known Windows-reserved combinations are rejected.</p>
+        <div class="dialog-error" id="hotkey-error" role="alert"></div>
+        <div class="dialog-actions"><button type="button" class="change-button" id="cancel-hotkey">Cancel</button><button type="button" id="save-hotkey" disabled>Save shortcut</button></div>
+      </form>
+    </dialog>
+    <div class="toast" id="toast" role="status"></div>
+    <script src="app.js"></script>
+  </body>
+</html>

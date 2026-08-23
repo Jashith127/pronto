@@ -1,0 +1,422 @@
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::{Device, SampleFormat, Stream, StreamConfig, SupportedStreamConfig};
+use std::sync::{mpsc, Arc, Mutex};
+use windows::core::PSTR;
+use windows::Win32::Media::Audio::{
+    waveInAddBuffer, waveInClose, waveInOpen, waveInPrepareHeader, waveInReset, waveInStart,
+    waveInStop, waveInUnprepareHeader, CALLBACK_NULL, HWAVEIN, WAVEFORMATEX, WAVEHDR,
+    WAVE_FORMAT_PCM, WAVE_MAPPER,
+};
+
+pub struct Recording {
+    pub samples: Vec<f32>,
+    pub sample_rate: u32,
+    pub channels: u16,
+}
+
+struct AudioCapture {
+    samples: Arc<Mutex<Vec<f32>>>,
+    stream: Option<Stream>,
+    wave_in: Option<WaveInCapture>,
+    sample_rate: u32,
+    channels: u16,
+}
+
+impl Default for AudioCapture {
+    fn default() -> Self {
+        Self {
+            samples: Arc::new(Mutex::new(Vec::new())),
+            stream: None,
+            wave_in: None,
+            sample_rate: 0,
+            channels: 0,
+        }
+    }
+}
+
+impl AudioCapture {
+    pub fn prepare(&mut self) -> Result<(), String> {
+        if self.stream.is_some() || self.wave_in.is_some() {
+            return Ok(());
+        }
+        let device = cpal::default_host()
+            .default_input_device()
+            .ok_or_else(|| "No input device found".to_string())?;
+        let device_name = device
+            .description()
+            .map(|description| description.name().to_owned())
+            .unwrap_or_else(|_| "default microphone".into());
+        let mut candidates = Vec::new();
+        if let Ok(default) = device.default_input_config() {
+            candidates.push(default);
+        }
+        if let Ok(ranges) = device.supported_input_configs() {
+            for range in ranges {
+                let preferred = [48_000, 44_100, 16_000].into_iter().find(|rate| {
+                    *rate >= range.min_sample_rate() && *rate <= range.max_sample_rate()
+                });
+                candidates.push(match preferred {
+                    Some(rate) => range.with_sample_rate(rate),
+                    None => range.with_max_sample_rate(),
+                });
+            }
+        }
+
+        let mut failures = Vec::new();
+        for supported in candidates {
+            let description = format!(
+                "{}ch {}Hz {:?}",
+                supported.channels(),
+                supported.sample_rate(),
+                supported.sample_format()
+            );
+            match build_input_stream(&device, &supported, &self.samples) {
+                Ok(stream) => {
+                    self.sample_rate = supported.sample_rate();
+                    self.channels = supported.channels();
+                    self.stream = Some(stream);
+                    return Ok(());
+                }
+                Err(error) => failures.push(format!("{description}: {error}")),
+            }
+        }
+
+        match WaveInCapture::prepare() {
+            Ok(capture) => {
+                self.sample_rate = capture.sample_rate;
+                self.channels = capture.channels;
+                self.wave_in = Some(capture);
+                Ok(())
+            }
+            Err(wave_error) => Err(format!(
+                "Could not open {device_name}. WASAPI tried: {}. WinMM fallback: {wave_error}",
+                failures.join("; ")
+            )),
+        }
+    }
+
+    pub fn start(&mut self) -> Result<(), String> {
+        self.prepare()?;
+        self.samples
+            .lock()
+            .map_err(|_| "audio buffer poisoned")?
+            .clear();
+        if let Some(capture) = self.wave_in.as_mut() {
+            return capture.start();
+        }
+        if let Some(stream) = self.stream.as_ref() {
+            stream
+                .play()
+                .map_err(|error| format!("Could not resume the prewarmed microphone: {error}"))?;
+        }
+        Ok(())
+    }
+
+    pub fn stop(&mut self) -> Result<Recording, String> {
+        if let Some(capture) = self.wave_in.as_mut() {
+            return capture.stop();
+        }
+        if let Some(stream) = self.stream.as_ref() {
+            stream
+                .pause()
+                .map_err(|error| format!("Could not pause microphone: {error}"))?;
+        }
+        let samples =
+            std::mem::take(&mut *self.samples.lock().map_err(|_| "audio buffer poisoned")?);
+        Ok(Recording {
+            samples,
+            sample_rate: self.sample_rate,
+            channels: self.channels,
+        })
+    }
+}
+
+/// Compatibility capture path for audio drivers that advertise a WASAPI mix
+/// format but reject `IAudioClient::Initialize`. The system wave mapper handles
+/// conversion to a simple PCM format and is available on every supported Windows
+/// version.
+struct WaveInCapture {
+    handle: HWAVEIN,
+    buffer: Vec<i16>,
+    header: Box<WAVEHDR>,
+    sample_rate: u32,
+    channels: u16,
+}
+
+impl WaveInCapture {
+    fn prepare() -> Result<Self, String> {
+        const MAX_SECONDS: usize = 300;
+        let mut errors = Vec::new();
+        for (sample_rate, channels) in [(16_000u32, 1u16), (48_000, 1), (48_000, 2)] {
+            let format = WAVEFORMATEX {
+                wFormatTag: WAVE_FORMAT_PCM as u16,
+                nChannels: channels,
+                nSamplesPerSec: sample_rate,
+                nAvgBytesPerSec: sample_rate * u32::from(channels) * 2,
+                nBlockAlign: channels * 2,
+                wBitsPerSample: 16,
+                cbSize: 0,
+            };
+            let mut handle = HWAVEIN::default();
+            let open_result = unsafe {
+                waveInOpen(
+                    Some(&mut handle),
+                    WAVE_MAPPER,
+                    &format,
+                    Some(0),
+                    Some(0),
+                    CALLBACK_NULL,
+                )
+            };
+            if open_result != 0 {
+                errors.push(format!("{channels}ch {sample_rate}Hz open={open_result}"));
+                continue;
+            }
+
+            let mut buffer = vec![0i16; sample_rate as usize * channels as usize * MAX_SECONDS];
+            let mut header = Box::new(WAVEHDR {
+                lpData: PSTR(buffer.as_mut_ptr().cast::<u8>()),
+                dwBufferLength: (buffer.len() * std::mem::size_of::<i16>()) as u32,
+                ..Default::default()
+            });
+            let header_size = std::mem::size_of::<WAVEHDR>() as u32;
+            let prepare_result = unsafe { waveInPrepareHeader(handle, &mut *header, header_size) };
+            if prepare_result == 0 {
+                return Ok(Self {
+                    handle,
+                    buffer,
+                    header,
+                    sample_rate,
+                    channels,
+                });
+            }
+
+            unsafe {
+                waveInUnprepareHeader(handle, &mut *header, header_size);
+                waveInClose(handle);
+            }
+            errors.push(format!(
+                "{channels}ch {sample_rate}Hz prepare={prepare_result}"
+            ));
+        }
+        Err(errors.join("; "))
+    }
+
+    fn start(&mut self) -> Result<(), String> {
+        self.header.dwBytesRecorded = 0;
+        self.header.dwFlags &= !0x0000_0001;
+        let header_size = std::mem::size_of::<WAVEHDR>() as u32;
+        let add = unsafe { waveInAddBuffer(self.handle, &mut *self.header, header_size) };
+        if add != 0 {
+            return Err(format!(
+                "Could not queue prewarmed microphone buffer ({add})"
+            ));
+        }
+        let start = unsafe { waveInStart(self.handle) };
+        if start != 0 {
+            return Err(format!("Could not resume prewarmed microphone ({start})"));
+        }
+        Ok(())
+    }
+
+    fn stop(&mut self) -> Result<Recording, String> {
+        unsafe {
+            waveInStop(self.handle);
+            waveInReset(self.handle);
+        }
+        let sample_count = (self.header.dwBytesRecorded as usize / std::mem::size_of::<i16>())
+            .min(self.buffer.len());
+        let samples = self.buffer[..sample_count]
+            .iter()
+            .map(|&value| value as f32 / i16::MAX as f32)
+            .collect();
+        Ok(Recording {
+            samples,
+            sample_rate: self.sample_rate,
+            channels: self.channels,
+        })
+    }
+}
+
+impl Drop for WaveInCapture {
+    fn drop(&mut self) {
+        if self.handle.is_invalid() {
+            return;
+        }
+        let header_size = std::mem::size_of::<WAVEHDR>() as u32;
+        unsafe {
+            waveInReset(self.handle);
+            waveInUnprepareHeader(self.handle, &mut *self.header, header_size);
+            waveInClose(self.handle);
+        }
+    }
+}
+
+fn build_input_stream(
+    device: &Device,
+    supported: &SupportedStreamConfig,
+    shared: &Arc<Mutex<Vec<f32>>>,
+) -> Result<Stream, cpal::Error> {
+    let config: StreamConfig = supported.clone().into();
+    match supported.sample_format() {
+        SampleFormat::F32 => {
+            let buffer = Arc::clone(shared);
+            device.build_input_stream(
+                config,
+                move |data: &[f32], _| append_f32(&buffer, data),
+                |error| eprintln!("audio stream error: {error}"),
+                None,
+            )
+        }
+        SampleFormat::I16 => {
+            let buffer = Arc::clone(shared);
+            device.build_input_stream(
+                config,
+                move |data: &[i16], _| append_i16(&buffer, data),
+                |error| eprintln!("audio stream error: {error}"),
+                None,
+            )
+        }
+        SampleFormat::U16 => {
+            let buffer = Arc::clone(shared);
+            device.build_input_stream(
+                config,
+                move |data: &[u16], _| append_u16(&buffer, data),
+                |error| eprintln!("audio stream error: {error}"),
+                None,
+            )
+        }
+        format => {
+            eprintln!("unsupported microphone sample format: {format:?}");
+            Err(cpal::Error::new(cpal::ErrorKind::UnsupportedConfig))
+        }
+    }
+}
+
+enum AudioCommand {
+    Start(mpsc::Sender<Result<(), String>>),
+    Stop(mpsc::Sender<Result<Recording, String>>),
+}
+
+/// Owns CPAL on one dedicated thread. CPAL streams are deliberately not `Send`,
+/// and keeping creation/destruction on the same thread also gives WASAPI a clean
+/// home when the capture layer grows COM-specific features.
+pub struct AudioController {
+    commands: mpsc::Sender<AudioCommand>,
+}
+
+impl AudioController {
+    pub fn new() -> Self {
+        let (commands, receiver) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("pronto-audio".into())
+            .spawn(move || {
+                let mut capture = AudioCapture::default();
+                // Device enumeration, format negotiation, allocation, and stream
+                // creation happen at app startup. Hotkey activation only clears
+                // the buffer and resumes this already-open capture path.
+                let prepare_error = capture.prepare().err();
+                while let Ok(command) = receiver.recv() {
+                    match command {
+                        AudioCommand::Start(reply) => {
+                            let result = if let Some(error) = prepare_error.as_ref() {
+                                Err(error.clone())
+                            } else {
+                                capture.start()
+                            };
+                            let _ = reply.send(result);
+                        }
+                        AudioCommand::Stop(reply) => {
+                            let _ = reply.send(capture.stop());
+                        }
+                    }
+                }
+            })
+            .expect("failed to start audio thread");
+        Self { commands }
+    }
+
+    pub fn start(&self) -> Result<(), String> {
+        let (reply, response) = mpsc::channel();
+        self.commands
+            .send(AudioCommand::Start(reply))
+            .map_err(|_| "audio thread stopped".to_string())?;
+        response
+            .recv()
+            .map_err(|_| "audio thread stopped".to_string())?
+    }
+
+    pub fn stop(&self) -> Result<Recording, String> {
+        let (reply, response) = mpsc::channel();
+        self.commands
+            .send(AudioCommand::Stop(reply))
+            .map_err(|_| "audio thread stopped".to_string())?;
+        response
+            .recv()
+            .map_err(|_| "audio thread stopped".to_string())?
+    }
+}
+
+fn append_f32(buffer: &Mutex<Vec<f32>>, data: &[f32]) {
+    if let Ok(mut samples) = buffer.lock() {
+        samples.extend_from_slice(data);
+    }
+}
+
+fn append_i16(buffer: &Mutex<Vec<f32>>, data: &[i16]) {
+    if let Ok(mut samples) = buffer.lock() {
+        samples.extend(data.iter().map(|&value| value as f32 / i16::MAX as f32));
+    }
+}
+
+fn append_u16(buffer: &Mutex<Vec<f32>>, data: &[u16]) {
+    if let Ok(mut samples) = buffer.lock() {
+        samples.extend(
+            data.iter()
+                .map(|&value| value as f32 / u16::MAX as f32 * 2.0 - 1.0),
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// Hardware validation for release checks. It is ignored during ordinary
+    /// unit tests because CI machines may not expose a microphone.
+    #[test]
+    #[ignore = "requires a Windows microphone"]
+    fn captures_from_default_microphone() {
+        let audio = AudioController::new();
+        audio.start().expect("default microphone should start");
+        std::thread::sleep(Duration::from_millis(750));
+        let recording = audio.stop().expect("microphone should stop cleanly");
+
+        assert!(recording.sample_rate >= 16_000);
+        assert!(recording.channels > 0);
+        assert!(
+            recording.samples.len()
+                >= recording.sample_rate as usize * recording.channels as usize / 2,
+            "expected at least half a second of captured samples"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires a Windows microphone"]
+    fn repeated_activation_uses_prewarmed_microphone() {
+        use std::time::Instant;
+        let audio = AudioController::new();
+        audio.start().expect("prewarmed microphone should start");
+        std::thread::sleep(Duration::from_millis(100));
+        let _ = audio.stop().unwrap();
+        let start = Instant::now();
+        audio.start().expect("microphone should resume");
+        let resume_ms = start.elapsed().as_millis();
+        println!("prewarmed microphone resumed in {resume_ms} ms");
+        std::thread::sleep(Duration::from_millis(100));
+        let recording = audio.stop().unwrap();
+        assert!(resume_ms < 75, "prewarmed resume took {resume_ms} ms");
+        assert!(!recording.samples.is_empty());
+    }
+}
