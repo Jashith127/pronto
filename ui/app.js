@@ -1,6 +1,5 @@
 const invoke = window.__TAURI__.core.invoke;
 const listen = window.__TAURI__.event.listen;
-const currentWindow = window.__TAURI__.window.getCurrentWindow();
 const root = document.documentElement;
 const push = document.querySelector('#push');
 const statusText = document.querySelector('#status');
@@ -155,8 +154,18 @@ function openHotkeyDialog() {
 
 document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => setView(button.dataset.view)));
 document.querySelectorAll('[data-view-link]').forEach(button => button.addEventListener('click', () => setView(button.dataset.viewLink)));
-document.querySelector('#minimize').addEventListener('click', () => currentWindow.minimize());
-document.querySelector('#close').addEventListener('click', () => currentWindow.hide());
+const bindWindowAction = (selector, command) => {
+  const button = document.querySelector(selector);
+  button.addEventListener('pointerdown', event => event.stopPropagation());
+  button.addEventListener('click', event => {
+    event.preventDefault();
+    event.stopPropagation();
+    call(command);
+  });
+};
+
+bindWindowAction('#minimize', 'minimize_main_window');
+bindWindowAction('#close', 'hide_main_window');
 
 push.addEventListener('pointerdown', async event => {
   event.preventDefault();

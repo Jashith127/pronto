@@ -486,6 +486,22 @@ fn paste_last_transcript(app: AppHandle) -> Result<String, String> {
     paste_last(&app)
 }
 
+#[tauri::command]
+fn minimize_main_window(app: AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Pronto's main window is unavailable".to_string())?;
+    window.minimize().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn hide_main_window(app: AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Pronto's main window is unavailable".to_string())?;
+    window.hide().map_err(|error| error.to_string())
+}
+
 fn create_tray(app: &tauri::App) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Open Pronto", true, None::<&str>)?;
     let paste = MenuItem::with_id(
@@ -610,7 +626,9 @@ pub fn run() {
             get_history,
             clear_history,
             insert_again,
-            paste_last_transcript
+            paste_last_transcript,
+            minimize_main_window,
+            hide_main_window
         ])
         .run(tauri::generate_context!())
         .expect("error while running Pronto");

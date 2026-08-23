@@ -45,8 +45,8 @@ nav { display: flex; flex-direction: column; gap: 4px; margin-top: 34px; }
 .model-state i { width: 6px; height: 6px; border-radius: 50%; background: #c99645; }
 .model-state.ready { color: #587568; }
 .model-state.ready i { background: var(--sage); }
-.window-actions { align-self: stretch; display: flex; }
-.window-actions button { width: 45px; border: 0; background: transparent; color: #686964; font-size: 18px; }
+.window-actions { align-self: stretch; display: flex; -webkit-app-region: no-drag; }
+.window-actions button { width: 45px; border: 0; background: transparent; color: #686964; font-size: 18px; -webkit-app-region: no-drag; }
 .window-actions button:hover { background: #eceae4; color: var(--ink); }
 #close:hover { background: #c94d42; color: white; }
 
