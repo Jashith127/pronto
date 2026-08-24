@@ -1,16 +1,12 @@
 const invoke = window.__TAURI__.core.invoke;
 const listen = window.__TAURI__.event.listen;
 const root = document.documentElement;
-const push = document.querySelector('#push');
-const statusText = document.querySelector('#status');
-const message = document.querySelector('#message');
 const toast = document.querySelector('#toast');
 const hotkeyDialog = document.querySelector('#hotkey-dialog');
 const hotkeyCapture = document.querySelector('#hotkey-capture');
 let preferences = null;
 let hotkeyStatus = null;
 let history = [];
-let mouseRecording = false;
 let engineStatus = null;
 let pendingShortcut = '';
 
@@ -33,21 +29,10 @@ function setView(id) {
 
 function renderStatus(next) {
   engineStatus = next;
-  const labels = { idle: 'Ready to dictate', listening: 'Listening', processing: 'Transcribing', complete: 'Dictation complete', error: 'Needs attention' };
   root.classList.toggle('listening', next.phase === 'listening');
-  statusText.textContent = labels[next.phase] || next.phase;
-  const toggleMode = preferences?.settings.activationMode === 'toggle';
-  message.textContent = next.phase === 'idle' && hotkeyStatus
-    ? `${toggleMode ? 'Press' : 'Hold'} ${hotkeyStatus.shortcut.split('+').map(keyLabel).join(' + ')} to talk`
-    : next.message;
 }
 
 function renderModel(next) {
-  const pill = document.querySelector('#model-pill');
-  pill.classList.toggle('ready', next.ready);
-  pill.querySelector('span').textContent = next.ready ? 'Parakeet ready · CUDA' : 'Loading Parakeet';
-  document.querySelector('.engine-dot').classList.toggle('ready', next.ready);
-  document.querySelector('#engine-short').textContent = next.ready ? 'Parakeet ready' : 'Starting engine';
   document.querySelector('#engine-message').textContent = next.message;
 }
 
@@ -57,7 +42,7 @@ function historyMarkup(entries) {
     const date = new Date(Number(entry.createdAtMs));
     const time = date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
     const cleanup = entry.cleanupApplied ? 'DeepSeek cleanup' : 'Local cleanup';
-    return `<article class="history-item"><time class="history-time">${time}</time><div class="history-copy"><p>${escapeHtml(entry.finalText)}</p><small>${date.toLocaleDateString()} · ${cleanup}</small></div><span class="latency">${entry.totalMs} ms</span></article>`;
+    return `<article class="history-item"><time class="history-time">${time}</time><div class="history-copy"><p>${escapeHtml(entry.finalText)}</p><small>${date.toLocaleDateString()} · ${cleanup}</small></div><div class="history-actions"><span class="latency">${entry.totalMs} ms</span><button class="copy-transcript" data-copy="${entry.id}" aria-label="Copy transcript" title="Copy transcript"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg></button></div></article>`;
   }).join('');
 }
 
@@ -67,6 +52,24 @@ function renderHistory() {
   document.querySelector('#dictation-count').textContent = history.length.toLocaleString();
   const words = history.reduce((total, entry) => total + entry.finalText.trim().split(/\s+/).filter(Boolean).length, 0);
   document.querySelector('#word-count').textContent = words.toLocaleString();
+  const timedEntries = history.filter(entry => Number(entry.audioMs) > 0);
+  const timedWords = timedEntries.reduce((total, entry) => total + entry.finalText.trim().split(/\s+/).filter(Boolean).length, 0);
+  const audioMs = timedEntries.reduce((total, entry) => total + Number(entry.audioMs), 0);
+  const wpm = audioMs > 0 ? Math.round(timedWords * 60000 / audioMs) : 0;
+  document.querySelector('#average-wpm').textContent = wpm || '—';
+  const recentPaces = timedEntries.slice(0, 7).reverse().map(entry => {
+    const entryWords = entry.finalText.trim().split(/\s+/).filter(Boolean).length;
+    return Math.round(entryWords * 60000 / Number(entry.audioMs));
+  }).filter(Number.isFinite);
+  const chart = document.querySelector('#wpm-chart');
+  chart.classList.toggle('empty', recentPaces.length === 0);
+  chart.innerHTML = recentPaces.map(pace => {
+    const height = Math.max(8, Math.min(100, Math.round(pace / 220 * 100)));
+    return `<i style="height:${height}%" title="${pace} WPM" aria-label="${pace} words per minute"></i>`;
+  }).join('');
+  document.querySelector('#wpm-note').textContent = recentPaces.length
+    ? `${recentPaces.length} most recent measured ${recentPaces.length === 1 ? 'dictation' : 'dictations'}`
+    : 'Your pace will appear after a dictation';
   const average = history.length ? Math.round(history.reduce((total, entry) => total + Number(entry.totalMs), 0) / history.length) : 0;
   document.querySelector('#average-latency').textContent = average ? `${average} ms` : '—';
 }
@@ -93,7 +96,6 @@ function shortcutMarkup(shortcut) {
 
 function renderHotkey(next) {
   hotkeyStatus = next;
-  document.querySelector('#home-hotkey').innerHTML = shortcutMarkup(next.shortcut);
   document.querySelector('#settings-hotkey').innerHTML = shortcutMarkup(next.shortcut);
   if (engineStatus?.phase === 'idle') renderStatus(engineStatus);
   if (next.error) showToast(next.error, true);
@@ -106,9 +108,6 @@ function renderPreferences() {
   document.querySelector('#launch-at-startup').checked = preferences.settings.launchAtStartup;
   document.querySelector('#language').value = preferences.settings.language;
   document.querySelectorAll('[data-activation]').forEach(button => button.classList.toggle('active', button.dataset.activation === preferences.settings.activationMode));
-  document.querySelector('#home-instruction').textContent = preferences.settings.activationMode === 'toggle'
-    ? 'Press your shortcut to start, then press it again to finish. Pronto types the result for you.'
-    : 'Hold your shortcut, talk, then release. Pronto types the finished text for you.';
   document.querySelector('#api-status').textContent = preferences.apiKeyConfigured ? 'Stored securely in Windows Credential Manager' : 'Not configured — local cleanup will be used';
   renderDictionary();
 }
@@ -167,26 +166,6 @@ const bindWindowAction = (selector, command) => {
 bindWindowAction('#minimize', 'minimize_main_window');
 bindWindowAction('#close', 'hide_main_window');
 
-push.addEventListener('pointerdown', async event => {
-  event.preventDefault();
-  if (preferences?.settings.activationMode === 'toggle') {
-    try { renderStatus(await call(engineStatus?.phase === 'listening' ? 'stop_recording' : 'start_recording')); } catch {}
-    return;
-  }
-  mouseRecording = true;
-  push.setPointerCapture(event.pointerId);
-  try { renderStatus(await call('start_recording')); } catch { mouseRecording = false; }
-});
-async function releasePointer() {
-  if (preferences?.settings.activationMode === 'toggle') return;
-  if (!mouseRecording) return;
-  mouseRecording = false;
-  try { renderStatus(await call('stop_recording')); } catch {}
-}
-push.addEventListener('pointerup', releasePointer);
-push.addEventListener('pointercancel', releasePointer);
-push.addEventListener('lostpointercapture', releasePointer);
-
 document.querySelector('#dictionary-form').addEventListener('submit', async event => {
   event.preventDefault();
   const input = document.querySelector('#dictionary-input');
@@ -221,10 +200,17 @@ document.querySelector('#clear-history').addEventListener('click', async () => {
   renderHistory();
   showToast('History cleared');
 });
-document.querySelector('#paste-last-home').addEventListener('click', async () => {
-  const result = await call('paste_last_transcript');
-  showToast(result);
-});
+async function copyTranscript(event) {
+  const button = event.target.closest('[data-copy]');
+  if (!button) return;
+  await call('copy_transcript', { id: button.dataset.copy });
+  button.classList.add('copied');
+  button.setAttribute('aria-label', 'Copied');
+  showToast('Transcript copied');
+  setTimeout(() => { button.classList.remove('copied'); button.setAttribute('aria-label', 'Copy transcript'); }, 1200);
+}
+document.querySelector('#recent-list').addEventListener('click', copyTranscript);
+document.querySelector('#history-list').addEventListener('click', copyTranscript);
 
 document.querySelector('#change-hotkey').addEventListener('click', openHotkeyDialog);
 hotkeyCapture.addEventListener('keydown', event => {

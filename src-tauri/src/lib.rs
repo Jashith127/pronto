@@ -4,6 +4,8 @@ mod hotkey;
 mod insert;
 mod pipeline;
 mod settings;
+#[cfg(windows)]
+mod single_instance;
 mod startup;
 mod system_audio;
 
@@ -16,7 +18,7 @@ use std::sync::Mutex;
 use system_audio::SystemAudioController;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition};
+use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition};
 
 struct AppState {
     pipeline: Mutex<Pipeline>,
@@ -150,6 +152,7 @@ fn finish_recording(app: &AppHandle) -> Result<EngineStatus, String> {
 }
 
 fn position_overlay(window: &tauri::WebviewWindow) {
+    let _ = window.set_size(LogicalSize::new(96.0, 26.0));
     let monitor = window
         .current_monitor()
         .ok()
@@ -161,40 +164,11 @@ fn position_overlay(window: &tauri::WebviewWindow) {
     let scale = window.scale_factor().unwrap_or(1.0);
     let width = (96.0 * scale).round() as u32;
     let height = (26.0 * scale).round() as u32;
-    #[cfg(windows)]
-    if let Ok(hwnd) = window.hwnd() {
-        use windows::Win32::UI::WindowsAndMessaging::{
-            SetWindowPos, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER,
-        };
-        let _ = unsafe {
-            SetWindowPos(
-                hwnd,
-                None,
-                0,
-                0,
-                width as i32,
-                height as i32,
-                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
-            )
-        };
-    }
     let area = monitor.size();
     let origin = monitor.position();
     let x = origin.x + (area.width.saturating_sub(width) / 2) as i32;
     let y = origin.y + area.height.saturating_sub(height + 74) as i32;
     let _ = window.set_position(PhysicalPosition::new(x, y));
-    #[cfg(windows)]
-    if let Ok(hwnd) = window.hwnd() {
-        use windows::Win32::Graphics::Gdi::{CreateRoundRectRgn, SetWindowRgn};
-        let radius = height as i32;
-        let region = unsafe {
-            CreateRoundRectRgn(0, 0, width as i32 + 1, height as i32 + 1, radius, radius)
-        };
-        if !region.is_invalid() {
-            // Windows owns the region after a successful SetWindowRgn call.
-            let _ = unsafe { SetWindowRgn(hwnd, Some(region), true) };
-        }
-    }
 }
 
 pub(crate) fn complete_transcription(
@@ -487,6 +461,18 @@ fn paste_last_transcript(app: AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn copy_transcript(state: tauri::State<'_, AppState>, id: String) -> Result<(), String> {
+    let id = id
+        .parse::<u128>()
+        .map_err(|_| "Invalid transcript identifier".to_string())?;
+    let text = state
+        .settings
+        .transcript(id)?
+        .ok_or_else(|| "That transcript is no longer in history".to_string())?;
+    insert::copy_to_clipboard(&text)
+}
+
+#[tauri::command]
 fn minimize_main_window(app: AppHandle) -> Result<(), String> {
     let window = app
         .get_webview_window("main")
@@ -559,6 +545,12 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(windows)]
+    let _single_instance = match single_instance::SingleInstance::acquire() {
+        Ok(Some(instance)) => instance,
+        Ok(None) => return,
+        Err(_) => return,
+    };
     tauri::Builder::default()
         // Builder-managed state exists before configured WebViews are created,
         // so early IPC and WebView2 lifecycle callbacks cannot race setup().
@@ -627,6 +619,7 @@ pub fn run() {
             clear_history,
             insert_again,
             paste_last_transcript,
+            copy_transcript,
             minimize_main_window,
             hide_main_window
         ])

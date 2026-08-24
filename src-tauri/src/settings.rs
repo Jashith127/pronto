@@ -55,6 +55,8 @@ pub struct HistoryEntry {
     pub asr_ms: u128,
     pub cleanup_ms: u128,
     pub total_ms: u128,
+    #[serde(default)]
+    pub audio_ms: u128,
     pub cleanup_applied: bool,
 }
 
@@ -65,6 +67,7 @@ impl HistoryEntry {
         asr_ms: u128,
         cleanup_ms: u128,
         total_ms: u128,
+        audio_ms: u128,
         cleanup_applied: bool,
     ) -> Self {
         let now = SystemTime::now()
@@ -79,6 +82,7 @@ impl HistoryEntry {
             asr_ms,
             cleanup_ms,
             total_ms,
+            audio_ms,
             cleanup_applied,
         }
     }
@@ -194,6 +198,18 @@ impl SettingsStore {
         self.history
             .lock()
             .map(|history| history.first().map(|entry| entry.final_text.clone()))
+            .map_err(|_| "history lock poisoned".into())
+    }
+
+    pub fn transcript(&self, id: u128) -> Result<Option<String>, String> {
+        self.history
+            .lock()
+            .map(|history| {
+                history
+                    .iter()
+                    .find(|entry| entry.id == id)
+                    .map(|entry| entry.final_text.clone())
+            })
             .map_err(|_| "history lock poisoned".into())
     }
 }

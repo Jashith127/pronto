@@ -27,15 +27,10 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1A8 8 0 0 0 15 6l-.3-2.6h-4L10.5 6A8 8 0 0 0 9 7.1l-2.4-1-2 3.4 2 1.5a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.4-1A8 8 0 0 0 10.5 18l.3 2.6h4L15 18a8 8 0 0 0 1.5-1.1l2.4 1 2-3.4-2-1.5a7 7 0 0 0 .1-1Z"/></svg><span>Settings</span>
           </button>
         </nav>
-        <div class="sidebar-foot">
-          <span class="engine-indicator"><i class="engine-dot"></i><b id="engine-short">Starting engine</b></span>
-          <small>Audio stays on this PC</small>
-        </div>
       </aside>
 
       <section class="shell">
         <header class="titlebar" data-tauri-drag-region>
-          <div class="model-state" id="model-pill"><i></i><span>Loading Parakeet</span></div>
           <div class="window-actions">
             <button id="minimize" aria-label="Minimize">−</button>
             <button id="close" aria-label="Close to tray">×</button>
@@ -43,26 +38,15 @@
         </header>
 
         <div class="view active" id="home">
-          <div class="page-title home-title">
-            <div><h1>Ready to speak.</h1><p id="home-instruction">Hold your shortcut, talk, then release. Pronto types the finished text for you.</p></div>
-            <button class="secondary-action" id="paste-last-home">Paste last transcript</button>
-          </div>
-
-          <section class="record-card">
-            <button class="record-button" id="push" aria-label="Hold to dictate">
-              <span class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
-            </button>
-            <div class="record-copy">
-              <strong id="status">Hold to dictate</strong>
-              <p id="message">Use the button or your shortcut from any application.</p>
-            </div>
-            <div class="shortcut-keys" id="home-hotkey" aria-label="Current dictation shortcut"></div>
-          </section>
-
-          <section class="summary" aria-label="Dictation summary">
-            <article><strong id="dictation-count">0</strong><span>dictations</span></article>
-            <article><strong id="word-count">0</strong><span>words captured</span></article>
-            <article><strong id="average-latency">—</strong><span>average latency</span></article>
+          <section class="stats-grid" aria-label="Dictation statistics">
+            <article class="stat-card stat-primary">
+              <div><span class="stat-label">Speaking pace</span><div class="pace-number"><strong id="average-wpm">—</strong><small>WPM</small></div></div>
+              <div class="stat-wave empty" id="wpm-chart" aria-label="Recent words per minute"></div>
+              <p id="wpm-note">Your pace will appear after a dictation</p>
+            </article>
+            <article class="stat-card stat-words"><span class="stat-label">Words captured</span><strong id="word-count">0</strong><p>Across your locally saved transcripts</p></article>
+            <article class="stat-card"><span class="stat-label">Transcripts</span><strong id="dictation-count">0</strong><p>Your locally saved history</p></article>
+            <article class="stat-card"><span class="stat-label">Average response</span><strong id="average-latency">—</strong><p>Transcription and cleanup</p></article>
           </section>
 
           <section class="transcripts-panel">

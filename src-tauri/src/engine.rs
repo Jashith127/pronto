@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::net::TcpListener;
 #[cfg(windows)]
-use std::os::windows::process::CommandExt;
+use std::os::windows::{io::AsRawHandle, process::CommandExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
@@ -96,6 +96,8 @@ fn process_job(
     job: TranscriptionJob,
     started: Instant,
 ) -> Result<CompletedTranscription, String> {
+    let audio_ms = job.recording.samples.len() as u128 * 1_000
+        / (job.recording.sample_rate as u128 * job.recording.channels.max(1) as u128);
     let wav = recording_to_wav(&job.recording)?;
     let asr_started = Instant::now();
     let mut form = multipart::Form::new()
@@ -166,6 +168,7 @@ fn process_job(
             asr_ms,
             cleanup_ms,
             total_ms,
+            audio_ms,
             cleanup_applied,
         ),
         target_window: job.target_window,
@@ -189,6 +192,56 @@ struct RuntimePaths {
 struct SpeechServer {
     child: Child,
     base_url: String,
+    #[cfg(windows)]
+    _job: ProcessJob,
+}
+
+#[cfg(windows)]
+struct ProcessJob(windows::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl ProcessJob {
+    fn attach(child: &Child) -> Result<Self, String> {
+        use std::mem::size_of;
+        use windows::Win32::Foundation::{CloseHandle, HANDLE};
+        use windows::Win32::System::JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+            SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        };
+
+        let job = unsafe { CreateJobObjectW(None, None) }
+            .map_err(|error| format!("Could not create speech process job: {error}"))?;
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let configured = unsafe {
+            SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                &limits as *const _ as *const core::ffi::c_void,
+                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+        };
+        if let Err(error) = configured {
+            let _ = unsafe { CloseHandle(job) };
+            return Err(format!(
+                "Could not configure speech process cleanup: {error}"
+            ));
+        }
+        let process = HANDLE(child.as_raw_handle());
+        if let Err(error) = unsafe { AssignProcessToJobObject(job, process) } {
+            let _ = unsafe { CloseHandle(job) };
+            return Err(format!("Could not attach speech process cleanup: {error}"));
+        }
+        Ok(Self(job))
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ProcessJob {
+    fn drop(&mut self) {
+        let _ = unsafe { windows::Win32::Foundation::CloseHandle(self.0) };
+    }
 }
 
 impl SpeechServer {
@@ -229,9 +282,18 @@ impl SpeechServer {
         // streams does not suppress the console host; CREATE_NO_WINDOW does.
         #[cfg(windows)]
         command.creation_flags(0x0800_0000);
-        let child = command
+        let mut child = command
             .spawn()
             .map_err(|error| format!("Could not start NVIDIA speech runtime: {error}"))?;
+        #[cfg(windows)]
+        let job = match ProcessJob::attach(&child) {
+            Ok(job) => job,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
+            }
+        };
 
         let base_url = format!("http://127.0.0.1:{port}");
         let health_client = Client::builder()
@@ -246,7 +308,12 @@ impl SpeechServer {
                 .map(|response| response.status().is_success())
                 .unwrap_or(false)
             {
-                return Ok(Self { child, base_url });
+                return Ok(Self {
+                    child,
+                    base_url,
+                    #[cfg(windows)]
+                    _job: job,
+                });
             }
             std::thread::sleep(Duration::from_millis(200));
         }
