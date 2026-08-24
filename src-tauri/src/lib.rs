@@ -1,19 +1,22 @@
 mod audio;
 mod engine;
+mod gpu_memory;
 mod hotkey;
 mod insert;
 mod pipeline;
 mod settings;
 #[cfg(windows)]
 mod single_instance;
+mod sound;
 mod startup;
 mod system_audio;
 
-use audio::AudioController;
+use audio::{AudioController, MicrophoneStatus};
 use engine::{CompletedTranscription, EngineController, ModelStatus, TranscriptionJob};
 use hotkey::{Hotkey, HotkeyController, HotkeyEvent, HotkeyStatus};
 use pipeline::{EngineStatus, Phase, Pipeline};
 use settings::{ActivationMode, AppPreferences, HistoryEntry, SettingsStore, UserSettings};
+use sound::SoundController;
 use std::sync::Mutex;
 use system_audio::SystemAudioController;
 use tauri::menu::{Menu, MenuItem};
@@ -24,6 +27,8 @@ struct AppState {
     pipeline: Mutex<Pipeline>,
     audio: AudioController,
     system_audio: SystemAudioController,
+    insertion_target: insert::InsertionTargetTracker,
+    sounds: SoundController,
     engine: Mutex<Option<EngineController>>,
     settings: SettingsStore,
     target_window: Mutex<isize>,
@@ -31,6 +36,7 @@ struct AppState {
     active_shortcut: Mutex<Hotkey>,
     hotkey_controller: Mutex<Option<HotkeyController>>,
     hotkey_error: Mutex<Option<String>>,
+    show_microphone_once: Mutex<bool>,
 }
 
 impl AppState {
@@ -40,6 +46,10 @@ impl AppState {
             .snapshot()
             .map(|value| value.hotkey)
             .unwrap_or_else(|_| hotkey::DEFAULT_HOTKEY.into());
+        let selected_microphone = settings
+            .snapshot()
+            .ok()
+            .and_then(|value| value.microphone_id);
         let active_shortcut = hotkey::parse(&configured)
             .or_else(|_| hotkey::parse(hotkey::DEFAULT_HOTKEY))
             .expect("the built-in shortcut must be valid");
@@ -52,8 +62,10 @@ impl AppState {
         }
         Self {
             pipeline: Mutex::new(Pipeline::default()),
-            audio: AudioController::new(),
+            audio: AudioController::new(selected_microphone),
             system_audio: SystemAudioController::new(),
+            insertion_target: insert::InsertionTargetTracker::new(),
+            sounds: SoundController::new(),
             engine: Mutex::new(None),
             settings,
             target_window: Mutex::new(0),
@@ -65,6 +77,7 @@ impl AppState {
             active_shortcut: Mutex::new(active_shortcut),
             hotkey_controller: Mutex::new(None),
             hotkey_error: Mutex::new(None),
+            show_microphone_once: Mutex::new(true),
         }
     }
 }
@@ -95,21 +108,54 @@ fn begin_recording(app: &AppHandle) -> Result<EngineStatus, String> {
         ActivationMode::Toggle => "Listening… press your shortcut again to finish".into(),
     };
 
+    let initial_target = insert::foreground_window();
     *state
         .target_window
         .lock()
-        .map_err(|_| "target window lock poisoned")? = insert::foreground_window();
+        .map_err(|_| "target window lock poisoned")? = initial_target;
+    state.insertion_target.begin(initial_target);
     if settings.duck_audio {
         if let Err(error) = state.system_audio.duck() {
             let _ = app.emit("audio-warning", error);
         }
     }
-    if let Err(error) = state.audio.start() {
-        let _ = state.system_audio.restore();
-        pipeline.fail(format!("Microphone unavailable: {error}"));
-    } else if let Some(overlay) = app.get_webview_window("overlay") {
-        position_overlay(&overlay);
-        let _ = overlay.show();
+    match state.audio.start() {
+        Err(error) => {
+            state.insertion_target.cancel();
+            let _ = state.system_audio.restore();
+            pipeline.fail(format!("Microphone unavailable: {error}"));
+        }
+        Ok(microphone_name) => {
+            if settings.dictation_sounds {
+                state.sounds.start();
+            }
+            if let Ok(engine) = state.engine.lock() {
+                if let Some(engine) = engine.as_ref() {
+                    engine.warm();
+                }
+            }
+            let show_microphone = state
+                .show_microphone_once
+                .lock()
+                .map(|mut first| {
+                    let show = *first;
+                    *first = false;
+                    show
+                })
+                .unwrap_or(false);
+            if let Some(overlay) = app.get_webview_window("overlay") {
+                let microphone_width = show_microphone
+                    .then(|| (microphone_name.chars().count() as f64 * 6.2 + 24.0).max(96.0));
+                position_overlay(&overlay, microphone_width);
+                let _ = overlay.show();
+                if show_microphone {
+                    let _ = app.emit(
+                        "microphone-activated",
+                        serde_json::json!({ "name": microphone_name }),
+                    );
+                }
+            }
+        }
     }
     emit_status(app, &pipeline.status);
     Ok(pipeline.status.clone())
@@ -128,6 +174,9 @@ fn finish_recording(app: &AppHandle) -> Result<EngineStatus, String> {
         .lock()
         .map_err(|_| "target window lock poisoned")?;
     let settings = state.settings.snapshot()?;
+    if settings.dictation_sounds {
+        state.sounds.finish();
+    }
     let mut pipeline = state
         .pipeline
         .lock()
@@ -151,19 +200,31 @@ fn finish_recording(app: &AppHandle) -> Result<EngineStatus, String> {
     Ok(pipeline.status.clone())
 }
 
-fn position_overlay(window: &tauri::WebviewWindow) {
-    let _ = window.set_size(LogicalSize::new(96.0, 26.0));
+fn position_overlay(window: &tauri::WebviewWindow, microphone_width: Option<f64>) {
+    let logical_height = if microphone_width.is_some() {
+        54.0
+    } else {
+        26.0
+    };
     let monitor = window
         .current_monitor()
         .ok()
         .flatten()
         .or_else(|| window.primary_monitor().ok().flatten());
     let Some(monitor) = monitor else {
+        let logical_width = microphone_width.unwrap_or(96.0).max(96.0);
+        let _ = window.set_size(LogicalSize::new(logical_width, logical_height));
         return;
     };
     let scale = window.scale_factor().unwrap_or(1.0);
-    let width = (96.0 * scale).round() as u32;
-    let height = (26.0 * scale).round() as u32;
+    let max_logical_width = monitor.size().width as f64 / scale - 24.0;
+    let logical_width = microphone_width
+        .unwrap_or(96.0)
+        .max(96.0)
+        .min(max_logical_width.max(96.0));
+    let _ = window.set_size(LogicalSize::new(logical_width, logical_height));
+    let width = (logical_width * scale).round() as u32;
+    let height = (logical_height * scale).round() as u32;
     let area = monitor.size();
     let origin = monitor.position();
     let x = origin.x + (area.width.saturating_sub(width) / 2) as i32;
@@ -182,8 +243,12 @@ pub(crate) fn complete_transcription(
     };
     match result {
         Ok(completed) => {
+            let insertion_target = state.insertion_target.finish(completed.target_window);
+            if let Ok(mut remembered) = state.target_window.lock() {
+                *remembered = insertion_target;
+            }
             let insertion_error = if completed.auto_insert {
-                insert::insert_text(completed.target_window, &completed.entry.final_text).err()
+                insert::insert_text(insertion_target, &completed.entry.final_text).err()
             } else {
                 None
             };
@@ -202,7 +267,10 @@ pub(crate) fn complete_transcription(
             let _ = state.settings.push_history(completed.entry.clone());
             let _ = app.emit("history-updated", completed.entry);
         }
-        Err(error) => pipeline.fail(error),
+        Err(error) => {
+            state.insertion_target.cancel();
+            pipeline.fail(error)
+        }
     }
     emit_status(app, &pipeline.status);
     if let Some(overlay) = app.get_webview_window("overlay") {
@@ -243,6 +311,7 @@ fn stop_recording(app: AppHandle) -> Result<EngineStatus, String> {
 fn cancel_recording(app: AppHandle) -> Result<EngineStatus, String> {
     let state = app.state::<AppState>();
     let _ = state.audio.stop();
+    state.insertion_target.cancel();
     let _ = state.system_audio.restore();
     let mut pipeline = state
         .pipeline
@@ -295,6 +364,7 @@ fn handle_hotkey_event(app: &AppHandle, event: HotkeyEvent) {
 #[tauri::command]
 fn reset(app: AppHandle) -> Result<EngineStatus, String> {
     let state = app.state::<AppState>();
+    state.insertion_target.cancel();
     let _ = state.system_audio.restore();
     let mut pipeline = state
         .pipeline
@@ -318,17 +388,74 @@ fn save_settings(
     // Shortcut changes are transactional through set_hotkey so a settings
     // write can never persist a shortcut that Windows rejected.
     let previous = state.settings.snapshot()?;
+    let gpu_memory_management_changed =
+        settings.gpu_memory_management != previous.gpu_memory_management;
     settings.hotkey = previous.hotkey;
+    settings.microphone_id = previous.microphone_id;
+    settings.microphone_name = previous.microphone_name;
     if settings.launch_at_startup != previous.launch_at_startup {
         startup::set_enabled(settings.launch_at_startup)?;
     }
     match state.settings.replace(settings) {
-        Ok(preferences) => Ok(preferences),
+        Ok(preferences) => {
+            if gpu_memory_management_changed {
+                if let Ok(engine) = state.engine.lock() {
+                    if let Some(engine) = engine.as_ref() {
+                        engine
+                            .set_gpu_memory_management(preferences.settings.gpu_memory_management);
+                    }
+                }
+            }
+            Ok(preferences)
+        }
         Err(error) => {
             let _ = startup::set_enabled(previous.launch_at_startup);
             Err(error)
         }
     }
+}
+
+#[tauri::command]
+fn get_microphones(state: tauri::State<'_, AppState>) -> Result<MicrophoneStatus, String> {
+    state.audio.status()
+}
+
+#[tauri::command]
+fn set_microphone(
+    state: tauri::State<'_, AppState>,
+    device_id: Option<String>,
+) -> Result<MicrophoneStatus, String> {
+    let previous = state.settings.snapshot()?;
+    let status = state.audio.select(device_id.clone())?;
+    let mut next = previous.clone();
+    next.microphone_id = device_id;
+    next.microphone_name = Some(status.active_name.clone());
+    if let Err(error) = state.settings.replace(next) {
+        let _ = state.audio.select(previous.microphone_id);
+        return Err(error);
+    }
+    Ok(status)
+}
+
+#[tauri::command]
+fn compact_overlay(app: AppHandle) -> Result<(), String> {
+    let overlay = app
+        .get_webview_window("overlay")
+        .ok_or_else(|| "Dictation overlay is unavailable".to_string())?;
+    position_overlay(&overlay, None);
+    Ok(())
+}
+
+#[tauri::command]
+fn resize_microphone_overlay(app: AppHandle, width: f64) -> Result<(), String> {
+    if !width.is_finite() || width <= 0.0 {
+        return Err("Invalid microphone label width".to_string());
+    }
+    let overlay = app
+        .get_webview_window("overlay")
+        .ok_or_else(|| "Dictation overlay is unavailable".to_string())?;
+    position_overlay(&overlay, Some(width));
+    Ok(())
 }
 
 #[tauri::command]
@@ -563,7 +690,14 @@ pub fn run() {
                 .expect("shortcut lock poisoned")
                 .clone();
             let resource_dir = app.path().resource_dir().ok();
-            let engine = EngineController::new(app.handle().clone(), resource_dir);
+            let gpu_memory_management = app
+                .state::<AppState>()
+                .settings
+                .snapshot()
+                .map(|settings| settings.gpu_memory_management)
+                .unwrap_or(true);
+            let engine =
+                EngineController::new(app.handle().clone(), resource_dir, gpu_memory_management);
             *app.state::<AppState>()
                 .engine
                 .lock()
@@ -610,6 +744,10 @@ pub fn run() {
             reset,
             get_preferences,
             save_settings,
+            get_microphones,
+            set_microphone,
+            compact_overlay,
+            resize_microphone_overlay,
             get_hotkey_status,
             set_hotkey,
             save_api_key,

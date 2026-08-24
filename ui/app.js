@@ -6,6 +6,7 @@ const hotkeyDialog = document.querySelector('#hotkey-dialog');
 const hotkeyCapture = document.querySelector('#hotkey-capture');
 let preferences = null;
 let hotkeyStatus = null;
+let microphoneStatus = null;
 let history = [];
 let engineStatus = null;
 let pendingShortcut = '';
@@ -101,14 +102,33 @@ function renderHotkey(next) {
   if (next.error) showToast(next.error, true);
 }
 
+function renderMicrophones() {
+  if (!microphoneStatus) return;
+  const select = document.querySelector('#microphone');
+  const defaultDevice = microphoneStatus.devices.find(device => device.isDefault);
+  const systemDefault = defaultDevice ? `System default — ${defaultDevice.name}` : 'System default';
+  const options = [{ id: '', name: systemDefault }, ...microphoneStatus.devices.map(device => ({ id: device.id, name: device.name }))];
+  if (microphoneStatus.selectedId && !options.some(option => option.id === microphoneStatus.selectedId)) {
+    options.push({ id: microphoneStatus.selectedId, name: `${preferences.settings.microphoneName || 'Saved microphone'} — unavailable` });
+  }
+  select.innerHTML = options.map(option => `<option value="${escapeAttr(option.id)}">${escapeHtml(option.name)}</option>`).join('');
+  select.value = microphoneStatus.selectedId || '';
+  document.querySelector('#microphone-status').textContent = microphoneStatus.fallback
+    ? `Saved microphone unavailable — using ${microphoneStatus.activeName}`
+    : `Using ${microphoneStatus.activeName}`;
+}
+
 function renderPreferences() {
   document.querySelector('#cleanup-enabled').checked = preferences.settings.cleanupEnabled;
   document.querySelector('#auto-insert').checked = preferences.settings.autoInsert;
   document.querySelector('#duck-audio').checked = preferences.settings.duckAudio;
   document.querySelector('#launch-at-startup').checked = preferences.settings.launchAtStartup;
+  document.querySelector('#gpu-memory-management').checked = preferences.settings.gpuMemoryManagement;
+  document.querySelector('#dictation-sounds').checked = preferences.settings.dictationSounds;
   document.querySelector('#language').value = preferences.settings.language;
   document.querySelectorAll('[data-activation]').forEach(button => button.classList.toggle('active', button.dataset.activation === preferences.settings.activationMode));
   document.querySelector('#api-status').textContent = preferences.apiKeyConfigured ? 'Stored securely in Windows Credential Manager' : 'Not configured — local cleanup will be used';
+  renderMicrophones();
   renderDictionary();
 }
 
@@ -119,6 +139,8 @@ async function persistSettings() {
     autoInsert: document.querySelector('#auto-insert').checked,
     duckAudio: document.querySelector('#duck-audio').checked,
     launchAtStartup: document.querySelector('#launch-at-startup').checked,
+    gpuMemoryManagement: document.querySelector('#gpu-memory-management').checked,
+    dictationSounds: document.querySelector('#dictation-sounds').checked,
     language: document.querySelector('#language').value
   };
   preferences = await call('save_settings', { settings });
@@ -180,11 +202,26 @@ document.querySelector('#dictionary-list').addEventListener('click', async event
   preferences.settings = await call('remove_dictionary_term', { term });
   renderDictionary();
 });
-document.querySelectorAll('#cleanup-enabled,#auto-insert,#duck-audio,#launch-at-startup,#language').forEach(input => input.addEventListener('change', persistSettings));
+document.querySelectorAll('#cleanup-enabled,#auto-insert,#duck-audio,#dictation-sounds,#launch-at-startup,#gpu-memory-management,#language').forEach(input => input.addEventListener('change', persistSettings));
 document.querySelectorAll('[data-activation]').forEach(button => button.addEventListener('click', async () => {
   preferences.settings.activationMode = button.dataset.activation;
   await persistSettings();
 }));
+document.querySelector('#microphone').addEventListener('change', async event => {
+  const previousId = microphoneStatus?.selectedId || '';
+  event.target.disabled = true;
+  try {
+    microphoneStatus = await call('set_microphone', { deviceId: event.target.value || null });
+    preferences.settings.microphoneId = microphoneStatus.selectedId;
+    preferences.settings.microphoneName = microphoneStatus.activeName;
+    renderMicrophones();
+    showToast(`Microphone changed to ${microphoneStatus.activeName}`);
+  } catch (_) {
+    event.target.value = previousId;
+  } finally {
+    event.target.disabled = false;
+  }
+});
 document.querySelector('#save-key').addEventListener('click', async () => {
   const input = document.querySelector('#api-key');
   if (!input.value.trim()) { showToast('Enter a DeepSeek API key first', true); return; }
@@ -254,9 +291,11 @@ Promise.all([
   call('get_model_status'),
   call('get_preferences'),
   call('get_history'),
-  call('get_hotkey_status')
-]).then(([engine, model, prefs, items, shortcut]) => {
+  call('get_hotkey_status'),
+  call('get_microphones')
+]).then(([engine, model, prefs, items, shortcut, microphones]) => {
   preferences = prefs;
+  microphoneStatus = microphones;
   history = items;
   renderStatus(engine);
   renderModel(model);

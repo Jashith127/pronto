@@ -1,5 +1,6 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, SampleFormat, Stream, StreamConfig, SupportedStreamConfig};
+use serde::Serialize;
 use std::sync::{mpsc, Arc, Mutex};
 use windows::core::PSTR;
 use windows::Win32::Media::Audio::{
@@ -14,12 +15,38 @@ pub struct Recording {
     pub channels: u16,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MicrophoneDevice {
+    pub id: String,
+    pub name: String,
+    pub is_default: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MicrophoneStatus {
+    pub devices: Vec<MicrophoneDevice>,
+    pub selected_id: Option<String>,
+    pub active_id: String,
+    pub active_name: String,
+    pub fallback: bool,
+}
+
+#[derive(Clone, Debug)]
+struct ActiveMicrophone {
+    id: String,
+    name: String,
+    fallback: bool,
+}
+
 struct AudioCapture {
     samples: Arc<Mutex<Vec<f32>>>,
     stream: Option<Stream>,
     wave_in: Option<WaveInCapture>,
     sample_rate: u32,
     channels: u16,
+    active: Option<ActiveMicrophone>,
 }
 
 impl Default for AudioCapture {
@@ -30,18 +57,38 @@ impl Default for AudioCapture {
             wave_in: None,
             sample_rate: 0,
             channels: 0,
+            active: None,
         }
     }
 }
 
 impl AudioCapture {
-    pub fn prepare(&mut self) -> Result<(), String> {
+    pub fn prepare(&mut self, selected_id: Option<&str>) -> Result<ActiveMicrophone, String> {
         if self.stream.is_some() || self.wave_in.is_some() {
-            return Ok(());
+            return self
+                .active
+                .clone()
+                .ok_or_else(|| "Prepared microphone is unavailable".to_string());
         }
-        let device = cpal::default_host()
+        let host = cpal::default_host();
+        let default_device = host
             .default_input_device()
             .ok_or_else(|| "No input device found".to_string())?;
+        let default_id = device_id(&default_device)?;
+        let (device, fallback) = match selected_id {
+            Some(selected) => {
+                let selected_device = host
+                    .input_devices()
+                    .map_err(|error| format!("Could not enumerate microphones: {error}"))?
+                    .find(|device| device_id(device).is_ok_and(|id| id == selected));
+                match selected_device {
+                    Some(device) => (device, false),
+                    None => (default_device, true),
+                }
+            }
+            None => (default_device, false),
+        };
+        let active_id = device_id(&device)?;
         let device_name = device
             .description()
             .map(|description| description.name().to_owned())
@@ -75,10 +122,23 @@ impl AudioCapture {
                     self.sample_rate = supported.sample_rate();
                     self.channels = supported.channels();
                     self.stream = Some(stream);
-                    return Ok(());
+                    let active = ActiveMicrophone {
+                        id: active_id,
+                        name: device_name,
+                        fallback,
+                    };
+                    self.active = Some(active.clone());
+                    return Ok(active);
                 }
                 Err(error) => failures.push(format!("{description}: {error}")),
             }
+        }
+
+        if active_id != default_id {
+            return Err(format!(
+                "Could not open {device_name}. Tried: {}",
+                failures.join("; ")
+            ));
         }
 
         match WaveInCapture::prepare() {
@@ -86,7 +146,13 @@ impl AudioCapture {
                 self.sample_rate = capture.sample_rate;
                 self.channels = capture.channels;
                 self.wave_in = Some(capture);
-                Ok(())
+                let active = ActiveMicrophone {
+                    id: active_id,
+                    name: device_name,
+                    fallback,
+                };
+                self.active = Some(active.clone());
+                Ok(active)
             }
             Err(wave_error) => Err(format!(
                 "Could not open {device_name}. WASAPI tried: {}. WinMM fallback: {wave_error}",
@@ -95,21 +161,25 @@ impl AudioCapture {
         }
     }
 
-    pub fn start(&mut self) -> Result<(), String> {
-        self.prepare()?;
+    pub fn start(&mut self) -> Result<ActiveMicrophone, String> {
+        let active = self
+            .active
+            .clone()
+            .ok_or_else(|| "Microphone is not prepared".to_string())?;
         self.samples
             .lock()
             .map_err(|_| "audio buffer poisoned")?
             .clear();
         if let Some(capture) = self.wave_in.as_mut() {
-            return capture.start();
+            capture.start()?;
+            return Ok(active);
         }
         if let Some(stream) = self.stream.as_ref() {
             stream
                 .play()
                 .map_err(|error| format!("Could not resume the prewarmed microphone: {error}"))?;
         }
-        Ok(())
+        Ok(active)
     }
 
     pub fn stop(&mut self) -> Result<Recording, String> {
@@ -294,8 +364,13 @@ fn build_input_stream(
 }
 
 enum AudioCommand {
-    Start(mpsc::Sender<Result<(), String>>),
+    Start(mpsc::Sender<Result<ActiveMicrophone, String>>),
     Stop(mpsc::Sender<Result<Recording, String>>),
+    Status(mpsc::Sender<Result<MicrophoneStatus, String>>),
+    Select(
+        Option<String>,
+        mpsc::Sender<Result<MicrophoneStatus, String>>,
+    ),
 }
 
 /// Owns CPAL on one dedicated thread. CPAL streams are deliberately not `Send`,
@@ -306,7 +381,7 @@ pub struct AudioController {
 }
 
 impl AudioController {
-    pub fn new() -> Self {
+    pub fn new(selected_id: Option<String>) -> Self {
         let (commands, receiver) = mpsc::channel();
         std::thread::Builder::new()
             .name("pronto-audio".into())
@@ -315,19 +390,68 @@ impl AudioController {
                 // Device enumeration, format negotiation, allocation, and stream
                 // creation happen at app startup. Hotkey activation only clears
                 // the buffer and resumes this already-open capture path.
-                let prepare_error = capture.prepare().err();
+                let mut selected_id = selected_id;
+                let mut prepared = capture.prepare(selected_id.as_deref());
+                let mut recording = false;
                 while let Ok(command) = receiver.recv() {
                     match command {
                         AudioCommand::Start(reply) => {
-                            let result = if let Some(error) = prepare_error.as_ref() {
-                                Err(error.clone())
-                            } else {
-                                capture.start()
+                            let result = match prepared.as_ref() {
+                                Ok(_) => capture.start(),
+                                Err(error) => Err(error.clone()),
                             };
+                            if result.is_ok() {
+                                recording = true;
+                            }
                             let _ = reply.send(result);
                         }
                         AudioCommand::Stop(reply) => {
-                            let _ = reply.send(capture.stop());
+                            let result = capture.stop();
+                            recording = false;
+                            let _ = reply.send(result);
+                        }
+                        AudioCommand::Status(reply) => {
+                            let active = prepared.as_ref().ok();
+                            let _ = reply.send(microphone_status(selected_id.clone(), active));
+                        }
+                        AudioCommand::Select(next_id, reply) => {
+                            if recording {
+                                let _ =
+                                    reply
+                                        .send(Err("Finish dictation before changing microphones"
+                                            .to_string()));
+                                continue;
+                            }
+                            let previous_id = selected_id.clone();
+                            // Some Windows microphone drivers only allow one open
+                            // capture handle. Release the prewarmed stream before
+                            // opening the replacement, then restore it on failure.
+                            capture = AudioCapture::default();
+                            let mut next_capture = AudioCapture::default();
+                            let result = match next_capture.prepare(next_id.as_deref()) {
+                                Ok(active) => {
+                                    capture = next_capture;
+                                    selected_id = next_id;
+                                    prepared = Ok(active.clone());
+                                    microphone_status(selected_id.clone(), Some(&active))
+                                }
+                                Err(error) => {
+                                    let mut restored = AudioCapture::default();
+                                    match restored.prepare(previous_id.as_deref()) {
+                                        Ok(active) => {
+                                            capture = restored;
+                                            prepared = Ok(active);
+                                        }
+                                        Err(restore_error) => {
+                                            prepared = Err(format!(
+                                                "{error}; previous microphone could not be restored: {restore_error}"
+                                            ));
+                                        }
+                                    }
+                                    Err(error)
+                                }
+                            };
+                            let _ = reply.send(result);
                         }
                     }
                 }
@@ -336,7 +460,7 @@ impl AudioController {
         Self { commands }
     }
 
-    pub fn start(&self) -> Result<(), String> {
+    pub fn start(&self) -> Result<String, String> {
         let (reply, response) = mpsc::channel();
         self.commands
             .send(AudioCommand::Start(reply))
@@ -344,6 +468,7 @@ impl AudioController {
         response
             .recv()
             .map_err(|_| "audio thread stopped".to_string())?
+            .map(|active| active.name)
     }
 
     pub fn stop(&self) -> Result<Recording, String> {
@@ -355,6 +480,75 @@ impl AudioController {
             .recv()
             .map_err(|_| "audio thread stopped".to_string())?
     }
+
+    pub fn status(&self) -> Result<MicrophoneStatus, String> {
+        let (reply, response) = mpsc::channel();
+        self.commands
+            .send(AudioCommand::Status(reply))
+            .map_err(|_| "audio thread stopped".to_string())?;
+        response
+            .recv()
+            .map_err(|_| "audio thread stopped".to_string())?
+    }
+
+    pub fn select(&self, device_id: Option<String>) -> Result<MicrophoneStatus, String> {
+        let (reply, response) = mpsc::channel();
+        self.commands
+            .send(AudioCommand::Select(device_id, reply))
+            .map_err(|_| "audio thread stopped".to_string())?;
+        response
+            .recv()
+            .map_err(|_| "audio thread stopped".to_string())?
+    }
+}
+
+fn device_id(device: &Device) -> Result<String, String> {
+    device
+        .id()
+        .map(|id| id.to_string())
+        .map_err(|error| format!("Could not identify microphone: {error}"))
+}
+
+fn microphone_status(
+    selected_id: Option<String>,
+    active: Option<&ActiveMicrophone>,
+) -> Result<MicrophoneStatus, String> {
+    let host = cpal::default_host();
+    let default_id = host
+        .default_input_device()
+        .and_then(|device| device.id().ok())
+        .map(|id| id.to_string());
+    let mut devices = host
+        .input_devices()
+        .map_err(|error| format!("Could not enumerate microphones: {error}"))?
+        .filter_map(|device| {
+            let id = device.id().ok()?.to_string();
+            let name = device.description().ok()?.name().to_owned();
+            Some(MicrophoneDevice {
+                is_default: default_id.as_deref() == Some(id.as_str()),
+                id,
+                name,
+            })
+        })
+        .collect::<Vec<_>>();
+    devices.sort_by(|left, right| {
+        right
+            .is_default
+            .cmp(&left.is_default)
+            .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+    });
+    devices.dedup_by(|left, right| left.id == right.id);
+    let active_id = active.map(|device| device.id.clone()).unwrap_or_default();
+    let active_name = active
+        .map(|device| device.name.clone())
+        .unwrap_or_else(|| "No microphone available".to_string());
+    Ok(MicrophoneStatus {
+        devices,
+        selected_id,
+        active_id,
+        active_name,
+        fallback: active.is_some_and(|device| device.fallback),
+    })
 }
 
 fn append_f32(buffer: &Mutex<Vec<f32>>, data: &[f32]) {
@@ -388,7 +582,7 @@ mod tests {
     #[test]
     #[ignore = "requires a Windows microphone"]
     fn captures_from_default_microphone() {
-        let audio = AudioController::new();
+        let audio = AudioController::new(None);
         audio.start().expect("default microphone should start");
         std::thread::sleep(Duration::from_millis(750));
         let recording = audio.stop().expect("microphone should stop cleanly");
@@ -406,7 +600,7 @@ mod tests {
     #[ignore = "requires a Windows microphone"]
     fn repeated_activation_uses_prewarmed_microphone() {
         use std::time::Instant;
-        let audio = AudioController::new();
+        let audio = AudioController::new(None);
         audio.start().expect("prewarmed microphone should start");
         std::thread::sleep(Duration::from_millis(100));
         let _ = audio.stop().unwrap();
@@ -418,5 +612,19 @@ mod tests {
         let recording = audio.stop().unwrap();
         assert!(resume_ms < 75, "prewarmed resume took {resume_ms} ms");
         assert!(!recording.samples.is_empty());
+    }
+
+    #[test]
+    #[ignore = "requires a Windows microphone"]
+    fn enumerates_and_selects_microphone() {
+        let audio = AudioController::new(None);
+        let status = audio.status().expect("microphones should enumerate");
+        assert!(!status.devices.is_empty());
+        let selected = status.devices[0].clone();
+        let changed = audio
+            .select(Some(selected.id.clone()))
+            .expect("microphone should prewarm");
+        assert_eq!(changed.selected_id.as_deref(), Some(selected.id.as_str()));
+        assert_eq!(changed.active_id, selected.id);
     }
 }

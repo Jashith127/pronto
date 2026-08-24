@@ -107,7 +107,8 @@ nav { display: flex; flex-direction: column; gap: 4px; margin-top: 34px; }
 .setting-row:last-child { border-bottom: 0; }
 .setting-row strong { display: block; color: #30322d; font-size: 11px; font-weight: 620; }
 .setting-row p { margin: 4px 0 0; color: #83847e; font-size: 9px; line-height: 1.45; }
-.setting-row select { min-width: 140px; height: 36px; padding: 0 11px; border: 1px solid #d6d3ca; border-radius: 8px; outline: 0; background: #fff; font-size: 10px; }
+.setting-row select { min-width: 140px; max-width: 46%; height: 36px; padding: 0 11px; overflow: hidden; border: 1px solid #d6d3ca; border-radius: 8px; outline: 0; background: #fff; font-size: 10px; text-overflow: ellipsis; }
+#microphone { width: 260px; }
 .setting-control { display: flex; align-items: center; gap: 13px; }
 .segmented { display: flex; padding: 3px; border: 1px solid #d6d3ca; border-radius: 9px; background: #efede7; }
 .segmented button { min-width: 62px; height: 29px; border: 0; border-radius: 6px; color: #74756f; background: transparent; font-size: 10px; }

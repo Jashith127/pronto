@@ -20,6 +20,10 @@ pub struct UserSettings {
     pub duck_audio: bool,
     pub activation_mode: ActivationMode,
     pub launch_at_startup: bool,
+    pub microphone_id: Option<String>,
+    pub microphone_name: Option<String>,
+    pub gpu_memory_management: bool,
+    pub dictation_sounds: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -41,6 +45,10 @@ impl Default for UserSettings {
             duck_audio: false,
             activation_mode: ActivationMode::Hold,
             launch_at_startup: false,
+            microphone_id: None,
+            microphone_name: None,
+            gpu_memory_management: true,
+            dictation_sounds: true,
         }
     }
 }
@@ -293,5 +301,15 @@ mod tests {
             "".into(),
         ]);
         assert_eq!(values, vec!["deepSeek", "Pronto"]);
+    }
+
+    #[test]
+    fn older_settings_without_microphone_are_compatible() {
+        let settings: UserSettings = serde_json::from_str(r#"{"language":"en"}"#).unwrap();
+        assert_eq!(settings.language, "en");
+        assert!(settings.microphone_id.is_none());
+        assert!(settings.microphone_name.is_none());
+        assert!(settings.gpu_memory_management);
+        assert!(settings.dictation_sounds);
     }
 }
