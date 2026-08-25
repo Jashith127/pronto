@@ -1,10 +1,17 @@
 use std::mem::size_of;
 use std::sync::{mpsc, Mutex, OnceLock};
-use windows::Win32::Foundation::{GlobalFree, HANDLE, HWND, LPARAM, LRESULT, WPARAM};
-use windows::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Graphics::Gdi::{
+    DeleteEnhMetaFile, DeleteMetaFile, DeleteObject, HENHMETAFILE, HGDIOBJ,
 };
-use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+use windows::Win32::System::DataExchange::{
+    CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData,
+    GetClipboardSequenceNumber, OpenClipboard, SetClipboardData, METAFILEPICT,
+};
+use windows::Win32::System::Memory::{
+    GlobalAlloc, GlobalLock, GlobalUnlock, GLOBAL_ALLOC_FLAGS, GMEM_MOVEABLE,
+};
+use windows::Win32::System::Ole::{OleDuplicateData, CLIPBOARD_FORMAT};
 use windows::Win32::System::Threading::{
     AttachThreadInput, GetCurrentProcessId, GetCurrentThreadId,
 };
@@ -167,13 +174,28 @@ pub fn insert_text(target: isize, text: &str) -> Result<(), String> {
 /// Copies a transcript and, when Windows permits foreground activation, pastes
 /// it into the remembered target. `false` means the clipboard fallback worked.
 pub fn copy_and_paste(target: isize, text: &str) -> Result<bool, String> {
+    let mut snapshot = ClipboardSnapshot::capture();
     copy_to_clipboard(text)?;
+    let transcript_sequence = unsafe { GetClipboardSequenceNumber() };
+    let pasted = paste_current_clipboard(target);
+
+    // Give the receiving application time to consume Ctrl+V before restoring
+    // the clipboard. Never overwrite clipboard content copied by the user (or
+    // another application) while the paste was in flight.
+    if pasted {
+        std::thread::sleep(std::time::Duration::from_millis(180));
+        snapshot.restore_if_unchanged(transcript_sequence);
+    }
+    Ok(pasted)
+}
+
+fn paste_current_clipboard(target: isize) -> bool {
     if target == 0 {
-        return Ok(false);
+        return false;
     }
     let target = HWND(target as *mut _);
     if !activate_target(target) {
-        return Ok(paste_to_native_focused_control(target));
+        return paste_to_native_focused_control(target);
     }
 
     // A hold shortcut becomes inactive as soon as its first key is released,
@@ -181,7 +203,7 @@ pub fn copy_and_paste(target: isize, text: &str) -> Result<bool, String> {
     // that small window creates a different Windows chord and explains the
     // intermittent no-paste behavior. Wait for the user's modifiers to clear.
     if !wait_for_modifiers_released() {
-        return Ok(false);
+        return false;
     }
     std::thread::sleep(std::time::Duration::from_millis(18));
     let v = VIRTUAL_KEY(b'V' as u16);
@@ -193,9 +215,131 @@ pub fn copy_and_paste(target: isize, text: &str) -> Result<bool, String> {
     ];
     let sent = unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) } as usize;
     if sent == inputs.len() {
-        Ok(true)
+        true
     } else {
-        Ok(paste_to_native_focused_control(target))
+        paste_to_native_focused_control(target)
+    }
+}
+
+struct ClipboardEntry {
+    format: u32,
+    handle: HANDLE,
+}
+
+/// Materializes independent copies of every clipboard format before Pronto
+/// replaces them. Holding the original IDataObject is insufficient because a
+/// Win32 clipboard owner may invalidate it as soon as EmptyClipboard is called.
+struct ClipboardSnapshot {
+    entries: Vec<ClipboardEntry>,
+    captured: bool,
+}
+
+impl ClipboardSnapshot {
+    fn capture() -> Self {
+        if !open_clipboard_with_retry() {
+            return Self {
+                entries: Vec::new(),
+                captured: false,
+            };
+        }
+
+        let mut entries = Vec::new();
+        let mut format = 0;
+        loop {
+            format = unsafe { EnumClipboardFormats(format) };
+            if format == 0 {
+                break;
+            }
+            let Ok(source) = (unsafe { GetClipboardData(format) }) else {
+                continue;
+            };
+            let duplicate = unsafe {
+                OleDuplicateData(
+                    source,
+                    CLIPBOARD_FORMAT(format as u16),
+                    GLOBAL_ALLOC_FLAGS(0),
+                )
+            };
+            if !duplicate.0.is_null() {
+                entries.push(ClipboardEntry {
+                    format,
+                    handle: duplicate,
+                });
+            }
+        }
+        let _ = unsafe { CloseClipboard() };
+        Self {
+            entries,
+            captured: true,
+        }
+    }
+
+    fn restore_if_unchanged(&mut self, transcript_sequence: u32) {
+        if !clipboard_sequence_is_unchanged(transcript_sequence, unsafe {
+            GetClipboardSequenceNumber()
+        }) || !self.captured
+            || !open_clipboard_with_retry()
+        {
+            return;
+        }
+
+        if unsafe { EmptyClipboard() }.is_ok() {
+            for entry in &mut self.entries {
+                if unsafe { SetClipboardData(entry.format, Some(entry.handle)) }.is_ok() {
+                    // SetClipboardData transfers ownership to Windows.
+                    entry.handle = HANDLE::default();
+                }
+            }
+        }
+        let _ = unsafe { CloseClipboard() };
+    }
+}
+
+fn clipboard_sequence_is_unchanged(transcript_sequence: u32, current_sequence: u32) -> bool {
+    transcript_sequence != 0 && transcript_sequence == current_sequence
+}
+
+impl Drop for ClipboardSnapshot {
+    fn drop(&mut self) {
+        for entry in &mut self.entries {
+            if !entry.handle.0.is_null() {
+                unsafe { release_clipboard_handle(entry.format, entry.handle) };
+                entry.handle = HANDLE::default();
+            }
+        }
+    }
+}
+
+fn open_clipboard_with_retry() -> bool {
+    for _ in 0..8 {
+        if unsafe { OpenClipboard(None) }.is_ok() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(15));
+    }
+    false
+}
+
+unsafe fn release_clipboard_handle(format: u32, handle: HANDLE) {
+    match format {
+        2 | 9 => {
+            let _ = unsafe { DeleteObject(HGDIOBJ(handle.0)) };
+        }
+        3 => {
+            let global = HGLOBAL(handle.0);
+            let pointer = unsafe { GlobalLock(global) } as *const METAFILEPICT;
+            if !pointer.is_null() {
+                let _ = unsafe { DeleteMetaFile((*pointer).hMF) };
+                let _ = unsafe { GlobalUnlock(global) };
+            }
+            let _ = unsafe { GlobalFree(Some(global)) };
+        }
+        14 => {
+            let _ = unsafe { DeleteEnhMetaFile(Some(HENHMETAFILE(handle.0))) };
+        }
+        _ => {
+            let _ = unsafe { GlobalFree(Some(HGLOBAL(handle.0))) };
+        }
     }
 }
 
@@ -359,6 +503,8 @@ mod tests {
     };
     use std::time::Duration;
     use windows::core::w;
+    use windows::Win32::Foundation::HGLOBAL;
+    use windows::Win32::System::DataExchange::GetClipboardData;
     use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
     use windows::Win32::UI::Input::KeyboardAndMouse::{SetActiveWindow, SetFocus};
     use windows::Win32::UI::WindowsAndMessaging::{
@@ -367,11 +513,37 @@ mod tests {
         PM_REMOVE, SW_SHOW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
     };
 
+    #[test]
+    fn clipboard_sequence_guard_only_accepts_pronto_sequence() {
+        assert!(clipboard_sequence_is_unchanged(42, 42));
+        assert!(!clipboard_sequence_is_unchanged(42, 43));
+        assert!(!clipboard_sequence_is_unchanged(0, 0));
+    }
+
+    fn clipboard_text() -> String {
+        unsafe {
+            OpenClipboard(None).expect("clipboard should open");
+            let handle = GetClipboardData(13).expect("Unicode clipboard data should exist");
+            let pointer = GlobalLock(HGLOBAL(handle.0)) as *const u16;
+            assert!(!pointer.is_null(), "clipboard data should lock");
+            let mut length = 0;
+            while *pointer.add(length) != 0 {
+                length += 1;
+            }
+            let text = String::from_utf16_lossy(std::slice::from_raw_parts(pointer, length));
+            let _ = GlobalUnlock(HGLOBAL(handle.0));
+            let _ = CloseClipboard();
+            text
+        }
+    }
+
     /// End-to-end verification against a native editable Windows control. Kept
     /// ignored for ordinary CI because it requires an interactive desktop.
     #[test]
     #[ignore = "requires an interactive Windows desktop"]
     fn inserts_unicode_into_foreground_edit_control() {
+        let original_clipboard = "Clipboard before Pronto";
+        copy_to_clipboard(original_clipboard).expect("test clipboard should be seeded");
         let (ready, window_rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
         let gui_stop = Arc::clone(&stop);
@@ -444,5 +616,6 @@ mod tests {
         stop.store(true, Ordering::Release);
         gui.join().expect("GUI thread should close cleanly");
         assert_eq!(String::from_utf16_lossy(&text[..copied]), expected);
+        assert_eq!(clipboard_text(), original_clipboard);
     }
 }
