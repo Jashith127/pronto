@@ -128,6 +128,11 @@ function renderPreferences() {
   document.querySelector('#language').value = preferences.settings.language;
   document.querySelectorAll('[data-activation]').forEach(button => button.classList.toggle('active', button.dataset.activation === preferences.settings.activationMode));
   document.querySelector('#api-status').textContent = preferences.apiKeyConfigured ? 'Stored securely in Windows Credential Manager' : 'Not configured — local cleanup will be used';
+  const promptInput = document.querySelector('#cleanup-prompt');
+  const effectivePrompt = preferences.settings.cleanupPrompt || preferences.defaultCleanupPrompt;
+  if (document.activeElement !== promptInput) promptInput.value = effectivePrompt;
+  document.querySelector('#cleanup-prompt-status').textContent = preferences.settings.cleanupPrompt ? 'Custom prompt' : 'Built-in prompt';
+  document.querySelector('#cleanup-prompt-count').textContent = `${promptInput.value.length.toLocaleString()} / 16,000`;
   renderMicrophones();
   renderDictionary();
 }
@@ -229,6 +234,26 @@ document.querySelector('#save-key').addEventListener('click', async () => {
   input.value = '';
   renderPreferences();
   showToast('DeepSeek key saved securely');
+});
+document.querySelector('#cleanup-prompt').addEventListener('input', event => {
+  document.querySelector('#cleanup-prompt-status').textContent = 'Unsaved changes';
+  document.querySelector('#cleanup-prompt-count').textContent = `${event.target.value.length.toLocaleString()} / 16,000`;
+});
+document.querySelector('#save-cleanup-prompt').addEventListener('click', async () => {
+  const input = document.querySelector('#cleanup-prompt');
+  const prompt = input.value.trim();
+  if (!prompt) { showToast('The cleanup prompt cannot be empty', true); return; }
+  preferences.settings.cleanupPrompt = prompt === preferences.defaultCleanupPrompt ? null : prompt;
+  preferences = await call('save_settings', { settings: preferences.settings });
+  renderPreferences();
+  showToast('Cleanup prompt saved');
+});
+document.querySelector('#reset-cleanup-prompt').addEventListener('click', async () => {
+  preferences.settings.cleanupPrompt = null;
+  preferences = await call('save_settings', { settings: preferences.settings });
+  document.querySelector('#cleanup-prompt').blur();
+  renderPreferences();
+  showToast('Default cleanup prompt restored');
 });
 document.querySelector('#clear-history').addEventListener('click', async () => {
   if (!confirm('Clear all locally stored transcripts?')) return;

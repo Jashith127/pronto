@@ -134,6 +134,14 @@
                   <div><strong>DeepSeek API key</strong><p id="api-status">Not configured</p></div>
                   <div class="api-form"><input type="password" id="api-key" placeholder="Enter API key" autocomplete="off" /><button id="save-key">Save</button></div>
                 </div>
+                <div class="setting-row prompt-row">
+                  <div class="prompt-heading">
+                    <div><strong>Cleanup system prompt</strong><p>Edit the instructions Pronto sends with every cleanup request.</p></div>
+                    <div class="prompt-actions"><button type="button" class="change-button" id="reset-cleanup-prompt">Reset default</button><button type="button" id="save-cleanup-prompt">Save prompt</button></div>
+                  </div>
+                  <textarea id="cleanup-prompt" maxlength="16000" spellcheck="false" aria-label="Cleanup system prompt"></textarea>
+                  <div class="prompt-meta"><span id="cleanup-prompt-status">Built-in prompt</span><span id="cleanup-prompt-count"></span></div>
+                </div>
                 <div class="setting-row engine-row"><div><strong>Local speech engine</strong><p id="engine-message">Starting NVIDIA Parakeet…</p></div><span class="private-badge">Local</span></div>
               </div>
             </section>

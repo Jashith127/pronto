@@ -5,15 +5,19 @@ use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
 };
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
-use windows::Win32::System::Threading::{GetCurrentProcessId, GetCurrentThreadId};
+use windows::Win32::System::Threading::{
+    AttachThreadInput, GetCurrentProcessId, GetCurrentThreadId,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_CONTROL,
+    GetAsyncKeyState, SendInput, SetActiveWindow, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
+    KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, DispatchMessageW, GetAncestor, GetClassNameW, GetForegroundWindow, GetMessageW,
-    GetWindowThreadProcessId, PostThreadMessageW, SetForegroundWindow, SetWindowsHookExW,
-    TranslateMessage, UnhookWindowsHookEx, WindowFromPoint, GA_ROOT, MSG, MSLLHOOKSTRUCT,
-    WH_MOUSE_LL, WM_APP, WM_LBUTTONDOWN,
+    BringWindowToTop, CallNextHookEx, DispatchMessageW, GetAncestor, GetClassNameW,
+    GetForegroundWindow, GetGUIThreadInfo, GetMessageW, GetWindowThreadProcessId, IsWindow,
+    PostThreadMessageW, SendMessageTimeoutW, SetForegroundWindow, SetWindowsHookExW,
+    TranslateMessage, UnhookWindowsHookEx, WindowFromPoint, GA_ROOT, GUITHREADINFO, MSG,
+    MSLLHOOKSTRUCT, SMTO_ABORTIFHUNG, WH_MOUSE_LL, WM_APP, WM_LBUTTONDOWN, WM_PASTE,
 };
 
 const STOP_TARGET_HOOK: u32 = WM_APP + 0x565;
@@ -168,19 +172,18 @@ pub fn copy_and_paste(target: isize, text: &str) -> Result<bool, String> {
         return Ok(false);
     }
     let target = HWND(target as *mut _);
-    if unsafe { GetForegroundWindow() } != target {
-        let _ = unsafe { SetForegroundWindow(target) };
-        for _ in 0..5 {
-            if unsafe { GetForegroundWindow() } == target {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        if unsafe { GetForegroundWindow() } != target {
-            return Ok(false);
-        }
+    if !activate_target(target) {
+        return Ok(paste_to_native_focused_control(target));
     }
-    std::thread::sleep(std::time::Duration::from_millis(8));
+
+    // A hold shortcut becomes inactive as soon as its first key is released,
+    // while Ctrl/Alt/Win may still physically be down. Sending Ctrl+V during
+    // that small window creates a different Windows chord and explains the
+    // intermittent no-paste behavior. Wait for the user's modifiers to clear.
+    if !wait_for_modifiers_released() {
+        return Ok(false);
+    }
+    std::thread::sleep(std::time::Duration::from_millis(18));
     let v = VIRTUAL_KEY(b'V' as u16);
     let inputs = [
         key_input(VK_CONTROL, 0, Default::default()),
@@ -189,7 +192,102 @@ pub fn copy_and_paste(target: isize, text: &str) -> Result<bool, String> {
         key_input(VK_CONTROL, 0, KEYEVENTF_KEYUP),
     ];
     let sent = unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) } as usize;
-    Ok(sent == inputs.len())
+    if sent == inputs.len() {
+        Ok(true)
+    } else {
+        Ok(paste_to_native_focused_control(target))
+    }
+}
+
+fn paste_to_native_focused_control(target: HWND) -> bool {
+    let target_thread = unsafe { GetWindowThreadProcessId(target, None) };
+    if target_thread == 0 {
+        return false;
+    }
+    let mut info = GUITHREADINFO {
+        cbSize: size_of::<GUITHREADINFO>() as u32,
+        ..Default::default()
+    };
+    if unsafe { GetGUIThreadInfo(target_thread, &mut info) }.is_err() || info.hwndFocus.0.is_null()
+    {
+        return false;
+    }
+    let mut class_name = [0u16; 64];
+    let length = unsafe { GetClassNameW(info.hwndFocus, &mut class_name) } as usize;
+    let class_name = String::from_utf16_lossy(&class_name[..length]).to_ascii_lowercase();
+    if !(class_name == "edit" || class_name.starts_with("richedit") || class_name == "scintilla") {
+        return false;
+    }
+    unsafe {
+        let _ = SendMessageTimeoutW(
+            info.hwndFocus,
+            WM_PASTE,
+            WPARAM(0),
+            LPARAM(0),
+            SMTO_ABORTIFHUNG,
+            250,
+            None,
+        );
+    }
+    true
+}
+
+fn activate_target(target: HWND) -> bool {
+    if !unsafe { IsWindow(Some(target)) }.as_bool() {
+        return false;
+    }
+    if unsafe { GetForegroundWindow() } == target {
+        return true;
+    }
+
+    // SetForegroundWindow is intentionally restricted by Windows. Temporarily
+    // joining the relevant input queues lets us restore the application the
+    // user selected without clicking or typing into the wrong foreground app.
+    let current_thread = unsafe { GetCurrentThreadId() };
+    let foreground = unsafe { GetForegroundWindow() };
+    let foreground_thread = unsafe { GetWindowThreadProcessId(foreground, None) };
+    let target_thread = unsafe { GetWindowThreadProcessId(target, None) };
+    let attached_foreground = foreground_thread != 0
+        && foreground_thread != current_thread
+        && unsafe { AttachThreadInput(current_thread, foreground_thread, true) }.as_bool();
+    let attached_target = target_thread != 0
+        && target_thread != current_thread
+        && target_thread != foreground_thread
+        && unsafe { AttachThreadInput(current_thread, target_thread, true) }.as_bool();
+
+    unsafe {
+        let _ = BringWindowToTop(target);
+        let _ = SetActiveWindow(target);
+        let _ = SetForegroundWindow(target);
+    }
+
+    if attached_target {
+        let _ = unsafe { AttachThreadInput(current_thread, target_thread, false) };
+    }
+    if attached_foreground {
+        let _ = unsafe { AttachThreadInput(current_thread, foreground_thread, false) };
+    }
+
+    for _ in 0..20 {
+        if unsafe { GetForegroundWindow() } == target {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    false
+}
+
+fn wait_for_modifiers_released() -> bool {
+    for _ in 0..100 {
+        let down = [VK_CONTROL, VK_SHIFT, VK_MENU, VK_LWIN, VK_RWIN]
+            .into_iter()
+            .any(|key| unsafe { GetAsyncKeyState(key.0 as i32) } as u16 & 0x8000 != 0);
+        if !down {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    false
 }
 
 pub fn copy_to_clipboard(text: &str) -> Result<(), String> {

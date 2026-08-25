@@ -114,11 +114,6 @@ fn begin_recording(app: &AppHandle) -> Result<EngineStatus, String> {
         .lock()
         .map_err(|_| "target window lock poisoned")? = initial_target;
     state.insertion_target.begin(initial_target);
-    if settings.duck_audio {
-        if let Err(error) = state.system_audio.duck() {
-            let _ = app.emit("audio-warning", error);
-        }
-    }
     match state.audio.start() {
         Err(error) => {
             state.insertion_target.cancel();
@@ -127,7 +122,16 @@ fn begin_recording(app: &AppHandle) -> Result<EngineStatus, String> {
         }
         Ok(microphone_name) => {
             if settings.dictation_sounds {
-                state.sounds.start();
+                // Let the complete start cue play at the user's normal volume;
+                // ducking the endpoint first made it almost inaudible.
+                if let Err(error) = state.sounds.start_and_wait() {
+                    let _ = app.emit("audio-warning", error);
+                }
+            }
+            if settings.duck_audio {
+                if let Err(error) = state.system_audio.duck() {
+                    let _ = app.emit("audio-warning", error);
+                }
             }
             if let Ok(engine) = state.engine.lock() {
                 if let Some(engine) = engine.as_ref() {
@@ -202,9 +206,9 @@ fn finish_recording(app: &AppHandle) -> Result<EngineStatus, String> {
 
 fn position_overlay(window: &tauri::WebviewWindow, microphone_width: Option<f64>) {
     let logical_height = if microphone_width.is_some() {
-        54.0
+        60.0
     } else {
-        26.0
+        30.0
     };
     let monitor = window
         .current_monitor()
@@ -212,16 +216,16 @@ fn position_overlay(window: &tauri::WebviewWindow, microphone_width: Option<f64>
         .flatten()
         .or_else(|| window.primary_monitor().ok().flatten());
     let Some(monitor) = monitor else {
-        let logical_width = microphone_width.unwrap_or(96.0).max(96.0);
+        let logical_width = microphone_width.unwrap_or(100.0).max(100.0);
         let _ = window.set_size(LogicalSize::new(logical_width, logical_height));
         return;
     };
     let scale = window.scale_factor().unwrap_or(1.0);
     let max_logical_width = monitor.size().width as f64 / scale - 24.0;
     let logical_width = microphone_width
-        .unwrap_or(96.0)
-        .max(96.0)
-        .min(max_logical_width.max(96.0));
+        .unwrap_or(100.0)
+        .max(100.0)
+        .min(max_logical_width.max(100.0));
     let _ = window.set_size(LogicalSize::new(logical_width, logical_height));
     let width = (logical_width * scale).round() as u32;
     let height = (logical_height * scale).round() as u32;
