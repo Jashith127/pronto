@@ -1,67 +1,52 @@
 # Pronto
 
-Pronto is a Windows-first push-to-talk dictation app. It keeps NVIDIA Parakeet
-loaded on the local GPU, optionally cleans the transcript with DeepSeek, applies
-a personal dictionary, and types the result into the app you were using.
+Pronto is a Windows push-to-talk dictation application. It processes audio locally using an NVIDIA GPU and inserts text into the active application.
 
-## Core features
+## Core Features
 
-- Choose hold-to-talk or toggle activation (press once to start, again to finish)
-- Native Windows-key combinations, including modifier-only `Win+Ctrl`
-- Local NVIDIA Parakeet TDT 0.6B v3 transcription through NeMo-Speech.cpp/CUDA
-- Persistent model server for low latency (no model reload between dictations)
-- Local filler/repetition cleanup plus optional DeepSeek V4 Flash rewriting
-- Personal dictionary with deterministic correction before insertion
-- Unicode text insertion into the previously focused Windows application
-- Secure DeepSeek key storage in Windows Credential Manager
-- History, configurable auto-insert, tray operation, and a tiny cancel/waveform/finish pill
-- Tray-level **Paste Last Transcript** with automatic paste and clipboard fallback
-- Optional reversible system-audio ducking while the microphone is active
-- Optional launch-at-startup mode that starts silently in the system tray
-- Opaque, shadowless native window bounds with no transparent outer container
+* **Local Transcription:** Uses NVIDIA Parakeet TDT 0.6B v3 via CUDA. The model stays loaded in memory to reduce delay.
+* **Offline Operation:** Runs completely offline without an internet connection using local models.
+* **Text Processing/Cleanup:** Clears corrections to make text clear. Handles automatic punctuation, automatic bullet points, and automatic formatting. Optional DeepSeek V4 integration provides advanced text rewrite.
+* **Text Insertion:** Inserts Unicode text into the active target application.
+* **Audio Ducking:** Reduces system audio level automatically when recording starts and restores it when recording stops.
+* **System Integration:** Operates in the system tray. Can start automatically at Windows boot.
+* **Security:** Stores the DeepSeek API key in Windows Credential Manager.
 
-On the target RTX 4050 Laptop GPU, the warmed engine transcribed the included
-11-second validation clip in 74 ms (86 ms for the local pipeline). End-to-end time also depends
-on phrase length, DeepSeek/network latency, and the target application.
+## Performance
+
+On an NVIDIA RTX 4050 Laptop GPU, local transcription of an 11-second audio file takes 86 ms.
+
+## Requirements
+
+* Windows 10 or 11 (64-bit)
+* NVIDIA GPU with current display driver
+* Microphone
+* Internet connection (required only for DeepSeek rewriting)
 
 ## Install
 
-Run the installer from `src-tauri/target/release/bundle/nsis` after building, or
-launch `src-tauri/target/release/pronto.exe` directly from this project directory.
-The installer includes the CUDA transcription runtime and Parakeet model.
+1. Build the application or locate the installer file at:
+`src-tauri/target/release/bundle/nsis`
+2. Run the installer or execute `pronto.exe` directly.
+3. Open **Settings** in Pronto.
+4. Optional: Enter a DeepSeek API key. Local transcription works without a key.
 
-Open Settings in Pronto to save a DeepSeek API key. The key is never written to the
-settings JSON file. Cleanup remains usable without a key through the local cleanup
-pipeline.
+## Build
 
-## Build and test
+Run these commands in PowerShell to test and build:
 
 ```powershell
 cd src-tauri
 cmd.exe /d /s /c '"C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\Common7\Tools\VsDevCmd.bat" -arch=x64 && cargo test --offline'
 cargo tauri build
+
 ```
 
-No Node/npm step is required; the frontend is static and embedded by Tauri.
+*Note: Frontend files are static and embedded by Tauri. Do not run Node.js or npm.*
 
-## Windows behavior
+## Windows Behavior
 
-- Pronto and its Parakeet child process are launched without console windows.
-- Closing the main window keeps global dictation and tray actions available.
-- Startup launch uses a background flag and never shows or flashes the main window.
-- A narrowly scoped low-level keyboard listener supports modifier-only chords,
-  rejects unsafe/reserved combinations, and passes unrelated input through.
-- The microphone is opened and format-negotiated at startup. Each activation
-  resumes the prewarmed stream instead of reopening the device.
-- Audio ducking snapshots the playback endpoint's volume and mute state and
-  restores both when recording stops, fails, resets, or Pronto exits normally.
-
-## Requirements
-
-- Windows 10/11 x64
-- NVIDIA GPU with a compatible current driver (optimized for the RTX 4050 6 GB)
-- Microphone permission for desktop apps
-- Internet access only for optional DeepSeek cleanup
-
-Third-party licenses and model attribution are recorded in
-`THIRD_PARTY_NOTICES.md`.
+* Pronto runs without a console window.
+* Closing the main window keeps background dictation active in the system tray.
+* The application keeps the microphone active to avoid device initialization delay.
+* Third-party software licenses are available in `THIRD_PARTY_NOTICES.md`.
