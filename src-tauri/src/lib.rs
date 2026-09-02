@@ -256,10 +256,20 @@ pub(crate) fn complete_transcription(
             } else {
                 None
             };
-            let message = match (completed.cleanup_warning.as_ref(), insertion_error.as_ref()) {
-                (_, Some(error)) => format!("Transcribed, but text insertion failed: {error}"),
-                (Some(warning), None) => format!("Inserted with local cleanup · {warning}"),
-                (None, None) => format!("Inserted in {} ms", completed.entry.total_ms),
+            let message = match (
+                completed.auto_insert,
+                completed.cleanup_warning.as_ref(),
+                insertion_error.as_ref(),
+            ) {
+                (_, _, Some(error)) => format!("Transcribed, but text insertion failed: {error}"),
+                (true, Some(warning), None) => format!("Inserted with local cleanup · {warning}"),
+                (true, None, None) => format!("Inserted in {} ms", completed.entry.total_ms),
+                (false, Some(warning), None) => {
+                    format!("File transcribed with local cleanup · {warning}")
+                }
+                (false, None, None) => {
+                    format!("File transcribed in {} ms", completed.entry.total_ms)
+                }
             };
             pipeline.complete(
                 completed.entry.final_text.clone(),
@@ -309,6 +319,54 @@ fn start_recording(app: AppHandle) -> Result<EngineStatus, String> {
 #[tauri::command]
 fn stop_recording(app: AppHandle) -> Result<EngineStatus, String> {
     finish_recording(&app)
+}
+
+#[tauri::command]
+fn transcribe_media_file(
+    app: AppHandle,
+    file_name: String,
+    wav_bytes: Vec<u8>,
+) -> Result<EngineStatus, String> {
+    const MAX_WAV_BYTES: usize = 180 * 1024 * 1024;
+    if wav_bytes.len() > MAX_WAV_BYTES {
+        return Err(
+            "This file is too long. Import a recording shorter than about 90 minutes.".into(),
+        );
+    }
+    let recording = engine::recording_from_pcm16_wav(&wav_bytes)?;
+    let state = app.state::<AppState>();
+    let settings = state.settings.snapshot()?;
+    let mut pipeline = state
+        .pipeline
+        .lock()
+        .map_err(|_| "pipeline lock poisoned")?;
+    if !pipeline.import_processing(recording.samples.len(), recording.sample_rate) {
+        return Err("Pronto is already recording or transcribing another item.".into());
+    }
+    pipeline.status.message = format!("Transcribing {file_name} locally…");
+    emit_status(&app, &pipeline.status);
+    drop(pipeline);
+
+    let engine = state.engine.lock().map_err(|_| "engine lock poisoned")?;
+    let engine = engine
+        .as_ref()
+        .ok_or_else(|| "Transcription engine is still starting".to_string())?;
+    engine.transcribe(TranscriptionJob {
+        recording,
+        settings: UserSettings {
+            auto_insert: false,
+            ..settings
+        },
+        target_window: 0,
+    })?;
+    state.insertion_target.cancel();
+    let status = state
+        .pipeline
+        .lock()
+        .map_err(|_| "pipeline lock poisoned")?
+        .status
+        .clone();
+    Ok(status)
 }
 
 #[tauri::command]
@@ -397,6 +455,7 @@ fn save_settings(
     settings.hotkey = previous.hotkey;
     settings.microphone_id = previous.microphone_id;
     settings.microphone_name = previous.microphone_name;
+    settings.gpu_memory_management_configured = true;
     if settings.launch_at_startup != previous.launch_at_startup {
         startup::set_enabled(settings.launch_at_startup)?;
     }
@@ -744,6 +803,7 @@ pub fn run() {
             get_model_status,
             start_recording,
             stop_recording,
+            transcribe_media_file,
             cancel_recording,
             reset,
             get_preferences,

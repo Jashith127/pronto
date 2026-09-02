@@ -69,6 +69,15 @@ nav { display: flex; flex-direction: column; gap: 4px; margin-top: 34px; }
 .stat-words { grid-column: 2 / 4; background: #ebe8de; }
 .stat-words strong { font-size: 33px; }
 .transcripts-panel { margin-top: 31px; }
+.import-card { display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; align-items: center; gap: 14px; margin-bottom: 26px; padding: 15px 17px; border: 1px dashed #cfcac0; border-radius: 14px; background: #f4f1e9; }
+.import-card.busy { opacity: .72; }
+.import-card h2 { margin: 0; font-size: 13px; font-weight: 640; }
+.import-card p { margin: 3px 0; color: #73756e; font-size: 10px; }
+.import-card small { color: #999a93; font-size: 8px; }
+.import-icon { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 11px; color: var(--accent); background: #fff; }
+.import-icon svg { width: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.import-card button { height: 35px; padding: 0 15px; border: 0; border-radius: 8px; color: #fff; background: var(--ink); font-size: 10px; font-weight: 620; }
+.import-card button:disabled { cursor: default; opacity: .55; }
 .section-title { display: flex; align-items: flex-end; justify-content: space-between; }
 .section-title h2, .settings-section h2 { margin: 0; font-size: 14px; font-weight: 630; }
 .section-title p { margin: 4px 0 0; color: #94958f; font-size: 9px; }

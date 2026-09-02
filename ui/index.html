@@ -50,6 +50,12 @@
           </section>
 
           <section class="transcripts-panel">
+            <div class="import-card" id="import-card">
+              <div class="import-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 19h14"/></svg></div>
+              <div><h2>Transcribe a file</h2><p>Audio or video stays on this computer and is transcribed with Parakeet.</p><small id="import-status">MP3, WAV, M4A, MP4, MOV, WebM, and other supported media</small></div>
+              <button id="choose-media" type="button">Choose file</button>
+              <input id="media-file" type="file" accept="audio/*,video/*,.m4a,.mkv,.mov,.webm" hidden />
+            </div>
             <div class="section-title"><div><h2>Recent transcripts</h2><p>Stored locally on this computer</p></div><button data-view-link="history">View all</button></div>
             <div id="recent-list" class="history-list compact"></div>
           </section>

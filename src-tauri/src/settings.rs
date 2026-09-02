@@ -34,6 +34,8 @@ pub struct UserSettings {
     pub microphone_id: Option<String>,
     pub microphone_name: Option<String>,
     pub gpu_memory_management: bool,
+    #[serde(default)]
+    pub gpu_memory_management_configured: bool,
     pub dictation_sounds: bool,
     pub cleanup_prompt: Option<String>,
 }
@@ -59,7 +61,8 @@ impl Default for UserSettings {
             launch_at_startup: false,
             microphone_id: None,
             microphone_name: None,
-            gpu_memory_management: true,
+            gpu_memory_management: false,
+            gpu_memory_management_configured: true,
             dictation_sounds: true,
             cleanup_prompt: None,
         }
@@ -137,7 +140,16 @@ impl SettingsStore {
             }
         }
         let _ = fs::create_dir_all(&data_dir);
-        let settings = read_json(data_dir.join("settings.json")).unwrap_or_default();
+        let mut settings: UserSettings =
+            read_json(data_dir.join("settings.json")).unwrap_or_default();
+        // Releases before 0.6.0 enabled model eviction automatically. Migrate
+        // those users to the safer resident-model default; changing the toggle
+        // afterward marks it as an explicit choice.
+        if !settings.gpu_memory_management_configured {
+            settings.gpu_memory_management = false;
+            settings.gpu_memory_management_configured = true;
+            let _ = write_json(data_dir.join("settings.json"), &settings);
+        }
         let history = read_json(data_dir.join("history.json")).unwrap_or_default();
         Self {
             settings: Mutex::new(settings),
@@ -335,7 +347,7 @@ mod tests {
         assert_eq!(settings.language, "en");
         assert!(settings.microphone_id.is_none());
         assert!(settings.microphone_name.is_none());
-        assert!(settings.gpu_memory_management);
+        assert!(!settings.gpu_memory_management);
         assert!(settings.dictation_sounds);
         assert!(settings.cleanup_prompt.is_none());
     }

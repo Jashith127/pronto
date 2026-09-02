@@ -4,6 +4,8 @@ use crate::settings::{deepseek_key, HistoryEntry, UserSettings, DEFAULT_CLEANUP_
 use reqwest::blocking::{multipart, Client};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::fs::{self, OpenOptions};
+use std::io::{Read, Seek, SeekFrom};
 use std::net::TcpListener;
 #[cfg(windows)]
 use std::os::windows::{io::AsRawHandle, process::CommandExt};
@@ -20,6 +22,8 @@ const GPU_PRESSURE_SAMPLES: u8 = 4;
 const MODEL_IDLE_BEFORE_UNLOAD: Duration = Duration::from_secs(30);
 const MODEL_TRANSITION_COOLDOWN: Duration = Duration::from_secs(60);
 const GPU_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
+const WARM_RETRY_COOLDOWN: Duration = Duration::from_secs(30);
+const ENGINE_LOG_LIMIT: u64 = 1024 * 1024;
 pub struct TranscriptionJob {
     pub recording: Recording,
     pub settings: UserSettings,
@@ -167,6 +171,7 @@ fn engine_worker(
             None
         }
     };
+    let mut last_start_failure = server.is_none().then(Instant::now);
 
     let client = Client::builder()
         .connect_timeout(Duration::from_secs(2))
@@ -214,6 +219,16 @@ fn engine_worker(
             EngineCommand::Warm => {
                 policy.note_activity(Instant::now());
                 if server.is_none() {
+                    if last_start_failure
+                        .is_some_and(|failed| failed.elapsed() < WARM_RETRY_COOLDOWN)
+                    {
+                        emit_model_status(
+                            &app,
+                            false,
+                            "Parakeet could not start; retrying shortly…",
+                        );
+                        continue;
+                    }
                     let can_load = gpu
                         .as_ref()
                         .and_then(|gpu| gpu.memory_info().ok())
@@ -224,6 +239,7 @@ fn engine_worker(
                             runtime.as_ref().map_err(String::as_str),
                             &mut policy,
                         );
+                        last_start_failure = server.is_none().then(Instant::now);
                     } else {
                         emit_model_status(&app, false, "Waiting for available GPU memory…");
                     }
@@ -232,7 +248,9 @@ fn engine_worker(
             EngineCommand::Transcribe(job) => {
                 let started = Instant::now();
                 policy.note_activity(started);
-                if server.is_none() {
+                let recent_start_failure =
+                    last_start_failure.is_some_and(|failed| failed.elapsed() < WARM_RETRY_COOLDOWN);
+                if server.is_none() && !recent_start_failure {
                     let deadline = Instant::now() + GPU_WAIT_TIMEOUT;
                     let mut waiting_emitted = false;
                     loop {
@@ -246,6 +264,7 @@ fn engine_worker(
                                 runtime.as_ref().map_err(String::as_str),
                                 &mut policy,
                             );
+                            last_start_failure = server.is_none().then(Instant::now);
                             break;
                         }
                         if !waiting_emitted {
@@ -258,12 +277,15 @@ fn engine_worker(
                         std::thread::sleep(GPU_POLL_INTERVAL);
                     }
                 }
+                let recent_start_failure =
+                    last_start_failure.is_some_and(|failed| failed.elapsed() < WARM_RETRY_COOLDOWN);
                 let result = match server.as_mut() {
                     Some(server) => process_job(&client, server, job, started),
-                    None => Err(
-                        "Not enough GPU memory to load Parakeet. Dictation was not transcribed."
+                    None if recent_start_failure => Err(
+                        "Parakeet failed to start. See engine.log in Pronto's local data folder, then try again shortly."
                             .into(),
                     ),
+                    None => Err("Not enough GPU memory to load Parakeet. Dictation was not transcribed.".into()),
                 };
                 crate::complete_transcription(&app, result);
             }
@@ -327,6 +349,9 @@ fn process_job(
 
     let response = client
         .post(format!("{}/v1/audio/transcriptions", server.base_url))
+        .timeout(Duration::from_secs(
+            ((audio_ms / 10_000) + 30).clamp(30, 600) as u64,
+        ))
         .multipart(form)
         .send()
         .map_err(|error| format!("Local transcription request failed: {error}"))?;
@@ -398,6 +423,53 @@ fn process_job(
         target_window: job.target_window,
         auto_insert: job.settings.auto_insert,
         cleanup_warning,
+    })
+}
+
+pub fn recording_from_pcm16_wav(bytes: &[u8]) -> Result<Recording, String> {
+    if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return Err("Pronto could not read the decoded audio.".into());
+    }
+    let mut offset = 12usize;
+    let mut format = None;
+    let mut data = None;
+    while offset.saturating_add(8) <= bytes.len() {
+        let id = &bytes[offset..offset + 4];
+        let size = u32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().unwrap()) as usize;
+        let start = offset + 8;
+        let end = start
+            .checked_add(size)
+            .filter(|end| *end <= bytes.len())
+            .ok_or_else(|| "The decoded audio file is incomplete.".to_string())?;
+        if id == b"fmt " && size >= 16 {
+            format = Some((
+                u16::from_le_bytes(bytes[start..start + 2].try_into().unwrap()),
+                u16::from_le_bytes(bytes[start + 2..start + 4].try_into().unwrap()),
+                u32::from_le_bytes(bytes[start + 4..start + 8].try_into().unwrap()),
+                u16::from_le_bytes(bytes[start + 14..start + 16].try_into().unwrap()),
+            ));
+        } else if id == b"data" {
+            data = Some(&bytes[start..end]);
+        }
+        offset = end + (size & 1);
+    }
+    let (encoding, channels, sample_rate, bits) =
+        format.ok_or_else(|| "The decoded audio has no format information.".to_string())?;
+    if encoding != 1 || channels != 1 || sample_rate != 16_000 || bits != 16 {
+        return Err("The decoded audio is not 16 kHz mono PCM.".into());
+    }
+    let data = data.ok_or_else(|| "The decoded audio contains no samples.".to_string())?;
+    let samples = data
+        .chunks_exact(2)
+        .map(|sample| i16::from_le_bytes([sample[0], sample[1]]) as f32 / 32768.0)
+        .collect::<Vec<_>>();
+    if samples.is_empty() {
+        return Err("The selected file has no audible content.".into());
+    }
+    Ok(Recording {
+        samples,
+        sample_rate,
+        channels,
     })
 }
 
@@ -487,6 +559,22 @@ impl SpeechServer {
             .executable
             .parent()
             .ok_or_else(|| "Invalid NeMo Speech runtime path".to_string())?;
+        let log_path = engine_log_path();
+        if fs::metadata(&log_path).is_ok_and(|metadata| metadata.len() > ENGINE_LOG_LIMIT) {
+            let _ = fs::rename(&log_path, log_path.with_extension("old.log"));
+        }
+        if let Some(parent) = log_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let mut log = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .read(true)
+            .open(&log_path)
+            .map_err(|error| format!("Could not open engine log: {error}"))?;
+        let stderr_log = log
+            .try_clone()
+            .map_err(|error| format!("Could not prepare engine log: {error}"))?;
         let mut command = Command::new(&runtime.executable);
         command
             .args([
@@ -505,8 +593,10 @@ impl SpeechServer {
             .arg(&runtime.model)
             .current_dir(bin_dir)
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stdout(Stdio::from(
+                log.try_clone().map_err(|error| error.to_string())?,
+            ))
+            .stderr(Stdio::from(stderr_log));
         // NeMo Speech is a console-subsystem executable. Redirecting its
         // streams does not suppress the console host; CREATE_NO_WINDOW does.
         #[cfg(windows)]
@@ -531,6 +621,15 @@ impl SpeechServer {
             .map_err(|error| error.to_string())?;
         let deadline = Instant::now() + Duration::from_secs(90);
         while Instant::now() < deadline {
+            if let Some(status) = child
+                .try_wait()
+                .map_err(|error| format!("Could not inspect speech runtime: {error}"))?
+            {
+                let detail = log_tail(&mut log);
+                return Err(format!(
+                    "Parakeet exited during startup ({status}).{detail}"
+                ));
+            }
             if health_client
                 .get(format!("{base_url}/health"))
                 .send()
@@ -548,8 +647,36 @@ impl SpeechServer {
         }
         let mut child = child;
         let _ = child.kill();
-        Err("Parakeet did not finish loading within 90 seconds".into())
+        let detail = log_tail(&mut log);
+        Err(format!(
+            "Parakeet did not finish loading within 90 seconds.{detail}"
+        ))
     }
+}
+
+fn engine_log_path() -> PathBuf {
+    std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("Pronto")
+        .join("engine.log")
+}
+
+fn log_tail(log: &mut fs::File) -> String {
+    let Ok(length) = log.seek(SeekFrom::End(0)) else {
+        return String::new();
+    };
+    let start = length.saturating_sub(2_048);
+    if log.seek(SeekFrom::Start(start)).is_err() {
+        return String::new();
+    }
+    let mut tail = String::new();
+    if log.read_to_string(&mut tail).is_err() {
+        return String::new();
+    }
+    let line = tail.lines().rev().find(|line| !line.trim().is_empty());
+    line.map(|line| format!(" Last engine message: {}", line.trim()))
+        .unwrap_or_default()
 }
 
 fn locate_runtime(resource_dir: Option<&Path>) -> Result<RuntimePaths, String> {
@@ -976,7 +1103,7 @@ fn emit_model_status(app: &AppHandle, ready: bool, message: &str) {
             backend: "NVIDIA Parakeet TDT 0.6B v3 · CUDA".into(),
         },
     );
-    if !ready && (message.starts_with("Warming") || message.starts_with("Waiting")) {
+    if !ready {
         let _ = tauri::Emitter::emit(
             app,
             "dictation-notice",
@@ -1005,6 +1132,21 @@ mod tests {
         assert_eq!(&wav[0..4], b"RIFF");
         assert_eq!(&wav[8..12], b"WAVE");
         assert_eq!(u32::from_le_bytes(wav[24..28].try_into().unwrap()), 16_000);
+    }
+
+    #[test]
+    fn reads_imported_pcm16_wav() {
+        let recording = Recording {
+            samples: vec![0.5; 2_000],
+            sample_rate: 16_000,
+            channels: 1,
+        };
+        let wav = recording_to_wav(&recording).unwrap();
+        let decoded = recording_from_pcm16_wav(&wav).unwrap();
+        assert_eq!(decoded.sample_rate, 16_000);
+        assert_eq!(decoded.channels, 1);
+        assert_eq!(decoded.samples.len(), 2_000);
+        assert!((decoded.samples[0] - 0.5).abs() < 0.001);
     }
 
     #[test]

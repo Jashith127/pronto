@@ -8,11 +8,19 @@ button { display: grid; place-items: center; flex: 0 0 20px; width: 20px; height
 button:hover { background: #62635e; }
 #finish { padding: 0 0 1px; color: #11120f; background: #f4f4ef; font-size: 12px; }
 #finish:hover { background: white; }
-.signal { display: flex; align-items: center; justify-content: center; gap: 1.5px; width: 44px; height: 20px; }
-.signal i { width: 2px; height: 8px; border-radius: 3px; background: #f8f8f4; animation: voice .48s ease-in-out infinite alternate; }
-.signal i:nth-child(2), .signal i:nth-child(7) { height: 13px; animation-delay: -.12s; }
-.signal i:nth-child(3), .signal i:nth-child(6) { height: 16px; animation-delay: -.31s; }
-.signal i:nth-child(4), .signal i:nth-child(5) { height: 11px; animation-delay: -.2s; }
+.signal { position: relative; display: flex; align-items: center; justify-content: center; gap: 1.5px; width: 44px; height: 20px; isolation: isolate; }
+.signal i { position: relative; width: 2px; height: 8px; overflow: hidden; border-radius: 3px; background: linear-gradient(180deg, #ffad68 0%, #ff554c 28%, #d93180 58%, #893cd0 78%, #263975 100%); background-size: 100% 240%; animation: voice .48s ease-in-out infinite alternate, aurora 2.2s linear infinite; box-shadow: 0 0 5px rgba(239, 73, 116, .35); }
+.signal i::after { content: ""; position: absolute; inset: -4px; opacity: .42; background-image: radial-gradient(circle at 15% 20%, rgba(255,255,255,.8) 0 .45px, transparent .7px), radial-gradient(circle at 72% 38%, rgba(5,7,18,.85) 0 .4px, transparent .7px), radial-gradient(circle at 42% 77%, rgba(255,226,177,.75) 0 .35px, transparent .65px), radial-gradient(circle at 88% 88%, rgba(8,11,29,.8) 0 .4px, transparent .7px); background-size: 7px 9px, 9px 7px, 8px 11px, 11px 8px; mix-blend-mode: overlay; animation: grain .32s steps(2, end) infinite; pointer-events: none; }
+.signal i:nth-child(2), .signal i:nth-child(7) { height: 13px; animation-delay: -.12s, -.8s; }
+.signal i:nth-child(3), .signal i:nth-child(6) { height: 16px; animation-delay: -.31s, -1.5s; }
+.signal i:nth-child(4), .signal i:nth-child(5) { height: 11px; animation-delay: -.2s, -1.9s; }
 @keyframes voice { to { transform: scaleY(.35); opacity: .62; } }
-.processing .signal i { animation: pulse .7s ease-in-out infinite alternate; }
+.processing .signal i { animation: pulse .7s ease-in-out infinite alternate, aurora 1.5s linear infinite; }
 @keyframes pulse { to { opacity: .35; } }
+@keyframes aurora { to { background-position: 0 240%; filter: hue-rotate(18deg); } }
+@keyframes grain { 0% { transform: translate3d(-1px, 0, 0); } 50% { transform: translate3d(1px, -1px, 0); } 100% { transform: translate3d(0, 1px, 0); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .signal i, .signal i::after, .processing .signal i { animation: none; }
+  .signal i { background-position: 0 45%; }
+}

@@ -55,6 +55,24 @@ impl Default for Pipeline {
 }
 
 impl Pipeline {
+    pub fn import_processing(&mut self, captured_samples: usize, sample_rate: u32) -> bool {
+        if !matches!(
+            self.status.phase,
+            Phase::Idle | Phase::Complete | Phase::Error
+        ) {
+            return false;
+        }
+        self.started_at = Some(Instant::now());
+        self.status = EngineStatus {
+            phase: Phase::Processing,
+            message: "Transcribing imported file locally…".into(),
+            captured_samples,
+            sample_rate,
+            ..EngineStatus::default()
+        };
+        true
+    }
+
     pub fn begin(&mut self) -> bool {
         if !matches!(
             self.status.phase,

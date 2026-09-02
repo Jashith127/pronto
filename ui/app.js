@@ -193,6 +193,66 @@ const bindWindowAction = (selector, command) => {
 bindWindowAction('#minimize', 'minimize_main_window');
 bindWindowAction('#close', 'hide_main_window');
 
+function audioBufferToWav(audioBuffer) {
+  const targetRate = 16000;
+  const outputLength = Math.ceil(audioBuffer.duration * targetRate);
+  const wav = new ArrayBuffer(44 + outputLength * 2);
+  const view = new DataView(wav);
+  const writeText = (offset, text) => [...text].forEach((character, index) => view.setUint8(offset + index, character.charCodeAt(0)));
+  writeText(0, 'RIFF'); view.setUint32(4, 36 + outputLength * 2, true); writeText(8, 'WAVE');
+  writeText(12, 'fmt '); view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+  view.setUint32(24, targetRate, true); view.setUint32(28, targetRate * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+  writeText(36, 'data'); view.setUint32(40, outputLength * 2, true);
+  const channels = Array.from({ length: audioBuffer.numberOfChannels }, (_, index) => audioBuffer.getChannelData(index));
+  const ratio = audioBuffer.sampleRate / targetRate;
+  for (let index = 0; index < outputLength; index++) {
+    const position = index * ratio;
+    const left = Math.min(Math.floor(position), audioBuffer.length - 1);
+    const right = Math.min(left + 1, audioBuffer.length - 1);
+    const fraction = position - left;
+    let sample = 0;
+    for (const channel of channels) sample += channel[left] * (1 - fraction) + channel[right] * fraction;
+    sample = Math.max(-1, Math.min(1, sample / channels.length));
+    view.setInt16(44 + index * 2, sample < 0 ? sample * 32768 : sample * 32767, true);
+  }
+  return new Uint8Array(wav);
+}
+
+async function importMedia(file) {
+  const card = document.querySelector('#import-card');
+  const button = document.querySelector('#choose-media');
+  const status = document.querySelector('#import-status');
+  card.classList.add('busy'); button.disabled = true;
+  try {
+    status.textContent = `Reading ${file.name}…`;
+    const context = new AudioContext();
+    let decoded;
+    try { decoded = await context.decodeAudioData(await file.arrayBuffer()); }
+    finally { await context.close(); }
+    if (!decoded.numberOfChannels || !decoded.length) throw new Error('No audio track was found in this file.');
+    if (decoded.duration > 90 * 60) throw new Error('Choose a file shorter than 90 minutes.');
+    status.textContent = 'Preparing audio for local transcription…';
+    await new Promise(resolve => setTimeout(resolve, 20));
+    const wavBytes = audioBufferToWav(decoded);
+    status.textContent = 'Transcribing locally with Parakeet…';
+    await call('transcribe_media_file', { fileName: file.name, wavBytes: Array.from(wavBytes) });
+    showToast(`${file.name} is being transcribed`);
+  } catch (error) {
+    const detail = String(error).replace(/^Error:\s*/, '');
+    showToast(detail.includes('Unable to decode') || detail.includes('EncodingError') ? 'This media format or audio track is not supported.' : detail, true);
+  } finally {
+    card.classList.remove('busy'); button.disabled = false;
+    status.textContent = 'MP3, WAV, M4A, MP4, MOV, WebM, and other supported media';
+    document.querySelector('#media-file').value = '';
+  }
+}
+
+document.querySelector('#choose-media').addEventListener('click', () => document.querySelector('#media-file').click());
+document.querySelector('#media-file').addEventListener('change', event => {
+  const file = event.target.files?.[0];
+  if (file) importMedia(file);
+});
+
 document.querySelector('#dictionary-form').addEventListener('submit', async event => {
   event.preventDefault();
   const input = document.querySelector('#dictionary-input');
