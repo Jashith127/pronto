@@ -36,6 +36,7 @@
         <header class="titlebar" data-tauri-drag-region>
           <div class="window-actions">
             <button id="minimize" aria-label="Minimize">−</button>
+            <button id="maximize" aria-label="Maximize">□</button>
             <button id="close" aria-label="Close to tray">×</button>
           </div>
         </header>
@@ -78,8 +79,7 @@
               <div><h1>Note Taker</h1><p>Record a meeting or add audio to a folder. Transcription continues quietly in the background.</p></div>
               <div class="notes-top-actions">
                 <button class="meeting-start-action" id="meeting-toggle" type="button"><span class="record-glyph" aria-hidden="true"><i></i></span><b>Start meeting</b></button>
-                <button class="secondary-action notes-new-folder-trigger" id="notetaker-new-folder-trigger" type="button" aria-expanded="false"><span aria-hidden="true">＋</span> New folder</button>
-                <button class="notes-upload-action" id="notetaker-upload" type="button"><span aria-hidden="true">↑</span> Upload audio</button>
+                <button class="notes-upload-action" id="notetaker-upload" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m0 0 4-4m-4 4-4-4M5 20h14"/></svg><b>Upload audio</b></button>
                 <input id="notetaker-file" type="file" accept="audio/*,video/*,.m4a,.mkv,.mov,.webm" hidden />
               </div>
             </div>

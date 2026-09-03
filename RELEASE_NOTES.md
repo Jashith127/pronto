@@ -1,3 +1,23 @@
+# Pronto 0.7.1
+
+Pronto 0.7.1 cleans up the dictation pill, gives meeting notes their own space, and adds quick access to Note Taker plus a standard maximize control.
+
+## What's new
+
+- Dictation pill restored to its compact centered shape (cancel, waveform, finish) with the liquid waveform color scheme kept.
+- Meeting notes moved out of the pill into a dedicated prompt bubble with **Start meeting notes** / **Not now** actions and a recording state with timer and **Stop and create notes**.
+- New round Note Taker button sits just right of the pill and opens the main window straight into the Note Taker view.
+- Hovering the meeting button no longer shows a loading cursor.
+- Note Taker header simplified: the extra **New folder** button is removed (folder creation stays in the sidebar) and **Start meeting** / **Upload audio** are larger and clearer.
+- Main window now has minimize, maximize/restore, and close controls, including double-click on the title bar to toggle maximize.
+- Release builds now strip symbols to trim the executable.
+
+## Package size
+
+- The installer remains large (~740 MB) because it bundles the ~714 MB Parakeet speech model and ~121 MB CUDA runtime so transcription works fully offline. The executable trim above saves only a few megabytes; a substantially smaller installer would require downloading the model on first launch instead of bundling it.
+
+---
+
 # Pronto 0.7.0
 
 Pronto 0.7 adds local meeting recording and turns Note Taker into a focused workspace for recorded meetings, imported audio, transcripts, and notes—without requiring a calendar connection or meeting bot.

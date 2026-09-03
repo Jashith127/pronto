@@ -37,6 +37,7 @@ nav { display: flex; flex-direction: column; gap: 4px; margin-top: 34px; }
 .window-actions { align-self: stretch; display: flex; -webkit-app-region: no-drag; }
 .window-actions button { width: 45px; border: 0; background: transparent; color: #686964; font-size: 18px; -webkit-app-region: no-drag; }
 .window-actions button:hover { background: #eceae4; color: var(--ink); }
+#maximize { font-size: 13px; }
 #close:hover { background: #c94d42; color: white; }
 
 .view { display: none; height: calc(100vh - 50px); padding: 39px 48px 48px; overflow-y: auto; scrollbar-color: #cbc9c1 transparent; scrollbar-width: thin; }
@@ -159,18 +160,24 @@ nav { display: flex; flex-direction: column; gap: 4px; margin-top: 34px; }
 .toast.show { opacity: 1; transform: none; }
 .toast.error { border-color: #ddb6ae; color: #9e4137; }
 
-.notes-top-actions { display: flex; gap: 8px; align-items: center; }
+.notes-top-actions { display: flex; gap: 10px; align-items: center; }
 .notes-top-actions .secondary-action { min-height: 36px; }
-.meeting-start-action { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 13px; border: 0; border-radius: 8px; color: #fff; background: var(--ink); font-size: 10px; }
-.meeting-start-action:disabled { opacity: .55; cursor: wait; }
-.meeting-start-action.recording { background: #a74738; }
-.record-glyph { display: grid; place-items: center; width: 15px; height: 15px; border: 2px solid currentColor; border-radius: 50%; }
-.record-glyph i { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.meeting-start-action { display: flex; align-items: center; gap: 9px; min-height: 40px; padding: 0 18px 0 14px; border: 1px solid #2b2c28; border-radius: 10px; color: #fff; background: #2f312c; box-shadow: 0 1px 2px rgba(35,35,29,.12); font-size: 11px; font-weight: 650; letter-spacing: .01em; transition: background .15s ease, transform .1s ease, box-shadow .15s ease; }
+.meeting-start-action:hover { background: #23241f; box-shadow: 0 3px 10px rgba(35,35,29,.18); }
+.meeting-start-action:active { transform: translateY(1px); }
+.meeting-start-action:focus-visible, .notes-upload-action:focus-visible { outline: 2px solid #8fa79c; outline-offset: 2px; }
+.meeting-start-action:disabled, .notes-upload-action:disabled { opacity: .55; cursor: default; }
+.meeting-start-action.recording { border-color: #8f3a2e; background: #a74738; box-shadow: 0 3px 12px rgba(167,71,56,.35); }
+.meeting-start-action.recording:hover { background: #b94f3f; }
+.record-glyph { display: grid; place-items: center; width: 18px; height: 18px; border: 2px solid currentColor; border-radius: 50%; }
+.record-glyph i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.meeting-start-action.recording .record-glyph i { animation: record-pulse 1.2s ease-in-out infinite; }
+@keyframes record-pulse { 50% { opacity: .35; } }
 .processing-badge { padding: 4px 8px; border-radius: 20px; color: var(--sage); background: #e6eee9; font-size: 9px; font-weight: 650; }
-.notes-upload-action { display: flex; align-items: center; gap: 7px; min-height: 36px; padding: 0 13px; border: 0; border-radius: 8px; color: #fff; background: var(--sage); font-size: 10px; font-weight: 650; }
-.notes-upload-action span { font-size: 15px; line-height: 1; }
-.notes-new-folder-trigger { display: flex; align-items: center; gap: 5px; }
-.notes-new-folder-trigger span { font-size: 15px; line-height: 1; }
+.notes-upload-action { display: flex; align-items: center; gap: 9px; min-height: 40px; padding: 0 18px 0 14px; border: 1px solid #cfd8d2; border-radius: 10px; color: #2e4439; background: #fff; box-shadow: 0 1px 2px rgba(35,35,29,.08); font-size: 11px; font-weight: 650; letter-spacing: .01em; transition: border-color .15s ease, background .15s ease, transform .1s ease, box-shadow .15s ease; }
+.notes-upload-action:hover { border-color: #9db5a8; background: #f2f6f3; box-shadow: 0 3px 10px rgba(63,109,96,.15); }
+.notes-upload-action:active { transform: translateY(1px); }
+.notes-upload-action svg { width: 16px; height: 16px; fill: none; stroke: var(--sage); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .notes-live-row { display: flex; justify-content: flex-end; gap: 18px; min-height: 22px; margin-top: -20px; padding-bottom: 8px; color: #777972; font-size: 10px; font-variant-numeric: tabular-nums; }
 #meeting-live-status { color: #a74738; }
 .notes-explorer { display: grid; grid-template-columns: 220px minmax(0, 1fr); height: min(560px, calc(100vh - 205px)); min-height: 390px; overflow: hidden; border: 1px solid #dfddd5; border-radius: 14px; background: #fff; box-shadow: 0 1px 2px rgba(35,35,29,.04); }

@@ -195,7 +195,12 @@ const bindWindowAction = (selector, command) => {
 };
 
 bindWindowAction('#minimize', 'minimize_main_window');
+bindWindowAction('#maximize', 'toggle_maximize_main_window');
 bindWindowAction('#close', 'hide_main_window');
+document.querySelector('.titlebar')?.addEventListener('dblclick', event => {
+  if (event.target.closest('.window-actions')) return;
+  call('toggle_maximize_main_window');
+});
 
 function audioBufferToWav(audioBuffer) {
   const targetRate = 16000;
@@ -369,6 +374,7 @@ listen('model-status', event => renderModel(event.payload));
 listen('hotkey-status', event => renderHotkey(event.payload));
 listen('audio-warning', event => showToast(event.payload, true));
 listen('tray-message', event => showToast(event.payload.message, event.payload.error));
+listen('open-notetaker', () => setView('notetaker'));
 listen('meeting-updated', event => {
   meetings = [event.payload, ...meetings.filter(item => item.id !== event.payload.id)];
   selectedMeetingId = event.payload.id; renderMeetings(); showToast('Meeting notes are ready');
@@ -576,7 +582,7 @@ async function notetakerCleanup() {
 function setNewFolderOpen(open) {
   const form = document.querySelector('#notetaker-new-folder');
   form.hidden = !open;
-  document.querySelector('#notetaker-new-folder-trigger').setAttribute('aria-expanded', String(open));
+  document.querySelector('#notetaker-sidebar-plus')?.setAttribute('aria-expanded', String(open));
   if (open) setTimeout(() => document.querySelector('#notetaker-folder-input').focus(), 0);
 }
 
@@ -593,7 +599,7 @@ document.querySelector('#notetaker-new-folder')?.addEventListener('submit', even
   saveNotetaker();
   renderNotetaker();
 });
-['#notetaker-new-folder-trigger', '#notetaker-sidebar-plus'].forEach(selector => document.querySelector(selector)?.addEventListener('click', () => setNewFolderOpen(document.querySelector('#notetaker-new-folder').hidden)));
+document.querySelector('#notetaker-sidebar-plus')?.addEventListener('click', () => setNewFolderOpen(document.querySelector('#notetaker-new-folder').hidden));
 document.querySelector('#notetaker-folder-list')?.addEventListener('click', event => {
   const deleteId = event.target.closest('[data-delete-folder]')?.dataset.deleteFolder;
   if (deleteId) {

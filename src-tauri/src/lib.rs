@@ -269,16 +269,16 @@ fn position_overlay(window: &tauri::WebviewWindow, microphone_width: Option<f64>
         .flatten()
         .or_else(|| window.primary_monitor().ok().flatten());
     let Some(monitor) = monitor else {
-        let logical_width = microphone_width.unwrap_or(100.0).max(100.0);
+        let logical_width = microphone_width.unwrap_or(136.0).max(136.0);
         let _ = window.set_size(LogicalSize::new(logical_width, logical_height));
         return;
     };
     let scale = window.scale_factor().unwrap_or(1.0);
     let max_logical_width = monitor.size().width as f64 / scale - 24.0;
     let logical_width = microphone_width
-        .unwrap_or(100.0)
-        .max(100.0)
-        .min(max_logical_width.max(100.0));
+        .unwrap_or(136.0)
+        .max(136.0)
+        .min(max_logical_width.max(136.0));
     let _ = window.set_size(LogicalSize::new(logical_width, logical_height));
     let width = (logical_width * scale).round() as u32;
     let height = (logical_height * scale).round() as u32;
@@ -681,6 +681,16 @@ fn dismiss_meeting_prompt(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn open_notetaker(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        window.show().map_err(|e| e.to_string())?;
+        let _ = window.set_focus();
+    }
+    let _ = app.emit("open-notetaker", serde_json::json!({}));
+    Ok(())
+}
+
+#[tauri::command]
 fn get_hotkey_status(state: tauri::State<'_, AppState>) -> Result<HotkeyStatus, String> {
     let shortcut = state
         .active_shortcut
@@ -858,6 +868,20 @@ fn minimize_main_window(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn toggle_maximize_main_window(app: AppHandle) -> Result<bool, String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Pronto's main window is unavailable".to_string())?;
+    let maximized = window.is_maximized().map_err(|error| error.to_string())?;
+    if maximized {
+        window.unmaximize().map_err(|error| error.to_string())?;
+    } else {
+        window.maximize().map_err(|error| error.to_string())?;
+    }
+    Ok(!maximized)
+}
+
+#[tauri::command]
 fn hide_main_window(app: AppHandle) -> Result<(), String> {
     let window = app
         .get_webview_window("main")
@@ -1020,6 +1044,7 @@ pub fn run() {
             resize_microphone_overlay,
             resize_overlay,
             dismiss_meeting_prompt,
+            open_notetaker,
             get_hotkey_status,
             set_hotkey,
             save_api_key,
@@ -1032,6 +1057,7 @@ pub fn run() {
             copy_transcript,
             cleanup_notetaker_transcript,
             minimize_main_window,
+            toggle_maximize_main_window,
             hide_main_window
         ])
         .run(tauri::generate_context!())

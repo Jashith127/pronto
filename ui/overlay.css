@@ -1,24 +1,41 @@
 * { box-sizing: border-box; }
 html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; }
-body { position: relative; color: #f8f8f4; font-family: "Segoe UI Variable", "Segoe UI", sans-serif; }
-main { position: absolute; right: 0; bottom: 0; display: flex; align-items: center; justify-content: center; gap: 8px; min-width: 100px; height: 30px; padding: 4px 7px 4px 9px; border: 1px solid #242522; border-radius: 999px; background: #090a09; }
-.signal { position: relative; width: 48px; height: 20px; overflow: hidden; }
-.signal::before { content: ""; position: absolute; inset: 0; background-image: url("assets/waveform-liquid-v07.png"); background-position: 30% 50%; background-size: 150% 190%; filter: saturate(1.16) contrast(1.08) drop-shadow(0 0 3px rgba(244,51,122,.32)); -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 20'%3E%3Crect x='1' y='6.5' width='3' height='7' rx='1.5'/%3E%3Crect x='7' y='4.5' width='3' height='11' rx='1.5'/%3E%3Crect x='13' y='2.5' width='3' height='15' rx='1.5'/%3E%3Crect x='19' y='5' width='3' height='10' rx='1.5'/%3E%3Crect x='25' y='5' width='3' height='10' rx='1.5'/%3E%3Crect x='31' y='2.5' width='3' height='15' rx='1.5'/%3E%3Crect x='37' y='4.5' width='3' height='11' rx='1.5'/%3E%3Crect x='43' y='6.5' width='3' height='7' rx='1.5'/%3E%3C/svg%3E") center / 48px 20px no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 20'%3E%3Crect x='1' y='6.5' width='3' height='7' rx='1.5'/%3E%3Crect x='7' y='4.5' width='3' height='11' rx='1.5'/%3E%3Crect x='13' y='2.5' width='3' height='15' rx='1.5'/%3E%3Crect x='19' y='5' width='3' height='10' rx='1.5'/%3E%3Crect x='25' y='5' width='3' height='10' rx='1.5'/%3E%3Crect x='31' y='2.5' width='3' height='15' rx='1.5'/%3E%3Crect x='37' y='4.5' width='3' height='11' rx='1.5'/%3E%3Crect x='43' y='6.5' width='3' height='7' rx='1.5'/%3E%3C/svg%3E") center / 48px 20px no-repeat; animation: liquid-drift 7s ease-in-out infinite alternate; }
+body { position: relative; color: white; font-family: "Segoe UI Variable", "Segoe UI", sans-serif; }
+#overlay-row { position: absolute; bottom: 0; left: 50%; display: flex; align-items: center; gap: 6px; transform: translateX(-50%); }
+#overlay-row[hidden] { display: none; }
+main { display: flex; align-items: center; justify-content: center; gap: 2px; width: 100px; height: 30px; padding: 4px; border: 1px solid #242522; border-radius: 999px; background: #090a09; }
+#notetaker-open { display: grid; place-items: center; flex: 0 0 30px; width: 30px; height: 30px; padding: 0; border: 1px solid #242522; border-radius: 50%; color: #f8f8f4; background: #090a09; cursor: pointer; }
+#notetaker-open svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+#notetaker-open:hover { border-color: #3a3c37; background: #1b1c19; }
+#notetaker-open:focus-visible { outline: 2px solid #d97460; outline-offset: 2px; }
+.microphone-label { position: absolute; bottom: 35px; left: 50%; display: flex; align-items: center; width: max-content; height: 25px; padding: 4px 12px; border: 1px solid #242522; border-radius: 999px; background: #090a09; color: #f8f8f4; font-size: 10px; line-height: 1; white-space: nowrap; transform: translateX(-50%); }
+.microphone-label[hidden] { display: none; }
+main button { display: grid; place-items: center; flex: 0 0 20px; width: 20px; height: 20px; padding: 0 0 2px; border: 0; border-radius: 50%; color: white; background: #4b4c48; font: 600 14px/1 "Segoe UI", sans-serif; cursor: pointer; }
+main button:hover { background: #62635e; }
+#finish { padding: 0 0 1px; color: #11120f; background: #f4f4ef; font-size: 12px; }
+#finish:hover { background: white; }
+.signal { position: relative; width: 44px; height: 20px; overflow: hidden; }
+.signal::before { content: ""; position: absolute; inset: 0; background-image: url("assets/waveform-liquid-v07.png"); background-position: 30% 50%; background-size: 150% 190%; filter: saturate(1.16) contrast(1.08) drop-shadow(0 0 3px rgba(244,51,122,.32)); -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 20'%3E%3Crect x='1' y='6.5' width='3' height='7' rx='1.5'/%3E%3Crect x='7' y='4.5' width='3' height='11' rx='1.5'/%3E%3Crect x='13' y='2.5' width='3' height='15' rx='1.5'/%3E%3Crect x='19' y='5' width='3' height='10' rx='1.5'/%3E%3Crect x='25' y='5' width='3' height='10' rx='1.5'/%3E%3Crect x='31' y='2.5' width='3' height='15' rx='1.5'/%3E%3Crect x='37' y='4.5' width='3' height='11' rx='1.5'/%3E%3Crect x='43' y='6.5' width='3' height='7' rx='1.5'/%3E%3C/svg%3E") center / 44px 20px no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 20'%3E%3Crect x='1' y='6.5' width='3' height='7' rx='1.5'/%3E%3Crect x='7' y='4.5' width='3' height='11' rx='1.5'/%3E%3Crect x='13' y='2.5' width='3' height='15' rx='1.5'/%3E%3Crect x='19' y='5' width='3' height='10' rx='1.5'/%3E%3Crect x='25' y='5' width='3' height='10' rx='1.5'/%3E%3Crect x='31' y='2.5' width='3' height='15' rx='1.5'/%3E%3Crect x='37' y='4.5' width='3' height='11' rx='1.5'/%3E%3Crect x='43' y='6.5' width='3' height='7' rx='1.5'/%3E%3C/svg%3E") center / 44px 20px no-repeat; animation: liquid-drift 7s ease-in-out infinite alternate; }
 .signal i { display: none; }
 @keyframes liquid-drift { from { background-position: 18% 40%; } to { background-position: 82% 62%; } }
 @media (prefers-reduced-motion: reduce) { .signal::before { animation: none; } }
-.meeting-record { position: relative; display: grid; place-items: center; flex: 0 0 21px; width: 21px; height: 21px; padding: 0; border: 3px solid #f4f4ef; border-radius: 50%; background: transparent; cursor: pointer; }
-.meeting-record span { width: 7px; height: 7px; border-radius: 50%; background: #f4f4ef; }
-.meeting-record:hover { border-color: #fff; }
-.meeting-record:focus-visible { outline: 2px solid #d97460; outline-offset: 2px; }
-.meeting-record.recording { border-color: #ef6a56; }
-.meeting-record.recording span { background: #ef6a56; }
-.meeting-record:disabled { opacity: .55; cursor: wait; }
-.meeting-time { min-width: 37px; color: #f0a092; font-size: 10px; font-variant-numeric: tabular-nums; }
-.meeting-prompt { position: absolute; right: 0; bottom: 38px; display: flex; flex-direction: column; width: 300px; min-height: 58px; padding: 11px 13px; border: 1px solid #2b2d29; border-radius: 12px; color: #f8f8f4; background: #111210; }
-.meeting-prompt::after { content: ""; position: absolute; right: 14px; bottom: -5px; width: 9px; height: 9px; border-right: 1px solid #2b2d29; border-bottom: 1px solid #2b2d29; background: #111210; transform: rotate(45deg); }
+.meeting-prompt { position: absolute; bottom: 38px; left: 50%; display: flex; flex-direction: column; width: 300px; padding: 12px 14px; border: 1px solid #2b2d29; border-radius: 12px; color: #f8f8f4; background: #111210; transform: translateX(-50%); }
+.meeting-prompt::after { content: ""; position: absolute; bottom: -5px; left: calc(50% - 18px); width: 9px; height: 9px; border-right: 1px solid #2b2d29; border-bottom: 1px solid #2b2d29; background: #111210; transform: translateX(-50%) rotate(45deg); }
 .meeting-prompt[hidden] { display: none; }
 .meeting-prompt strong { font-size: 12px; font-weight: 650; }
-.meeting-prompt span { margin-top: 4px; color: #b8bbb4; font-size: 9px; line-height: 1.4; }
-.microphone-label { position: absolute; right: 0; bottom: 35px; width: max-content; height: 25px; padding: 6px 12px; border: 1px solid #242522; border-radius: 999px; background: #090a09; color: #f8f8f4; font-size: 10px; line-height: 1; white-space: nowrap; }
-.microphone-label[hidden] { display: none; }
+.meeting-prompt #meeting-prompt-desc, .meeting-prompt #meeting-active-desc { margin-top: 4px; color: #b8bbb4; font-size: 9px; line-height: 1.4; }
+.meeting-prompt-actions { display: flex; gap: 8px; margin-top: 10px; }
+.meeting-prompt-actions button { flex: 1; min-height: 30px; padding: 0 12px; border-radius: 8px; font-size: 11px; font-weight: 650; cursor: pointer; }
+.meeting-prompt-actions button:disabled { opacity: .55; cursor: default; }
+#meeting-start { border: 0; color: #111210; background: #f4f4ef; }
+#meeting-start:hover { background: #fff; }
+#meeting-dismiss { border: 1px solid #3a3c37; color: #b8bbb4; background: transparent; }
+#meeting-dismiss:hover { border-color: #4b4d47; color: #f8f8f4; }
+#meeting-stop { border: 0; color: #fff; background: #a74738; }
+#meeting-stop:hover { background: #b94f3f; }
+.meeting-recording-row { display: flex; align-items: center; gap: 8px; }
+.meeting-recording-row strong { font-size: 12px; }
+.meeting-dot { width: 8px; height: 8px; border-radius: 50%; background: #ef6a56; animation: meeting-blink 1.2s ease-in-out infinite; }
+@keyframes meeting-blink { 50% { opacity: .35; } }
+.meeting-time { margin-left: auto; color: #f0a092; font-size: 11px; font-variant-numeric: tabular-nums; }
+#meeting-idle[hidden], #meeting-active[hidden] { display: none; }

@@ -1,6 +1,7 @@
 const invoke = window.__TAURI__.core.invoke;
 const listen = window.__TAURI__.event.listen;
 const microphoneLabel = document.querySelector('#microphone-label');
+const overlayRow = document.querySelector('#overlay-row');
 let microphoneTimer;
 let persistentNotice = false;
 let meetingTitle = 'Untitled meeting';
@@ -8,14 +9,20 @@ let meetingPromptOpen = false;
 let meetingRecording = false;
 let meetingStartedAt = 0;
 const meetingPrompt = document.querySelector('#meeting-prompt');
-const meetingButton = document.querySelector('#meeting-record');
+const meetingIdle = document.querySelector('#meeting-idle');
+const meetingActive = document.querySelector('#meeting-active');
+const meetingStartButton = document.querySelector('#meeting-start');
+const meetingDismissButton = document.querySelector('#meeting-dismiss');
+const meetingStopButton = document.querySelector('#meeting-stop');
+const meetingPromptTitle = document.querySelector('#meeting-prompt-title');
+const meetingPromptDesc = document.querySelector('#meeting-prompt-desc');
 const meetingTime = document.querySelector('#meeting-time');
 
 async function showNotice(text) {
   microphoneLabel.textContent = text;
   microphoneLabel.hidden = false;
   await new Promise(requestAnimationFrame);
-  const responsiveWidth = Math.max(96, Math.ceil(microphoneLabel.getBoundingClientRect().width + 4));
+  const responsiveWidth = Math.max(136, Math.ceil(microphoneLabel.getBoundingClientRect().width + 4));
   await invoke('resize_microphone_overlay', { width: responsiveWidth });
 }
 
@@ -31,48 +38,93 @@ function formatTime(seconds) {
   return hours ? `${hours}:${minutes}:${rest}` : `${minutes}:${rest}`;
 }
 
+function renderMeetingPrompt() {
+  meetingIdle.hidden = meetingRecording;
+  meetingActive.hidden = !meetingRecording;
+}
+
 async function showMeetingPrompt(title) {
-  meetingTitle = title || 'Untitled meeting'; meetingPromptOpen = true; meetingPrompt.hidden = false;
-  await invoke('resize_overlay', { width: 300, height: 104 }); meetingButton.focus();
+  meetingTitle = title || 'Untitled meeting';
+  meetingPromptOpen = true;
+  meetingPromptTitle.textContent = 'Take notes for this meeting?';
+  meetingPromptDesc.textContent = 'Your microphone and computer audio will be saved locally.';
+  renderMeetingPrompt();
+  meetingPrompt.hidden = false;
+  overlayRow.hidden = true;
+  await invoke('resize_overlay', { width: 300, height: 148 });
+  (meetingRecording ? meetingStopButton : meetingStartButton).focus();
 }
 
 async function closeMeetingPrompt() {
-  meetingPromptOpen = false; meetingPrompt.hidden = true;
+  meetingPromptOpen = false;
+  meetingPrompt.hidden = true;
+  overlayRow.hidden = false;
   if (!meetingRecording) await invoke('dismiss_meeting_prompt');
 }
 
-meetingButton.addEventListener('click', async () => {
+function showMeetingError(message) {
+  meetingPromptOpen = true;
+  meetingRecording = false;
+  renderMeetingPrompt();
+  meetingPrompt.hidden = false;
+  overlayRow.hidden = true;
+  meetingPromptTitle.textContent = 'Could not start meeting notes';
+  meetingPromptDesc.textContent = String(message).replace(/^Error:\s*/, '');
+  invoke('resize_overlay', { width: 300, height: 148 });
+}
+
+meetingStartButton.addEventListener('click', async () => {
+  meetingStartButton.disabled = true;
   try {
-    if (meetingRecording) {
-      meetingButton.disabled = true; await invoke('stop_meeting_recording'); meetingRecording = false;
-      meetingButton.classList.remove('recording'); meetingButton.setAttribute('aria-label', 'Start meeting notes'); meetingTime.hidden = true;
-      await invoke('dismiss_meeting_prompt'); return;
-    }
-    if (!meetingPromptOpen) { await showMeetingPrompt('Untitled meeting'); return; }
-    meetingButton.disabled = true; await invoke('start_meeting_recording', { title: meetingTitle });
-    meetingPromptOpen = false; meetingPrompt.hidden = true; meetingRecording = true; meetingStartedAt = Date.now();
-    meetingButton.classList.add('recording'); meetingButton.setAttribute('aria-label', 'Stop meeting and create notes'); meetingTime.hidden = false;
-    await invoke('resize_overlay', { width: 148, height: 30 });
+    await invoke('start_meeting_recording', { title: meetingTitle });
+    meetingPromptOpen = true;
+    meetingRecording = true;
+    meetingStartedAt = Date.now();
+    renderMeetingPrompt();
+    meetingPrompt.hidden = false;
+    overlayRow.hidden = true;
+    await invoke('resize_overlay', { width: 300, height: 132 });
   } catch (error) {
-    meetingPromptOpen = true; meetingPrompt.hidden = false;
-    meetingPrompt.querySelector('strong').textContent = 'Could not start meeting notes';
-    meetingPrompt.querySelector('span').textContent = String(error).replace(/^Error:\s*/, '');
-    await invoke('resize_overlay', { width: 300, height: 104 });
-  } finally { meetingButton.disabled = false; }
+    showMeetingError(String(error));
+  } finally {
+    meetingStartButton.disabled = false;
+  }
 });
 
-document.addEventListener('keydown', event => { if (event.key === 'Escape' && meetingPromptOpen) closeMeetingPrompt(); });
+meetingStopButton.addEventListener('click', async () => {
+  meetingStopButton.disabled = true;
+  try {
+    await invoke('stop_meeting_recording');
+    meetingRecording = false;
+    await invoke('dismiss_meeting_prompt');
+  } finally {
+    meetingStopButton.disabled = false;
+  }
+});
+
+meetingDismissButton.addEventListener('click', closeMeetingPrompt);
+
+document.querySelector('#cancel').addEventListener('click', () => invoke('cancel_recording'));
+document.querySelector('#finish').addEventListener('click', () => invoke('stop_recording'));
+document.querySelector('#notetaker-open').addEventListener('click', () => invoke('open_notetaker'));
+
+document.addEventListener('keydown', event => { if (event.key === 'Escape' && meetingPromptOpen && !meetingRecording) closeMeetingPrompt(); });
 setInterval(() => { if (meetingRecording) meetingTime.textContent = formatTime((Date.now() - meetingStartedAt) / 1000); }, 1000);
 
 listen('engine-status', event => {
   document.documentElement.classList.toggle('processing', event.payload.phase === 'processing');
-  meetingButton.disabled = event.payload.phase === 'listening' || event.payload.phase === 'processing';
 });
 
 listen('meeting-suggestion', event => showMeetingPrompt(event.payload.title));
 listen('meeting-status', event => {
+  const wasRecording = meetingRecording;
   meetingRecording = Boolean(event.payload.recording);
-  meetingButton.classList.toggle('recording', meetingRecording);
+  if (meetingRecording && !wasRecording) meetingStartedAt = Date.now() - Number(event.payload.elapsedSeconds || 0) * 1000;
+  if (meetingPromptOpen) {
+    renderMeetingPrompt();
+    meetingPrompt.hidden = false;
+    overlayRow.hidden = true;
+  }
 });
 
 listen('microphone-activated', async event => {

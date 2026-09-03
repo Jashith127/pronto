@@ -8,15 +8,35 @@
   </head>
   <body>
     <section id="meeting-prompt" class="meeting-prompt" aria-live="polite" hidden>
-      <strong>Take notes for this meeting?</strong>
-      <span>Your microphone and computer audio will be saved locally.</span>
+      <div id="meeting-idle">
+        <strong id="meeting-prompt-title">Take notes for this meeting?</strong>
+        <span id="meeting-prompt-desc">Your microphone and computer audio will be saved locally.</span>
+        <div class="meeting-prompt-actions">
+          <button id="meeting-start" type="button">Start meeting notes</button>
+          <button id="meeting-dismiss" type="button">Not now</button>
+        </div>
+      </div>
+      <div id="meeting-active" hidden>
+        <div class="meeting-recording-row">
+          <span class="meeting-dot" aria-hidden="true"></span>
+          <strong>Recording meeting</strong>
+          <span id="meeting-time" class="meeting-time">00:00</span>
+        </div>
+        <span id="meeting-active-desc">Audio is being saved locally.</span>
+        <div class="meeting-prompt-actions">
+          <button id="meeting-stop" type="button">Stop and create notes</button>
+        </div>
+      </div>
     </section>
     <div id="microphone-label" class="microphone-label" hidden></div>
-    <main aria-label="Pronto dictation controls">
-      <div class="signal" aria-label="Listening"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
-      <span id="meeting-time" class="meeting-time" hidden>00:00</span>
-      <button id="meeting-record" class="meeting-record" aria-label="Start meeting notes" title="Start meeting notes"><span></span></button>
-    </main>
+    <div id="overlay-row">
+      <main id="dictation-pill" aria-label="Pronto dictation controls">
+        <button id="cancel" aria-label="Cancel dictation">×</button>
+        <div class="signal" aria-label="Listening"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+        <button id="finish" aria-label="Finish dictation">✓</button>
+      </main>
+      <button id="notetaker-open" aria-label="Open Note Taker" title="Open Note Taker"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l4 4v14H6V3Zm9 0v4h4M9 12h7M9 16h7"/></svg></button>
+    </div>
     <script src="overlay.js"></script>
   </body>
 </html>
