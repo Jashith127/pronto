@@ -1,7 +1,6 @@
 const invoke = window.__TAURI__.core.invoke;
 const listen = window.__TAURI__.event.listen;
 const microphoneLabel = document.querySelector('#microphone-label');
-const overlayRow = document.querySelector('#overlay-row');
 let microphoneTimer;
 let persistentNotice = false;
 let meetingTitle = 'Untitled meeting';
@@ -52,7 +51,6 @@ async function showMeetingPrompt(title, question, desc) {
   meetingPromptDesc.textContent = desc || 'Your microphone and computer audio will be saved locally.';
   renderMeetingPrompt();
   meetingPrompt.hidden = false;
-  overlayRow.hidden = true;
   await invoke('resize_overlay', { width: 300, height: 148 });
   (meetingRecording ? meetingStopButton : meetingStartButton).focus();
 }
@@ -60,7 +58,6 @@ async function showMeetingPrompt(title, question, desc) {
 async function closeMeetingPrompt() {
   meetingPromptOpen = false;
   meetingPrompt.hidden = true;
-  overlayRow.hidden = false;
   if (!meetingRecording) await invoke('dismiss_meeting_prompt');
 }
 
@@ -69,7 +66,6 @@ function showMeetingError(message) {
   meetingRecording = false;
   renderMeetingPrompt();
   meetingPrompt.hidden = false;
-  overlayRow.hidden = true;
   meetingPromptTitle.textContent = 'Could not start meeting notes';
   meetingPromptDesc.textContent = String(message).replace(/^Error:\s*/, '');
   invoke('resize_overlay', { width: 300, height: 148 });
@@ -84,7 +80,6 @@ meetingStartButton.addEventListener('click', async () => {
     meetingStartedAt = Date.now();
     renderMeetingPrompt();
     meetingPrompt.hidden = false;
-    overlayRow.hidden = true;
     await invoke('resize_overlay', { width: 300, height: 132 });
   } catch (error) {
     showMeetingError(String(error));
@@ -112,7 +107,6 @@ notetakerButton.addEventListener('click', () => {
   if (meetingRecording) {
     renderMeetingPrompt();
     meetingPrompt.hidden = false;
-    overlayRow.hidden = true;
     invoke('resize_overlay', { width: 300, height: 132 });
     meetingStopButton.focus();
     return;
@@ -136,7 +130,6 @@ listen('meeting-status', event => {
   if (meetingPromptOpen) {
     renderMeetingPrompt();
     meetingPrompt.hidden = false;
-    overlayRow.hidden = true;
   }
 });
 

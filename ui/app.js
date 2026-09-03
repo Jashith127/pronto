@@ -376,7 +376,11 @@ listen('audio-warning', event => showToast(event.payload, true));
 listen('tray-message', event => showToast(event.payload.message, event.payload.error));
 listen('meeting-updated', event => {
   meetings = [event.payload, ...meetings.filter(item => item.id !== event.payload.id)];
-  selectedMeetingId = event.payload.id; renderMeetings(); showToast('Meeting notes are ready');
+  selectedMeetingId = event.payload.id;
+  notetakerDetail = { kind: 'meeting', id: event.payload.id };
+  setView('notetaker');
+  renderMeetings();
+  showToast('Meeting notes are ready');
 });
 listen('meeting-processing-error', event => showToast(event.payload, true));
 listen('meeting-status', event => {
@@ -447,6 +451,7 @@ function folderEntries(folder) {
   return [...uploads, ...recorded].sort((a, b) => b.createdAt - a.createdAt);
 }
 function entryStatus(entry) {
+  if (entry.kind === 'meeting' && entry.item.status === 'ready') return 'Notes ready';
   if (entry.item.status === 'ready') return 'Transcript ready';
   if (entry.item.status === 'error' || entry.item.status === 'interrupted') return 'Needs attention';
   if (entry.item.status === 'recording') return 'Recording now';
@@ -458,7 +463,11 @@ function entryMarkup(entry) {
   const ready = item.status === 'ready';
   const failed = item.status === 'error' || item.status === 'interrupted';
   const text = entry.kind === 'meeting' ? item.transcript : item.rawText;
-  const detail = ready ? `${wordsIn(text).toLocaleString()} words${entry.kind === 'meeting' ? ' · meeting' : item.cleanedText ? ' · cleaned' : ' · verbatim'}` : entry.kind === 'meeting' ? 'Recorded locally' : escapeHtml(item.fileName || 'Audio upload');
+  const detail = ready
+    ? (entry.kind === 'meeting'
+      ? `${wordsIn(text).toLocaleString()} words · ${formatMeetingDuration(Number(item.durationSeconds || 0))} · notes`
+      : `${wordsIn(text).toLocaleString()} words${item.cleanedText ? ' · cleaned' : ' · verbatim'}`)
+    : entry.kind === 'meeting' ? 'Recorded locally' : escapeHtml(item.fileName || 'Audio upload');
   const timestamp = entry.kind === 'meeting' ? item.createdAt : item.createdAt;
   const data = entry.kind === 'meeting' ? `data-meeting-id="${escapeAttr(item.id)}"` : `data-item="${escapeAttr(item.id)}"`;
   return `<button class="notes-file${ready ? '' : ' processing'}${failed ? ' failed' : ''}" ${data} ${ready ? '' : 'disabled'}><span class="notes-file-name"><span class="notes-file-icon">${transcriptIcon}</span><span><strong>${escapeHtml(item.title || item.name)}</strong><em>${detail}</em></span></span><span class="notes-file-status">${entryStatus(entry)}</span><span class="notes-file-date">${new Date(timestamp).toLocaleDateString()}</span></button>`;
@@ -500,7 +509,8 @@ function renderNotetakerDetail() {
   const item = current.item;
   const cleaned = current.kind === 'meeting' ? Boolean(notetaker.meetingCleanups[item.id]) : Boolean(item.cleanedText);
   document.querySelector('#notetaker-viewer-title').textContent = item.title || item.name;
-  document.querySelector('#notetaker-viewer-meta').textContent = `${current.folder.name} · ${new Date(item.createdAt).toLocaleString()} · ${wordsIn(current.text).toLocaleString()} words`;
+  const durationLabel = current.kind === 'meeting' ? ` · ${formatMeetingDuration(Number(item.durationSeconds || 0))}` : '';
+  document.querySelector('#notetaker-viewer-meta').textContent = `${current.folder.name} · ${new Date(item.createdAt).toLocaleString()}${durationLabel} · ${wordsIn(current.text).toLocaleString()} words`;
   const audio = document.querySelector('#notetaker-audio');
   const url = current.kind === 'upload' ? notetakerAudioUrls.get(item.id) : null;
   if (url) { audio.src = url; audio.hidden = false; } else { audio.hidden = true; audio.removeAttribute('src'); }

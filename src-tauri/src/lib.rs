@@ -340,8 +340,18 @@ pub(crate) fn complete_transcription(
         }
     }
     emit_status(app, &pipeline.status);
-    if let Some(overlay) = app.get_webview_window("overlay") {
-        let _ = overlay.hide();
+    // A transcription finishing in the background must not hide the overlay
+    // while meeting notes are being recorded or offered.
+    let meeting_active = app
+        .state::<AppState>()
+        .meetings
+        .status()
+        .map(|status| status.recording)
+        .unwrap_or(false);
+    if !meeting_active {
+        if let Some(overlay) = app.get_webview_window("overlay") {
+            let _ = overlay.hide();
+        }
     }
 }
 
@@ -380,14 +390,29 @@ fn start_meeting_recording(
     title: String,
 ) -> Result<meeting::MeetingRecord, String> {
     let state = app.state::<AppState>();
-    let pipeline = state
-        .pipeline
-        .lock()
-        .map_err(|_| "pipeline lock poisoned")?;
-    if matches!(pipeline.status.phase, Phase::Listening | Phase::Processing) {
-        return Err("Finish dictation before starting meeting notes".into());
+    {
+        let pipeline = state
+            .pipeline
+            .lock()
+            .map_err(|_| "pipeline lock poisoned")?;
+        if pipeline.status.phase == Phase::Listening {
+            // A live dictation is holding the microphone. Stop it so the
+            // meeting can take over capture instead of forcing an app restart.
+            drop(pipeline);
+            let _ = state.audio.stop();
+            state.insertion_target.cancel();
+            let _ = state.system_audio.restore();
+            let mut pipeline = state
+                .pipeline
+                .lock()
+                .map_err(|_| "pipeline lock poisoned")?;
+            pipeline.reset();
+            pipeline.status.message = "Dictation stopped for meeting notes".into();
+            emit_status(&app, &pipeline.status);
+        }
+        // A background transcription finishing up (Phase::Processing) no
+        // longer blocks meeting capture; it completes into history on its own.
     }
-    drop(pipeline);
     let settings = state.settings.snapshot()?;
     let record = state.meetings.start(title, settings.microphone_id)?;
     let _ = app.emit(

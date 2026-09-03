@@ -4,9 +4,11 @@ Pronto 0.7.1 cleans up the dictation pill, gives meeting notes their own space, 
 
 ## What's new
 
-- Dictation pill restored to its compact centered shape (cancel, waveform, finish) with the liquid waveform color scheme kept. The waveform now visibly moves with a faster liquid drift, shimmer, and gentle pulse.
-- Meeting notes moved out of the pill into a dedicated prompt bubble with **Start meeting notes** / **Not now** actions and a recording state with timer and **Stop and create notes**.
-- New round recording button (thick ring with a center dot, turning red while recording) sits just right of the pill. Clicking it asks "Do you want to start the recording now?" and starts recording directly from the overlay without opening the main Pronto window.
+- Dictation pill restored to its compact centered shape (cancel, waveform, finish) with the liquid waveform color scheme kept. Each waveform bar now dances at its own pace like a live waveform.
+- Meeting notes moved out of the pill into a dedicated prompt bubble with **Start meeting notes** / **Not now** actions and a recording state with timer and **Stop and create notes**. The pill stays visible beside the prompt.
+- New round recording button (thick ring with a center dot, turning red while recording) sits close to the pill. Clicking it asks "Do you want to start the recording now?" and starts recording directly from the overlay without opening the main Pronto window.
+- Starting a meeting now automatically stops any live dictation first, so a running transcript can no longer block recording.
+- Finished meetings open themselves in Note Taker with duration, word count, and a "Notes ready" state instead of waiting in the list.
 - Hovering the meeting button no longer shows a loading cursor.
 - Note Taker header simplified: the extra **New folder** button is removed (folder creation stays in the sidebar) and **Start meeting** / **Upload audio** are larger and clearer, with a more neutral, higher-end label typeface.
 - Main window now has minimize, maximize/restore, and close controls with matching line-icon styling, including double-click on the title bar to toggle maximize.
