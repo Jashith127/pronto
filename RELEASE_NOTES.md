@@ -1,6 +1,6 @@
-# Pronto 0.7.0
+# Pronto 0.6.1
 
-Pronto 0.7.0 adds the Note Taker workspace, makes file transcripts verbatim by default, and gives the recording pill an acid-visual treatment.
+Pronto 0.6.1 adds the Note Taker workspace, makes file transcripts verbatim by default, and gives the recording pill an acid-visual treatment.
 
 ## What's new
 
