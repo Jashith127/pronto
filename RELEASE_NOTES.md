@@ -1,3 +1,28 @@
+# Pronto 0.7.0
+
+Pronto 0.7.0 adds the Note Taker workspace, makes file transcripts verbatim by default, and gives the recording pill an acid-visual treatment.
+
+## What's new
+
+- New **Note Taker** tab: create folders, upload audio/video per folder, and keep multiple transcript files in each folder.
+- Click any file to read the full transcript in the viewer; in-session audio playback is included via the upload's local audio URL.
+- File imports (Dictate screen and Note Taker) no longer run automatic speech cleanup, even when "Clean up speech" is enabled for live dictation. Live dictation behavior is unchanged.
+- New **Clean Up Speech** button in the Note Taker viewer: manually cleans the verbatim transcript with a dedicated long-form interview prompt (preserves all content and speaker order, removes fillers/false starts, scales output budget up to 8192 tokens). Original verbatim text is kept alongside the cleaned version.
+- Recording pill now uses a saturated acid-style animation (rapid hue cycling, wobble, flicker, stronger grain). Processing-state animation is unchanged.
+
+## Validation
+
+- 21 automated tests pass.
+- 10 hardware or interactive tests remain opt-in because they require a microphone, NVIDIA GPU, desktop input, audio output, or a live DeepSeek key.
+
+## Requirements
+
+- Windows 10 or 11, 64-bit.
+- A supported NVIDIA GPU and current NVIDIA driver for local CUDA transcription.
+- DeepSeek API key required only for manual Clean Up Speech.
+
+---
+
 # Pronto 0.6.0
 
 Pronto 0.6.0 expands local transcription beyond live dictation and makes the CUDA speech-engine lifecycle significantly more reliable.

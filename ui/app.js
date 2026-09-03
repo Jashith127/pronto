@@ -369,7 +369,207 @@ listen('history-updated', event => {
   history.unshift(event.payload);
   history = history.slice(0, 100);
   renderHistory();
+  notetakerAttachTranscript(event.payload);
 });
+
+// ---- Note Taker: folders, recordings, verbatim transcripts, manual cleanup ----
+const NOTETAKER_KEY = 'pronto.notetaker.v1';
+let notetaker = loadNotetaker();
+let notetakerAudioUrls = new Map();
+let pendingNotetakerItemId = null;
+
+function loadNotetaker() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(NOTETAKER_KEY) || 'null');
+    if (parsed && Array.isArray(parsed.folders)) return { folders: parsed.folders, selectedFolderId: parsed.selectedFolderId || null, selectedItemId: parsed.selectedItemId || null };
+  } catch (_) {}
+  return { folders: [], selectedFolderId: null, selectedItemId: null };
+}
+function saveNotetaker() {
+  try { localStorage.setItem(NOTETAKER_KEY, JSON.stringify(notetaker)); } catch (_) {}
+}
+function notetakerFolder(id) { return notetaker.folders.find(folder => folder.id === id) || null; }
+function notetakerFindItem(itemId) {
+  for (const folder of notetaker.folders) {
+    const item = (folder.items || []).find(entry => entry.id === itemId);
+    if (item) return { folder, item };
+  }
+  return {};
+}
+function notetakerEnsureSelection() {
+  if (!notetakerFolder(notetaker.selectedFolderId)) {
+    notetaker.selectedFolderId = notetaker.folders[0]?.id || null;
+  }
+  const folder = notetakerFolder(notetaker.selectedFolderId);
+  if (folder && !(folder.items || []).some(entry => entry.id === notetaker.selectedItemId)) {
+    notetaker.selectedItemId = (folder.items || [])[0]?.id || null;
+  }
+  if (!folder) notetaker.selectedItemId = null;
+}
+function renderNotetaker() {
+  notetakerEnsureSelection();
+  const folderList = document.querySelector('#notetaker-folder-list');
+  const fileList = document.querySelector('#notetaker-file-list');
+  if (!folderList || !fileList) return;
+  folderList.innerHTML = notetaker.folders.length
+    ? notetaker.folders.map(folder => `<div style="display:flex;gap:4px;align-items:center"><button class="notes-folder${folder.id === notetaker.selectedFolderId ? ' active' : ''}" data-folder="${folder.id}"><span>${escapeHtml(folder.name)}</span><small>${(folder.items || []).length}</small></button><button class="notes-folder-delete" data-delete-folder="${folder.id}" aria-label="Delete folder" title="Delete folder">×</button></div>`).join('')
+    : '<div class="empty">No folders yet.</div>';
+  const folder = notetakerFolder(notetaker.selectedFolderId);
+  document.querySelector('#notetaker-files-title').textContent = folder ? folder.name : 'Select a folder';
+  document.querySelector('#notetaker-files-count').textContent = folder ? `${(folder.items || []).length} file${(folder.items || []).length === 1 ? '' : 's'}` : '';
+  const items = folder?.items || [];
+  fileList.innerHTML = !folder
+    ? '<div class="empty">Create a folder to begin.</div>'
+    : items.length
+      ? items.map(entry => `<button class="notes-file${entry.id === notetaker.selectedItemId ? ' active' : ''}" data-item="${entry.id}"><strong>${escapeHtml(entry.name)}</strong><span>${entry.status === 'ready' ? `${entry.rawText.trim().split(/\s+/).filter(Boolean).length} words · verbatim${entry.cleanedText ? ' · cleaned' : ''}` : entry.status === 'error' ? 'transcription failed' : 'transcribing…'}</span></button>`).join('')
+      : '<div class="empty">Upload audio to create transcripts.</div>';
+  const found = notetakerFindItem(notetaker.selectedItemId);
+  const viewerTitle = document.querySelector('#notetaker-viewer-title');
+  const viewerMeta = document.querySelector('#notetaker-viewer-meta');
+  const viewerBody = document.querySelector('#notetaker-viewer-body');
+  const audio = document.querySelector('#notetaker-audio');
+  const cleanupButton = document.querySelector('#notetaker-cleanup');
+  const copyButton = document.querySelector('#notetaker-copy');
+  const status = document.querySelector('#notetaker-cleanup-status');
+  if (!found.item) {
+    viewerTitle.textContent = 'No transcript selected';
+    viewerMeta.textContent = 'Choose a file to read the full transcript.';
+    viewerBody.innerHTML = '<div class="empty">Your full transcript will appear here.</div>';
+    audio.hidden = true;
+    audio.removeAttribute('src');
+    cleanupButton.disabled = true;
+    copyButton.disabled = true;
+    return;
+  }
+  viewerTitle.textContent = found.item.name;
+  viewerMeta.textContent = `${found.folder.name} · ${new Date(found.item.createdAt).toLocaleString()} · automatic cleanup never applied`;
+  const url = notetakerAudioUrls.get(found.item.id);
+  if (url) { audio.src = url; audio.hidden = false; } else { audio.hidden = true; audio.removeAttribute('src'); }
+  copyButton.disabled = found.item.status !== 'ready';
+  cleanupButton.disabled = found.item.status !== 'ready';
+  if (found.item.status !== 'ready') {
+    viewerBody.innerHTML = `<div class="empty">${found.item.status === 'error' ? 'Transcription failed. Try uploading again.' : 'Transcribing locally with Parakeet…'}</div>`;
+  } else if (found.item.cleanedText) {
+    viewerBody.innerHTML = `<span class="cleaned-label">Cleaned with long-form prompt</span><div>${escapeHtml(found.item.cleanedText)}</div>`;
+  } else {
+    viewerBody.textContent = found.item.rawText;
+  }
+  if (status && !status.dataset.pinned) status.textContent = found.item.cleanedText ? 'Showing cleaned version. Original verbatim text is kept.' : '';
+}
+function notetakerAttachTranscript(entry) {
+  if (!pendingNotetakerItemId) return;
+  const found = notetakerFindItem(pendingNotetakerItemId);
+  pendingNotetakerItemId = null;
+  if (!found.item) { renderNotetaker(); return; }
+  found.item.rawText = entry.finalText || entry.rawText || '';
+  found.item.status = found.item.rawText ? 'ready' : 'error';
+  found.item.historyId = entry.id;
+  notetaker.selectedFolderId = found.folder.id;
+  notetaker.selectedItemId = found.item.id;
+  saveNotetaker();
+  renderNotetaker();
+  showToast(`Transcript ready in ${found.folder.name}`);
+}
+async function notetakerUpload(file) {
+  if (!notetaker.folders.length) { showToast('Create a folder first', true); return; }
+  const folder = notetakerFolder(notetaker.selectedFolderId) || notetaker.folders[0];
+  const status = document.querySelector('#notetaker-cleanup-status');
+  try {
+    const context = new AudioContext();
+    let decoded;
+    try { decoded = await context.decodeAudioData(await file.arrayBuffer()); }
+    finally { await context.close(); }
+    if (!decoded.numberOfChannels || !decoded.length) throw new Error('No audio track was found in this file.');
+    if (decoded.duration > 90 * 60) throw new Error('Choose a file shorter than 90 minutes.');
+    const item = { id: `nt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name: file.name.replace(/\.[^.]+$/, ''), fileName: file.name, createdAt: Date.now(), status: 'transcribing', rawText: '', cleanedText: '' };
+    folder.items = folder.items || [];
+    folder.items.unshift(item);
+    notetaker.selectedFolderId = folder.id;
+    notetaker.selectedItemId = item.id;
+    try { notetakerAudioUrls.set(item.id, URL.createObjectURL(file)); } catch (_) {}
+    pendingNotetakerItemId = item.id;
+    saveNotetaker();
+    renderNotetaker();
+    if (status) status.textContent = `Transcribing ${file.name} locally — cleanup will not run automatically…`;
+    const wavBytes = audioBufferToWav(decoded);
+    await call('transcribe_media_file', { fileName: file.name, wavBytes: Array.from(wavBytes) });
+  } catch (error) {
+    pendingNotetakerItemId = null;
+    const detail = String(error).replace(/^Error:\s*/, '');
+    showToast(detail, true);
+    if (status) status.textContent = '';
+    renderNotetaker();
+  }
+}
+async function notetakerCleanup() {
+  const found = notetakerFindItem(notetaker.selectedItemId);
+  const status = document.querySelector('#notetaker-cleanup-status');
+  const button = document.querySelector('#notetaker-cleanup');
+  if (!found.item || found.item.status !== 'ready') return;
+  button.disabled = true;
+  if (status) { status.dataset.pinned = '1'; status.textContent = 'Cleaning up with long-form interview prompt…'; }
+  try {
+    const cleaned = await call('cleanup_notetaker_transcript', { text: found.item.rawText });
+    found.item.cleanedText = cleaned;
+    saveNotetaker();
+    renderNotetaker();
+    if (status) status.textContent = 'Showing cleaned version. Original verbatim text is kept.';
+    showToast('Speech cleaned with long-form prompt');
+  } catch (error) {
+    if (status) status.textContent = '';
+    showToast(String(error).replace(/^Error:\s*/, ''), true);
+  } finally {
+    if (status) delete status.dataset.pinned;
+    button.disabled = false;
+  }
+}
+
+document.querySelector('#notetaker-new-folder')?.addEventListener('submit', event => {
+  event.preventDefault();
+  const input = document.querySelector('#notetaker-folder-input');
+  const name = input.value.trim();
+  if (!name) return;
+  const folder = { id: `folder-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, name: name.slice(0, 60), createdAt: Date.now(), items: [] };
+  notetaker.folders.push(folder);
+  notetaker.selectedFolderId = folder.id;
+  notetaker.selectedItemId = null;
+  input.value = '';
+  saveNotetaker();
+  renderNotetaker();
+});
+document.querySelector('#notetaker-folder-list')?.addEventListener('click', event => {
+  const deleteId = event.target.closest('[data-delete-folder]')?.dataset.deleteFolder;
+  if (deleteId) {
+    if (!confirm('Delete this folder and all its transcripts?')) return;
+    notetaker.folders = notetaker.folders.filter(folder => folder.id !== deleteId);
+    if (notetaker.selectedFolderId === deleteId) { notetaker.selectedFolderId = null; notetaker.selectedItemId = null; }
+    saveNotetaker();
+    renderNotetaker();
+    return;
+  }
+  const folderId = event.target.closest('[data-folder]')?.dataset.folder;
+  if (folderId) { notetaker.selectedFolderId = folderId; notetaker.selectedItemId = null; saveNotetaker(); renderNotetaker(); }
+});
+document.querySelector('#notetaker-file-list')?.addEventListener('click', event => {
+  const itemId = event.target.closest('[data-item]')?.dataset.item;
+  if (itemId) { notetaker.selectedItemId = itemId; saveNotetaker(); renderNotetaker(); }
+});
+document.querySelector('#notetaker-upload')?.addEventListener('click', () => document.querySelector('#notetaker-file').click());
+document.querySelector('#notetaker-file')?.addEventListener('change', event => {
+  const file = event.target.files?.[0];
+  event.target.value = '';
+  if (file) notetakerUpload(file);
+});
+document.querySelector('#notetaker-cleanup')?.addEventListener('click', notetakerCleanup);
+document.querySelector('#notetaker-copy')?.addEventListener('click', async () => {
+  const found = notetakerFindItem(notetaker.selectedItemId);
+  if (!found.item) return;
+  try {
+    await navigator.clipboard.writeText(found.item.cleanedText || found.item.rawText);
+    showToast('Transcript copied');
+  } catch (_) { showToast('Copy failed in this window', true); }
+});
+renderNotetaker();
 
 Promise.all([
   call('get_status'),

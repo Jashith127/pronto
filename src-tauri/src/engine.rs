@@ -1,6 +1,6 @@
 use crate::audio::Recording;
 use crate::gpu_memory::{GpuMemoryMonitor, MemoryInfo};
-use crate::settings::{deepseek_key, HistoryEntry, UserSettings, DEFAULT_CLEANUP_PROMPT};
+use crate::settings::{deepseek_key, HistoryEntry, UserSettings, DEFAULT_CLEANUP_PROMPT, DEFAULT_LONGFORM_CLEANUP_PROMPT};
 use reqwest::blocking::{multipart, Client};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -731,7 +731,7 @@ struct DeepSeekMessage {
     content: String,
 }
 
-fn deepseek_cleanup(
+pub(crate) fn deepseek_cleanup(
     client: &Client,
     api_key: &str,
     transcript: &str,
@@ -745,6 +745,28 @@ fn deepseek_cleanup(
         transcript,
         dictionary,
         system_prompt,
+        768,
+    )
+}
+
+pub(crate) fn deepseek_longform_cleanup(
+    client: &Client,
+    api_key: &str,
+    transcript: &str,
+    dictionary: &[String],
+) -> Result<String, String> {
+    // Long interviews need room to breathe: scale output budget with input
+    // length instead of the 768-token cap used for short dictations.
+    let words = transcript.split_whitespace().count().max(1);
+    let max_tokens = ((words * 2 + 500).min(8192)).max(1500) as u32;
+    deepseek_cleanup_at(
+        client,
+        "https://api.deepseek.com/chat/completions",
+        api_key,
+        transcript,
+        dictionary,
+        DEFAULT_LONGFORM_CLEANUP_PROMPT,
+        max_tokens,
     )
 }
 
@@ -755,6 +777,7 @@ fn deepseek_cleanup_at(
     transcript: &str,
     dictionary: &[String],
     system_prompt: &str,
+    max_tokens: u32,
 ) -> Result<String, String> {
     let dictionary = if dictionary.is_empty() {
         "(none)".into()
@@ -775,7 +798,7 @@ fn deepseek_cleanup_at(
             }
         ],
         "temperature": 0,
-        "max_tokens": 768,
+        "max_tokens": max_tokens,
         "stream": false
     });
     let response = client
@@ -906,6 +929,10 @@ fn local_cleanup(text: &str) -> String {
         first.make_ascii_uppercase();
     }
     output
+}
+
+pub(crate) fn apply_dictionary_public(text: &str, dictionary: &[String]) -> String {
+    apply_dictionary(text, dictionary)
 }
 
 fn apply_dictionary(text: &str, dictionary: &[String]) -> String {
@@ -1243,6 +1270,7 @@ mod tests {
             "use pronto with parakeet",
             &["Pronto".into(), "Parakeet".into()],
             DEFAULT_CLEANUP_PROMPT,
+            768,
         )
         .expect("mock cleanup should succeed");
         assert_eq!(cleaned, "Use Pronto with Parakeet.");

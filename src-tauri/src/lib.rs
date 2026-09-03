@@ -355,6 +355,11 @@ fn transcribe_media_file(
         recording,
         settings: UserSettings {
             auto_insert: false,
+            // Local file imports never go through automatic cleanup, even
+            // when "Clean up speech" is enabled for live dictation.
+            // Note Taker transcripts stay verbatim until the user presses
+            // "Clean Up Speech" for manual long-form cleanup.
+            cleanup_enabled: false,
             ..settings
         },
         target_window: 0,
@@ -663,6 +668,30 @@ fn copy_transcript(state: tauri::State<'_, AppState>, id: String) -> Result<(), 
 }
 
 #[tauri::command]
+fn cleanup_notetaker_transcript(
+    state: tauri::State<'_, AppState>,
+    text: String,
+) -> Result<String, String> {
+    let transcript = text.trim().to_string();
+    if transcript.is_empty() {
+        return Err("There is no transcript text to clean up yet.".into());
+    }
+    if transcript.len() > 60_000 {
+        return Err("This transcript is too long to clean up in one request.".into());
+    }
+    let settings = state.settings.snapshot()?;
+    let api_key = settings::deepseek_key()
+        .ok_or_else(|| "Add a DeepSeek API key in Settings to enable Clean Up Speech.".to_string())?;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|error| format!("DeepSeek cleanup failed: {error}"))?;
+    let cleaned =
+        engine::deepseek_longform_cleanup(&client, &api_key, &transcript, &settings.dictionary)?;
+    Ok(engine::apply_dictionary_public(&cleaned, &settings.dictionary))
+}
+
+#[tauri::command]
 fn minimize_main_window(app: AppHandle) -> Result<(), String> {
     let window = app
         .get_webview_window("main")
@@ -822,6 +851,7 @@ pub fn run() {
             insert_again,
             paste_last_transcript,
             copy_transcript,
+            cleanup_notetaker_transcript,
             minimize_main_window,
             hide_main_window
         ])

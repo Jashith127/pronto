@@ -8,19 +8,23 @@ button { display: grid; place-items: center; flex: 0 0 20px; width: 20px; height
 button:hover { background: #62635e; }
 #finish { padding: 0 0 1px; color: #11120f; background: #f4f4ef; font-size: 12px; }
 #finish:hover { background: white; }
-.signal { position: relative; display: flex; align-items: center; justify-content: center; gap: 1.5px; width: 44px; height: 20px; isolation: isolate; }
-.signal i { position: relative; width: 2px; height: 8px; overflow: hidden; border-radius: 3px; background: linear-gradient(180deg, #ffad68 0%, #ff554c 28%, #d93180 58%, #893cd0 78%, #263975 100%); background-size: 100% 240%; animation: voice .48s ease-in-out infinite alternate, aurora 2.2s linear infinite; box-shadow: 0 0 5px rgba(239, 73, 116, .35); }
-.signal i::after { content: ""; position: absolute; inset: -4px; opacity: .42; background-image: radial-gradient(circle at 15% 20%, rgba(255,255,255,.8) 0 .45px, transparent .7px), radial-gradient(circle at 72% 38%, rgba(5,7,18,.85) 0 .4px, transparent .7px), radial-gradient(circle at 42% 77%, rgba(255,226,177,.75) 0 .35px, transparent .65px), radial-gradient(circle at 88% 88%, rgba(8,11,29,.8) 0 .4px, transparent .7px); background-size: 7px 9px, 9px 7px, 8px 11px, 11px 8px; mix-blend-mode: overlay; animation: grain .32s steps(2, end) infinite; pointer-events: none; }
-.signal i:nth-child(2), .signal i:nth-child(7) { height: 13px; animation-delay: -.12s, -.8s; }
-.signal i:nth-child(3), .signal i:nth-child(6) { height: 16px; animation-delay: -.31s, -1.5s; }
-.signal i:nth-child(4), .signal i:nth-child(5) { height: 11px; animation-delay: -.2s, -1.9s; }
-@keyframes voice { to { transform: scaleY(.35); opacity: .62; } }
+.signal { position: relative; display: flex; align-items: center; justify-content: center; gap: 1.5px; width: 44px; height: 20px; isolation: isolate; animation: acid-breathe 1.6s ease-in-out infinite; }
+.signal i { position: relative; width: 2px; height: 8px; overflow: hidden; border-radius: 3px; background: linear-gradient(180deg, #fbff5e 0%, #4dff88 18%, #2ee6d6 34%, #3f8cff 50%, #b44dff 66%, #ff3fa4 82%, #ff5a3c 100%); background-size: 100% 420%; animation: acid-voice .32s ease-in-out infinite alternate, acid-trip 1.1s linear infinite, acid-flicker 1.7s ease-in-out infinite; box-shadow: 0 0 6px rgba(77, 255, 170, .55), 0 0 12px rgba(255, 63, 164, .35); filter: saturate(1.7) contrast(1.08); }
+.signal i::after { content: ""; position: absolute; inset: -4px; opacity: .55; background-image: radial-gradient(circle at 15% 20%, rgba(255,255,255,.9) 0 .55px, transparent .8px), radial-gradient(circle at 72% 38%, rgba(5,7,18,.9) 0 .5px, transparent .8px), radial-gradient(circle at 42% 77%, rgba(255,226,177,.85) 0 .45px, transparent .75px), radial-gradient(circle at 88% 88%, rgba(8,11,29,.85) 0 .5px, transparent .8px); background-size: 6px 8px, 8px 6px, 7px 10px, 10px 7px; mix-blend-mode: overlay; animation: grain .22s steps(2, end) infinite; pointer-events: none; }
+.signal i:nth-child(2), .signal i:nth-child(7) { height: 13px; animation-delay: -.12s, -.8s, -.4s; }
+.signal i:nth-child(3), .signal i:nth-child(6) { height: 16px; animation-delay: -.31s, -1.5s, -.9s; }
+.signal i:nth-child(4), .signal i:nth-child(5) { height: 11px; animation-delay: -.2s, -1.9s, -.6s; }
+@keyframes acid-voice { from { transform: scaleY(1) skewX(0deg); } to { transform: scaleY(.25) skewX(-8deg); opacity: .7; } }
+@keyframes acid-trip { 0% { background-position: 0 0%; filter: hue-rotate(0deg) saturate(1.7); } 50% { background-position: 0 210%; filter: hue-rotate(140deg) saturate(2.1); } 100% { background-position: 0 420%; filter: hue-rotate(360deg) saturate(1.7); } }
+@keyframes acid-flicker { 0%, 100% { opacity: 1; } 25% { opacity: .75; } 50% { opacity: 1; } 75% { opacity: .6; } }
+@keyframes acid-breathe { 0%, 100% { transform: scale(1); } 30% { transform: scale(1.08, .92); } 60% { transform: scale(.94, 1.06); } }
+.processing .signal { animation: none; }
 .processing .signal i { animation: pulse .7s ease-in-out infinite alternate, aurora 1.5s linear infinite; }
 @keyframes pulse { to { opacity: .35; } }
 @keyframes aurora { to { background-position: 0 240%; filter: hue-rotate(18deg); } }
 @keyframes grain { 0% { transform: translate3d(-1px, 0, 0); } 50% { transform: translate3d(1px, -1px, 0); } 100% { transform: translate3d(0, 1px, 0); } }
 
 @media (prefers-reduced-motion: reduce) {
-  .signal i, .signal i::after, .processing .signal i { animation: none; }
+  .signal, .signal i, .signal i::after, .processing .signal i { animation: none; }
   .signal i { background-position: 0 45%; }
 }

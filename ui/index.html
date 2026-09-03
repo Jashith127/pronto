@@ -20,6 +20,9 @@
           <button class="nav" data-view="history">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.3-5.7L4 8.5M4 4v4.5h4.5M12 8v4l3 2"/></svg><span>History</span>
           </button>
+          <button class="nav" data-view="notetaker">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l4 4v14H6V3Zm9 0v4h4M9 12h7M9 16h7"/></svg><span>Note Taker</span>
+          </button>
           <button class="nav" data-view="dictionary">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h10a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3V4Zm3 12h10M9 8h5"/></svg><span>Dictionary</span>
           </button>
@@ -67,6 +70,41 @@
             <button class="text-danger" id="clear-history">Clear history</button>
           </div>
           <div id="history-list" class="history-list full"></div>
+        </div>
+
+        <div class="view" id="notetaker">
+          <div class="page-title">
+            <div><h1>Note Taker</h1><p>Upload long recordings into folders. File transcripts stay verbatim — press Clean Up Speech when you're ready.</p></div>
+            <div class="notes-top-actions">
+              <button class="secondary-action" id="notetaker-upload" type="button">Upload audio</button>
+              <input id="notetaker-file" type="file" accept="audio/*,video/*,.m4a,.mkv,.mov,.webm" hidden />
+            </div>
+          </div>
+          <div class="notes-layout">
+            <aside class="notes-folders" aria-label="Folders">
+              <form class="notes-new-folder" id="notetaker-new-folder">
+                <input id="notetaker-folder-input" maxlength="60" placeholder="New folder" autocomplete="off" />
+                <button type="submit" aria-label="Create folder">+</button>
+              </form>
+              <div id="notetaker-folder-list" class="notes-folder-list"></div>
+            </aside>
+            <section class="notes-files" aria-label="Recordings">
+              <div class="notes-files-head"><span id="notetaker-files-title">Select a folder</span><small id="notetaker-files-count"></small></div>
+              <div id="notetaker-file-list" class="notes-file-list"></div>
+            </section>
+            <article class="notes-viewer" aria-label="Transcript viewer">
+              <div class="notes-viewer-head">
+                <div><h2 id="notetaker-viewer-title">No transcript selected</h2><p id="notetaker-viewer-meta">Choose a file to read the full transcript.</p></div>
+                <div class="notes-viewer-actions">
+                  <button class="secondary-action" id="notetaker-copy" type="button" disabled>Copy</button>
+                  <button id="notetaker-cleanup" type="button" disabled>Clean Up Speech</button>
+                </div>
+              </div>
+              <audio id="notetaker-audio" controls hidden></audio>
+              <div id="notetaker-cleanup-status" class="notes-status" role="status"></div>
+              <div id="notetaker-viewer-body" class="notes-viewer-body"><div class="empty">Your full transcript will appear here.</div></div>
+            </article>
+          </div>
         </div>
 
         <div class="view" id="dictionary">
