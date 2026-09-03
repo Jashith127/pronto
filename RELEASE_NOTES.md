@@ -1,3 +1,47 @@
+# Pronto 0.7.0
+
+Pronto 0.7 adds local meeting recording and turns Note Taker into a focused workspace for recorded meetings, imported audio, transcripts, and notes—without requiring a calendar connection or meeting bot.
+
+## Meeting recording
+
+- Record the microphone and Windows system audio together during Google Meet, presentations, and other desktop calls.
+- Audio is written continuously to local WAV files while the meeting is happening, limiting memory use and protecting completed audio if Pronto closes unexpectedly.
+- Meeting detection is local and title-based. A small pinned prompt offers to take notes when Pronto recognizes a supported meeting window; no Google Calendar connection or account sync is required.
+- The compact meeting pill uses a dedicated hollow-circle recording control. Its waveform keeps a static silhouette while a grainy indigo, magenta, coral, and amber liquid texture drifts subtly inside it.
+- Recording does not run speech recognition or note generation during the call. After stopping, Pronto mixes the captured sources, transcribes the meeting in chunks with local Parakeet, and creates notes in the background.
+- DeepSeek creates structured notes when configured; a local fallback still produces a usable meeting summary without an API key.
+- Interrupted recordings are recovered and surfaced in Note Taker instead of being silently discarded.
+
+## Note Taker
+
+- Note Taker now opens as a two-pane file explorer with folders on the left and transcript files on the right.
+- A permanent **My recordings** folder is created automatically for meeting recordings and quick uploads.
+- Use either **+ New folder** control to organize imported recordings before uploading them.
+- Uploads appear in the selected folder immediately and report preparation and transcription status while processing continues in the background.
+- Recorded meetings and imported audio share the same explorer, with clear ready, processing, and attention states.
+- Only completed transcripts can open. A ready transcript gets a dedicated reading view with **Back**, **Copy**, and **Clean Up Speech** controls.
+- Recorded-meeting notes appear above the full transcript. Manual cleanup preserves the original transcript.
+
+## Performance and privacy
+
+- Live recording is limited to lightweight native audio capture and buffered disk writes; GPU transcription and note generation begin only after recording stops.
+- Microphone and system-audio capture remain on the computer. Only optional DeepSeek cleanup or note generation sends transcript text to the configured service.
+- The generated liquid waveform texture is optimized to approximately 142 KB and respects the system reduced-motion preference.
+
+## Validation
+
+- 23 automated tests pass.
+- 10 hardware or interactive tests remain opt-in because they require a microphone, NVIDIA GPU, Windows audio endpoint, desktop input, audio output, or a live DeepSeek key.
+
+## Requirements
+
+- Windows 10 or 11, 64-bit.
+- A supported NVIDIA GPU and current NVIDIA driver for local CUDA transcription.
+- Microphone permission; system-audio recording uses the active Windows output endpoint.
+- DeepSeek API key is optional and is used only for advanced cleanup and meeting-note generation.
+
+---
+
 # Pronto 0.6.1
 
 Pronto 0.6.1 adds the Note Taker workspace, makes file transcripts verbatim by default, and gives the recording pill an acid-visual treatment.

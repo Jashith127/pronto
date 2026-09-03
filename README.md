@@ -6,6 +6,8 @@ Pronto is a Windows push-to-talk dictation application. It processes audio local
 
 * **Local Transcription:** Uses NVIDIA Parakeet TDT 0.6B v3 via CUDA. The model stays loaded in memory to reduce delay.
 * **Audio and Video Import:** Transcribes the audio track from common media files locally, including MP3, WAV, M4A, MP4, MOV, and WebM.
+* **Meeting Note Taker:** Records microphone and Windows system audio directly to disk, then transcribes the meeting and creates notes after recording stops. Local window-title detection can offer the recorder without a calendar connection or meeting bot.
+* **Recording Library:** Organizes recorded meetings and imported audio into local folders with background processing status and focused transcript views.
 * **Offline Operation:** Runs completely offline without an internet connection using local models.
 * **Text Processing/Cleanup:** Clears corrections to make text clear. Handles automatic punctuation, automatic bullet points, and automatic formatting. Optional DeepSeek V4 integration provides advanced text rewrite.
 * **Text Insertion:** Inserts Unicode text into the active target application.

@@ -73,38 +73,47 @@
         </div>
 
         <div class="view" id="notetaker">
-          <div class="page-title">
-            <div><h1>Note Taker</h1><p>Upload long recordings into folders. File transcripts stay verbatim — press Clean Up Speech when you're ready.</p></div>
-            <div class="notes-top-actions">
-              <button class="secondary-action" id="notetaker-upload" type="button">Upload audio</button>
-              <input id="notetaker-file" type="file" accept="audio/*,video/*,.m4a,.mkv,.mov,.webm" hidden />
-            </div>
-          </div>
-          <div class="notes-layout">
-            <aside class="notes-folders" aria-label="Folders">
-              <form class="notes-new-folder" id="notetaker-new-folder">
-                <input id="notetaker-folder-input" maxlength="60" placeholder="New folder" autocomplete="off" />
-                <button type="submit" aria-label="Create folder">+</button>
-              </form>
-              <div id="notetaker-folder-list" class="notes-folder-list"></div>
-            </aside>
-            <section class="notes-files" aria-label="Recordings">
-              <div class="notes-files-head"><span id="notetaker-files-title">Select a folder</span><small id="notetaker-files-count"></small></div>
-              <div id="notetaker-file-list" class="notes-file-list"></div>
-            </section>
-            <article class="notes-viewer" aria-label="Transcript viewer">
-              <div class="notes-viewer-head">
-                <div><h2 id="notetaker-viewer-title">No transcript selected</h2><p id="notetaker-viewer-meta">Choose a file to read the full transcript.</p></div>
-                <div class="notes-viewer-actions">
-                  <button class="secondary-action" id="notetaker-copy" type="button" disabled>Copy</button>
-                  <button id="notetaker-cleanup" type="button" disabled>Clean Up Speech</button>
-                </div>
+          <section id="notetaker-explorer" class="notes-explorer-view">
+            <div class="page-title notes-page-title">
+              <div><h1>Note Taker</h1><p>Record a meeting or add audio to a folder. Transcription continues quietly in the background.</p></div>
+              <div class="notes-top-actions">
+                <button class="meeting-start-action" id="meeting-toggle" type="button"><span class="record-glyph" aria-hidden="true"><i></i></span><b>Start meeting</b></button>
+                <button class="secondary-action notes-new-folder-trigger" id="notetaker-new-folder-trigger" type="button" aria-expanded="false"><span aria-hidden="true">＋</span> New folder</button>
+                <button class="notes-upload-action" id="notetaker-upload" type="button"><span aria-hidden="true">↑</span> Upload audio</button>
+                <input id="notetaker-file" type="file" accept="audio/*,video/*,.m4a,.mkv,.mov,.webm" hidden />
               </div>
-              <audio id="notetaker-audio" controls hidden></audio>
-              <div id="notetaker-cleanup-status" class="notes-status" role="status"></div>
-              <div id="notetaker-viewer-body" class="notes-viewer-body"><div class="empty">Your full transcript will appear here.</div></div>
-            </article>
-          </div>
+            </div>
+            <div class="notes-live-row"><span id="meeting-live-status" role="status"></span><span id="notetaker-background-status" role="status"></span></div>
+            <div class="notes-explorer">
+              <aside class="notes-folders" aria-label="Folders">
+                <div class="notes-sidebar-head"><span>Folders</span><button id="notetaker-sidebar-plus" type="button" aria-label="Create a new folder" title="New folder">＋</button></div>
+                <form class="notes-new-folder" id="notetaker-new-folder" hidden>
+                  <input id="notetaker-folder-input" maxlength="60" placeholder="Folder name" aria-label="Folder name" autocomplete="off" />
+                  <button type="submit">Add</button>
+                </form>
+                <div id="notetaker-folder-list" class="notes-folder-list"></div>
+              </aside>
+              <section class="notes-files" aria-label="Transcripts">
+                <div class="notes-files-head"><div><h2 id="notetaker-files-title">My recordings</h2><p>Audio and meeting transcripts</p></div><small id="notetaker-files-count"></small></div>
+                <div class="notes-file-columns" aria-hidden="true"><span>Name</span><span>Status</span><span>Date</span></div>
+                <div id="notetaker-file-list" class="notes-file-list"></div>
+              </section>
+            </div>
+          </section>
+          <article id="notetaker-detail" class="notes-detail-view" aria-label="Full transcript" hidden>
+            <header class="notes-detail-head">
+              <button class="notes-back" id="notetaker-back" type="button" aria-label="Back to recordings"><span aria-hidden="true">←</span> Back</button>
+              <div class="notes-detail-title"><h1 id="notetaker-viewer-title">Transcript</h1><p id="notetaker-viewer-meta"></p></div>
+              <div class="notes-viewer-actions">
+                <button class="secondary-action" id="notetaker-copy" type="button">Copy</button>
+                <button id="notetaker-cleanup" type="button">Clean Up Speech</button>
+              </div>
+            </header>
+            <audio id="notetaker-audio" controls hidden></audio>
+            <div id="notetaker-cleanup-status" class="notes-status" role="status"></div>
+            <section id="notetaker-meeting-notes" class="notes-summary" hidden><h2>Meeting notes</h2><div></div></section>
+            <div id="notetaker-viewer-body" class="notes-viewer-body"></div>
+          </article>
         </div>
 
         <div class="view" id="dictionary">

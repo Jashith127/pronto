@@ -10,6 +10,10 @@ let microphoneStatus = null;
 let history = [];
 let engineStatus = null;
 let pendingShortcut = '';
+let meetings = [];
+let selectedMeetingId = null;
+let meetingRecording = false;
+let meetingStartedAt = 0;
 
 function showToast(text, error = false) {
   toast.textContent = text;
@@ -365,6 +369,16 @@ listen('model-status', event => renderModel(event.payload));
 listen('hotkey-status', event => renderHotkey(event.payload));
 listen('audio-warning', event => showToast(event.payload, true));
 listen('tray-message', event => showToast(event.payload.message, event.payload.error));
+listen('meeting-updated', event => {
+  meetings = [event.payload, ...meetings.filter(item => item.id !== event.payload.id)];
+  selectedMeetingId = event.payload.id; renderMeetings(); showToast('Meeting notes are ready');
+});
+listen('meeting-processing-error', event => showToast(event.payload, true));
+listen('meeting-status', event => {
+  meetingRecording = Boolean(event.payload.recording);
+  if (meetingRecording) meetingStartedAt = Date.now() - Number(event.payload.elapsedSeconds || 0) * 1000;
+  renderMeetingStatus();
+});
 listen('history-updated', event => {
   history.unshift(event.payload);
   history = history.slice(0, 100);
@@ -372,18 +386,32 @@ listen('history-updated', event => {
   notetakerAttachTranscript(event.payload);
 });
 
-// ---- Note Taker: folders, recordings, verbatim transcripts, manual cleanup ----
+// ---- Note Taker: file explorer, background transcription, focused reader ----
 const NOTETAKER_KEY = 'pronto.notetaker.v1';
+const DEFAULT_FOLDER_ID = 'folder-default';
+const folderIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7.5h6l2-2h3l2 2h4v10.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></svg>';
+const transcriptIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3.5h7l4 4V20H7zM14 3.5v4h4M10 12h5M10 15.5h5"/></svg>';
 let notetaker = loadNotetaker();
 let notetakerAudioUrls = new Map();
 let pendingNotetakerItemId = null;
+let notetakerDetail = null;
 
 function loadNotetaker() {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(NOTETAKER_KEY) || 'null');
-    if (parsed && Array.isArray(parsed.folders)) return { folders: parsed.folders, selectedFolderId: parsed.selectedFolderId || null, selectedItemId: parsed.selectedItemId || null };
-  } catch (_) {}
-  return { folders: [], selectedFolderId: null, selectedItemId: null };
+  let parsed = null;
+  try { parsed = JSON.parse(localStorage.getItem(NOTETAKER_KEY) || 'null'); } catch (_) {}
+  const state = parsed && Array.isArray(parsed.folders)
+    ? { folders: parsed.folders, selectedFolderId: parsed.selectedFolderId || null, meetingCleanups: parsed.meetingCleanups || {} }
+    : { folders: [], selectedFolderId: null, meetingCleanups: {} };
+  let defaultFolder = state.folders.find(folder => folder.id === DEFAULT_FOLDER_ID);
+  if (!defaultFolder) {
+    defaultFolder = { id: DEFAULT_FOLDER_ID, name: 'My recordings', createdAt: 0, isDefault: true, items: [] };
+    state.folders.unshift(defaultFolder);
+  }
+  defaultFolder.isDefault = true;
+  defaultFolder.items = defaultFolder.items || [];
+  state.folders.forEach(folder => { folder.items = folder.items || []; });
+  if (!state.folders.some(folder => folder.id === state.selectedFolderId)) state.selectedFolderId = DEFAULT_FOLDER_ID;
+  return state;
 }
 function saveNotetaker() {
   try { localStorage.setItem(NOTETAKER_KEY, JSON.stringify(notetaker)); } catch (_) {}
@@ -391,70 +419,93 @@ function saveNotetaker() {
 function notetakerFolder(id) { return notetaker.folders.find(folder => folder.id === id) || null; }
 function notetakerFindItem(itemId) {
   for (const folder of notetaker.folders) {
-    const item = (folder.items || []).find(entry => entry.id === itemId);
+    const item = folder.items.find(entry => entry.id === itemId);
     if (item) return { folder, item };
   }
   return {};
 }
-function notetakerEnsureSelection() {
-  if (!notetakerFolder(notetaker.selectedFolderId)) {
-    notetaker.selectedFolderId = notetaker.folders[0]?.id || null;
+function wordsIn(text) { return String(text || '').trim().split(/\s+/).filter(Boolean).length; }
+function currentTranscript() {
+  if (!notetakerDetail) return null;
+  if (notetakerDetail.kind === 'meeting') {
+    const item = meetings.find(entry => entry.id === notetakerDetail.id);
+    return item ? { kind: 'meeting', item, folder: notetakerFolder(DEFAULT_FOLDER_ID), text: notetaker.meetingCleanups[item.id] || item.transcript || '' } : null;
   }
-  const folder = notetakerFolder(notetaker.selectedFolderId);
-  if (folder && !(folder.items || []).some(entry => entry.id === notetaker.selectedItemId)) {
-    notetaker.selectedItemId = (folder.items || [])[0]?.id || null;
-  }
-  if (!folder) notetaker.selectedItemId = null;
+  const found = notetakerFindItem(notetakerDetail.id);
+  return found.item ? { kind: 'upload', ...found, text: found.item.cleanedText || found.item.rawText || '' } : null;
+}
+function folderEntries(folder) {
+  const uploads = folder.items.map(item => ({ kind: 'upload', item, createdAt: Number(item.createdAt) || 0 }));
+  const recorded = folder.id === DEFAULT_FOLDER_ID
+    ? meetings.map(item => ({ kind: 'meeting', item, createdAt: new Date(item.createdAt).getTime() || 0 }))
+    : [];
+  return [...uploads, ...recorded].sort((a, b) => b.createdAt - a.createdAt);
+}
+function entryStatus(entry) {
+  if (entry.item.status === 'ready') return 'Transcript ready';
+  if (entry.item.status === 'error' || entry.item.status === 'interrupted') return 'Needs attention';
+  if (entry.item.status === 'recording') return 'Recording now';
+  if (entry.kind === 'meeting') return 'Creating notes';
+  return entry.item.status === 'preparing' ? 'Preparing audio' : 'Transcribing';
+}
+function entryMarkup(entry) {
+  const item = entry.item;
+  const ready = item.status === 'ready';
+  const failed = item.status === 'error' || item.status === 'interrupted';
+  const text = entry.kind === 'meeting' ? item.transcript : item.rawText;
+  const detail = ready ? `${wordsIn(text).toLocaleString()} words${entry.kind === 'meeting' ? ' · meeting' : item.cleanedText ? ' · cleaned' : ' · verbatim'}` : entry.kind === 'meeting' ? 'Recorded locally' : escapeHtml(item.fileName || 'Audio upload');
+  const timestamp = entry.kind === 'meeting' ? item.createdAt : item.createdAt;
+  const data = entry.kind === 'meeting' ? `data-meeting-id="${escapeAttr(item.id)}"` : `data-item="${escapeAttr(item.id)}"`;
+  return `<button class="notes-file${ready ? '' : ' processing'}${failed ? ' failed' : ''}" ${data} ${ready ? '' : 'disabled'}><span class="notes-file-name"><span class="notes-file-icon">${transcriptIcon}</span><span><strong>${escapeHtml(item.title || item.name)}</strong><em>${detail}</em></span></span><span class="notes-file-status">${entryStatus(entry)}</span><span class="notes-file-date">${new Date(timestamp).toLocaleDateString()}</span></button>`;
 }
 function renderNotetaker() {
-  notetakerEnsureSelection();
   const folderList = document.querySelector('#notetaker-folder-list');
   const fileList = document.querySelector('#notetaker-file-list');
   if (!folderList || !fileList) return;
-  folderList.innerHTML = notetaker.folders.length
-    ? notetaker.folders.map(folder => `<div style="display:flex;gap:4px;align-items:center"><button class="notes-folder${folder.id === notetaker.selectedFolderId ? ' active' : ''}" data-folder="${folder.id}"><span>${escapeHtml(folder.name)}</span><small>${(folder.items || []).length}</small></button><button class="notes-folder-delete" data-delete-folder="${folder.id}" aria-label="Delete folder" title="Delete folder">×</button></div>`).join('')
-    : '<div class="empty">No folders yet.</div>';
+  if (!notetakerFolder(notetaker.selectedFolderId)) notetaker.selectedFolderId = DEFAULT_FOLDER_ID;
+  folderList.innerHTML = notetaker.folders.map(folder => {
+    const count = folderEntries(folder).length;
+    const remove = folder.isDefault ? '<span></span>' : `<button class="notes-folder-delete" data-delete-folder="${escapeAttr(folder.id)}" aria-label="Delete ${escapeAttr(folder.name)}" title="Delete folder">×</button>`;
+    return `<div class="notes-folder-row"><button class="notes-folder${folder.id === notetaker.selectedFolderId ? ' active' : ''}" data-folder="${escapeAttr(folder.id)}">${folderIcon}<span>${escapeHtml(folder.name)}</span><small>${count}</small></button>${remove}</div>`;
+  }).join('');
   const folder = notetakerFolder(notetaker.selectedFolderId);
-  document.querySelector('#notetaker-files-title').textContent = folder ? folder.name : 'Select a folder';
-  document.querySelector('#notetaker-files-count').textContent = folder ? `${(folder.items || []).length} file${(folder.items || []).length === 1 ? '' : 's'}` : '';
-  const items = folder?.items || [];
-  fileList.innerHTML = !folder
-    ? '<div class="empty">Create a folder to begin.</div>'
-    : items.length
-      ? items.map(entry => `<button class="notes-file${entry.id === notetaker.selectedItemId ? ' active' : ''}" data-item="${entry.id}"><strong>${escapeHtml(entry.name)}</strong><span>${entry.status === 'ready' ? `${entry.rawText.trim().split(/\s+/).filter(Boolean).length} words · verbatim${entry.cleanedText ? ' · cleaned' : ''}` : entry.status === 'error' ? 'transcription failed' : 'transcribing…'}</span></button>`).join('')
-      : '<div class="empty">Upload audio to create transcripts.</div>';
-  const found = notetakerFindItem(notetaker.selectedItemId);
-  const viewerTitle = document.querySelector('#notetaker-viewer-title');
-  const viewerMeta = document.querySelector('#notetaker-viewer-meta');
-  const viewerBody = document.querySelector('#notetaker-viewer-body');
-  const audio = document.querySelector('#notetaker-audio');
-  const cleanupButton = document.querySelector('#notetaker-cleanup');
-  const copyButton = document.querySelector('#notetaker-copy');
-  const status = document.querySelector('#notetaker-cleanup-status');
-  if (!found.item) {
-    viewerTitle.textContent = 'No transcript selected';
-    viewerMeta.textContent = 'Choose a file to read the full transcript.';
-    viewerBody.innerHTML = '<div class="empty">Your full transcript will appear here.</div>';
-    audio.hidden = true;
-    audio.removeAttribute('src');
-    cleanupButton.disabled = true;
-    copyButton.disabled = true;
+  const entries = folderEntries(folder);
+  document.querySelector('#notetaker-files-title').textContent = folder.name;
+  document.querySelector('#notetaker-files-count').textContent = `${entries.length} ${entries.length === 1 ? 'item' : 'items'}`;
+  fileList.innerHTML = entries.length ? entries.map(entryMarkup).join('') : '<div class="empty">This folder is empty. Upload audio to add your first transcript.</div>';
+  const activeJobs = [
+    ...notetaker.folders.flatMap(item => item.items).filter(item => item.status === 'preparing' || item.status === 'transcribing'),
+    ...meetings.filter(item => item.status === 'processing')
+  ];
+  document.querySelector('#notetaker-background-status').textContent = activeJobs.length ? `${activeJobs.length} upload${activeJobs.length === 1 ? '' : 's'} processing in background` : '';
+  renderNotetakerDetail();
+}
+function renderNotetakerDetail() {
+  const explorer = document.querySelector('#notetaker-explorer');
+  const detailView = document.querySelector('#notetaker-detail');
+  const current = currentTranscript();
+  if (!current || current.item.status !== 'ready' || !current.text) {
+    notetakerDetail = null;
+    explorer.hidden = false;
+    detailView.hidden = true;
     return;
   }
-  viewerTitle.textContent = found.item.name;
-  viewerMeta.textContent = `${found.folder.name} · ${new Date(found.item.createdAt).toLocaleString()} · automatic cleanup never applied`;
-  const url = notetakerAudioUrls.get(found.item.id);
+  explorer.hidden = true;
+  detailView.hidden = false;
+  const item = current.item;
+  const cleaned = current.kind === 'meeting' ? Boolean(notetaker.meetingCleanups[item.id]) : Boolean(item.cleanedText);
+  document.querySelector('#notetaker-viewer-title').textContent = item.title || item.name;
+  document.querySelector('#notetaker-viewer-meta').textContent = `${current.folder.name} · ${new Date(item.createdAt).toLocaleString()} · ${wordsIn(current.text).toLocaleString()} words`;
+  const audio = document.querySelector('#notetaker-audio');
+  const url = current.kind === 'upload' ? notetakerAudioUrls.get(item.id) : null;
   if (url) { audio.src = url; audio.hidden = false; } else { audio.hidden = true; audio.removeAttribute('src'); }
-  copyButton.disabled = found.item.status !== 'ready';
-  cleanupButton.disabled = found.item.status !== 'ready';
-  if (found.item.status !== 'ready') {
-    viewerBody.innerHTML = `<div class="empty">${found.item.status === 'error' ? 'Transcription failed. Try uploading again.' : 'Transcribing locally with Parakeet…'}</div>`;
-  } else if (found.item.cleanedText) {
-    viewerBody.innerHTML = `<span class="cleaned-label">Cleaned with long-form prompt</span><div>${escapeHtml(found.item.cleanedText)}</div>`;
-  } else {
-    viewerBody.textContent = found.item.rawText;
-  }
-  if (status && !status.dataset.pinned) status.textContent = found.item.cleanedText ? 'Showing cleaned version. Original verbatim text is kept.' : '';
+  const summary = document.querySelector('#notetaker-meeting-notes');
+  summary.hidden = current.kind !== 'meeting' || !item.notes;
+  summary.querySelector('div').textContent = item.notes || '';
+  const body = document.querySelector('#notetaker-viewer-body');
+  body.innerHTML = cleaned ? `<span class="cleaned-label">Cleaned version</span><div>${escapeHtml(current.text)}</div>` : escapeHtml(current.text);
+  const status = document.querySelector('#notetaker-cleanup-status');
+  if (!status.dataset.pinned) status.textContent = cleaned ? 'Showing cleaned speech. The original transcript is still preserved.' : '';
 }
 function notetakerAttachTranscript(entry) {
   if (!pendingNotetakerItemId) return;
@@ -464,16 +515,19 @@ function notetakerAttachTranscript(entry) {
   found.item.rawText = entry.finalText || entry.rawText || '';
   found.item.status = found.item.rawText ? 'ready' : 'error';
   found.item.historyId = entry.id;
-  notetaker.selectedFolderId = found.folder.id;
-  notetaker.selectedItemId = found.item.id;
   saveNotetaker();
   renderNotetaker();
   showToast(`Transcript ready in ${found.folder.name}`);
 }
 async function notetakerUpload(file) {
-  if (!notetaker.folders.length) { showToast('Create a folder first', true); return; }
-  const folder = notetakerFolder(notetaker.selectedFolderId) || notetaker.folders[0];
-  const status = document.querySelector('#notetaker-cleanup-status');
+  if (pendingNotetakerItemId) { showToast('Another upload is already being transcribed', true); return; }
+  const folder = notetakerFolder(notetaker.selectedFolderId) || notetakerFolder(DEFAULT_FOLDER_ID);
+  const item = { id: `nt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name: file.name.replace(/\.[^.]+$/, ''), fileName: file.name, createdAt: Date.now(), status: 'preparing', rawText: '', cleanedText: '' };
+  folder.items.unshift(item);
+  pendingNotetakerItemId = item.id;
+  try { notetakerAudioUrls.set(item.id, URL.createObjectURL(file)); } catch (_) {}
+  saveNotetaker();
+  renderNotetaker();
   try {
     const context = new AudioContext();
     let decoded;
@@ -481,47 +535,49 @@ async function notetakerUpload(file) {
     finally { await context.close(); }
     if (!decoded.numberOfChannels || !decoded.length) throw new Error('No audio track was found in this file.');
     if (decoded.duration > 90 * 60) throw new Error('Choose a file shorter than 90 minutes.');
-    const item = { id: `nt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name: file.name.replace(/\.[^.]+$/, ''), fileName: file.name, createdAt: Date.now(), status: 'transcribing', rawText: '', cleanedText: '' };
-    folder.items = folder.items || [];
-    folder.items.unshift(item);
-    notetaker.selectedFolderId = folder.id;
-    notetaker.selectedItemId = item.id;
-    try { notetakerAudioUrls.set(item.id, URL.createObjectURL(file)); } catch (_) {}
-    pendingNotetakerItemId = item.id;
+    item.status = 'transcribing';
     saveNotetaker();
     renderNotetaker();
-    if (status) status.textContent = `Transcribing ${file.name} locally — cleanup will not run automatically…`;
     const wavBytes = audioBufferToWav(decoded);
     await call('transcribe_media_file', { fileName: file.name, wavBytes: Array.from(wavBytes) });
   } catch (error) {
     pendingNotetakerItemId = null;
-    const detail = String(error).replace(/^Error:\s*/, '');
-    showToast(detail, true);
-    if (status) status.textContent = '';
+    item.status = 'error';
+    saveNotetaker();
     renderNotetaker();
+    showToast(String(error).replace(/^Error:\s*/, ''), true);
   }
 }
 async function notetakerCleanup() {
-  const found = notetakerFindItem(notetaker.selectedItemId);
+  const current = currentTranscript();
   const status = document.querySelector('#notetaker-cleanup-status');
   const button = document.querySelector('#notetaker-cleanup');
-  if (!found.item || found.item.status !== 'ready') return;
+  if (!current) return;
+  const original = current.kind === 'meeting' ? current.item.transcript : current.item.rawText;
   button.disabled = true;
-  if (status) { status.dataset.pinned = '1'; status.textContent = 'Cleaning up with long-form interview prompt…'; }
+  status.dataset.pinned = '1';
+  status.textContent = 'Cleaning up speech with the long-form prompt…';
   try {
-    const cleaned = await call('cleanup_notetaker_transcript', { text: found.item.rawText });
-    found.item.cleanedText = cleaned;
+    const cleaned = await call('cleanup_notetaker_transcript', { text: original });
+    if (current.kind === 'meeting') notetaker.meetingCleanups[current.item.id] = cleaned;
+    else current.item.cleanedText = cleaned;
     saveNotetaker();
-    renderNotetaker();
-    if (status) status.textContent = 'Showing cleaned version. Original verbatim text is kept.';
-    showToast('Speech cleaned with long-form prompt');
+    renderNotetakerDetail();
+    status.textContent = 'Showing cleaned speech. The original transcript is still preserved.';
+    showToast('Speech cleaned');
   } catch (error) {
-    if (status) status.textContent = '';
+    status.textContent = '';
     showToast(String(error).replace(/^Error:\s*/, ''), true);
   } finally {
-    if (status) delete status.dataset.pinned;
+    delete status.dataset.pinned;
     button.disabled = false;
   }
+}
+function setNewFolderOpen(open) {
+  const form = document.querySelector('#notetaker-new-folder');
+  form.hidden = !open;
+  document.querySelector('#notetaker-new-folder-trigger').setAttribute('aria-expanded', String(open));
+  if (open) setTimeout(() => document.querySelector('#notetaker-folder-input').focus(), 0);
 }
 
 document.querySelector('#notetaker-new-folder')?.addEventListener('submit', event => {
@@ -532,27 +588,33 @@ document.querySelector('#notetaker-new-folder')?.addEventListener('submit', even
   const folder = { id: `folder-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, name: name.slice(0, 60), createdAt: Date.now(), items: [] };
   notetaker.folders.push(folder);
   notetaker.selectedFolderId = folder.id;
-  notetaker.selectedItemId = null;
   input.value = '';
+  setNewFolderOpen(false);
   saveNotetaker();
   renderNotetaker();
 });
+['#notetaker-new-folder-trigger', '#notetaker-sidebar-plus'].forEach(selector => document.querySelector(selector)?.addEventListener('click', () => setNewFolderOpen(document.querySelector('#notetaker-new-folder').hidden)));
 document.querySelector('#notetaker-folder-list')?.addEventListener('click', event => {
   const deleteId = event.target.closest('[data-delete-folder]')?.dataset.deleteFolder;
   if (deleteId) {
+    const folder = notetakerFolder(deleteId);
+    if (folder?.items.some(item => item.status === 'preparing' || item.status === 'transcribing')) { showToast('Wait for this folder’s upload to finish', true); return; }
     if (!confirm('Delete this folder and all its transcripts?')) return;
     notetaker.folders = notetaker.folders.filter(folder => folder.id !== deleteId);
-    if (notetaker.selectedFolderId === deleteId) { notetaker.selectedFolderId = null; notetaker.selectedItemId = null; }
+    if (notetaker.selectedFolderId === deleteId) notetaker.selectedFolderId = DEFAULT_FOLDER_ID;
     saveNotetaker();
     renderNotetaker();
     return;
   }
   const folderId = event.target.closest('[data-folder]')?.dataset.folder;
-  if (folderId) { notetaker.selectedFolderId = folderId; notetaker.selectedItemId = null; saveNotetaker(); renderNotetaker(); }
+  if (folderId) { notetaker.selectedFolderId = folderId; saveNotetaker(); renderNotetaker(); }
 });
 document.querySelector('#notetaker-file-list')?.addEventListener('click', event => {
+  const meetingId = event.target.closest('[data-meeting-id]')?.dataset.meetingId;
   const itemId = event.target.closest('[data-item]')?.dataset.item;
-  if (itemId) { notetaker.selectedItemId = itemId; saveNotetaker(); renderNotetaker(); }
+  if (meetingId) notetakerDetail = { kind: 'meeting', id: meetingId };
+  if (itemId) notetakerDetail = { kind: 'upload', id: itemId };
+  if (meetingId || itemId) renderNotetaker();
 });
 document.querySelector('#notetaker-upload')?.addEventListener('click', () => document.querySelector('#notetaker-file').click());
 document.querySelector('#notetaker-file')?.addEventListener('change', event => {
@@ -560,16 +622,47 @@ document.querySelector('#notetaker-file')?.addEventListener('change', event => {
   event.target.value = '';
   if (file) notetakerUpload(file);
 });
+document.querySelector('#notetaker-back')?.addEventListener('click', () => { notetakerDetail = null; renderNotetaker(); });
 document.querySelector('#notetaker-cleanup')?.addEventListener('click', notetakerCleanup);
 document.querySelector('#notetaker-copy')?.addEventListener('click', async () => {
-  const found = notetakerFindItem(notetaker.selectedItemId);
-  if (!found.item) return;
-  try {
-    await navigator.clipboard.writeText(found.item.cleanedText || found.item.rawText);
-    showToast('Transcript copied');
-  } catch (_) { showToast('Copy failed in this window', true); }
+  const current = currentTranscript();
+  if (!current) return;
+  try { await navigator.clipboard.writeText(current.text); showToast('Transcript copied'); }
+  catch (_) { showToast('Copy failed in this window', true); }
 });
 renderNotetaker();
+
+function formatMeetingDuration(seconds) {
+  const minutes = Math.floor(seconds / 60); const rest = Math.floor(seconds % 60).toString().padStart(2, '0');
+  return `${minutes}:${rest}`;
+}
+
+function renderMeetingStatus() {
+  const button = document.querySelector('#meeting-toggle'); const status = document.querySelector('#meeting-live-status');
+  button.classList.toggle('recording', meetingRecording);
+  button.querySelector('b').textContent = meetingRecording ? 'Stop and create notes' : 'Start meeting';
+  status.textContent = meetingRecording ? `Recording · ${formatMeetingDuration((Date.now() - meetingStartedAt) / 1000)} · saving locally` : '';
+}
+
+function renderMeetings() {
+  renderNotetaker();
+}
+
+document.querySelector('#meeting-toggle')?.addEventListener('click', async event => {
+  const button = event.currentTarget; button.disabled = true;
+  try {
+    if (meetingRecording) {
+      const record = await call('stop_meeting_recording'); meetingRecording = false;
+      meetings = [record, ...meetings.filter(item => item.id !== record.id)]; selectedMeetingId = record.id; showToast('Recording saved. Creating notes…');
+    } else {
+      const title = `Meeting ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+      const record = await call('start_meeting_recording', { title }); meetingRecording = true; meetingStartedAt = Date.now();
+      meetings = [record, ...meetings.filter(item => item.id !== record.id)]; selectedMeetingId = record.id; showToast('Meeting recording started');
+    }
+    renderMeetingStatus(); renderMeetings();
+  } finally { button.disabled = false; }
+});
+setInterval(() => { if (meetingRecording) renderMeetingStatus(); }, 1000);
 
 Promise.all([
   call('get_status'),
@@ -577,14 +670,21 @@ Promise.all([
   call('get_preferences'),
   call('get_history'),
   call('get_hotkey_status'),
-  call('get_microphones')
-]).then(([engine, model, prefs, items, shortcut, microphones]) => {
+  call('get_microphones'),
+  call('get_meetings'),
+  call('get_meeting_status')
+]).then(([engine, model, prefs, items, shortcut, microphones, savedMeetings, currentMeeting]) => {
   preferences = prefs;
   microphoneStatus = microphones;
   history = items;
+  meetings = savedMeetings;
+  meetingRecording = currentMeeting.recording;
+  if (meetingRecording) meetingStartedAt = Date.now() - Number(currentMeeting.elapsedSeconds || 0) * 1000;
   renderStatus(engine);
   renderModel(model);
   renderPreferences();
   renderHistory();
   renderHotkey(shortcut);
+  renderMeetingStatus();
+  renderMeetings();
 });

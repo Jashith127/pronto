@@ -3,6 +3,9 @@ mod engine;
 mod gpu_memory;
 mod hotkey;
 mod insert;
+mod meeting;
+#[cfg(windows)]
+mod meeting_detector;
 mod pipeline;
 mod settings;
 #[cfg(windows)]
@@ -12,7 +15,10 @@ mod startup;
 mod system_audio;
 
 use audio::{AudioController, MicrophoneStatus};
-use engine::{CompletedTranscription, EngineController, ModelStatus, TranscriptionJob};
+use engine::{
+    CompletedMeetingTranscription, CompletedTranscription, EngineController,
+    MeetingTranscriptionJob, ModelStatus, TranscriptionJob,
+};
 use hotkey::{Hotkey, HotkeyController, HotkeyEvent, HotkeyStatus};
 use pipeline::{EngineStatus, Phase, Pipeline};
 use settings::{ActivationMode, AppPreferences, HistoryEntry, SettingsStore, UserSettings};
@@ -27,6 +33,7 @@ struct AppState {
     pipeline: Mutex<Pipeline>,
     audio: AudioController,
     system_audio: SystemAudioController,
+    meetings: meeting::MeetingController,
     insertion_target: insert::InsertionTargetTracker,
     sounds: SoundController,
     engine: Mutex<Option<EngineController>>,
@@ -64,6 +71,7 @@ impl AppState {
             pipeline: Mutex::new(Pipeline::default()),
             audio: AudioController::new(selected_microphone),
             system_audio: SystemAudioController::new(),
+            meetings: meeting::MeetingController::new(),
             insertion_target: insert::InsertionTargetTracker::new(),
             sounds: SoundController::new(),
             engine: Mutex::new(None),
@@ -82,6 +90,46 @@ impl AppState {
     }
 }
 
+pub(crate) fn complete_meeting_transcription(
+    app: &AppHandle,
+    result: Result<CompletedMeetingTranscription, String>,
+) {
+    let (id, transcript, notes, warning) = match result {
+        Ok(completed) => (
+            completed.id,
+            completed.transcript,
+            completed.notes,
+            completed.warning,
+        ),
+        Err(error) => {
+            let _ = app.emit("meeting-processing-error", error);
+            return;
+        }
+    };
+    match meeting::update_record(&id, transcript, notes, warning) {
+        Ok(record) => {
+            let _ = app.emit("meeting-updated", record);
+        }
+        Err(error) => {
+            let _ = app.emit("meeting-processing-error", error);
+        }
+    }
+}
+
+pub(crate) fn fail_meeting_transcription(app: &AppHandle, id: &str, error: String) {
+    match meeting::mark_error(id, error.clone()) {
+        Ok(record) => {
+            let _ = app.emit("meeting-updated", record);
+        }
+        Err(storage_error) => {
+            let _ = app.emit(
+                "meeting-processing-error",
+                format!("{error}. Meeting status could not be saved: {storage_error}"),
+            );
+        }
+    }
+}
+
 fn emit_status(app: &AppHandle, status: &EngineStatus) {
     let _ = app.emit("engine-status", status);
 }
@@ -95,6 +143,11 @@ pub(crate) fn set_model_status(app: &AppHandle, status: ModelStatus) {
 
 fn begin_recording(app: &AppHandle) -> Result<EngineStatus, String> {
     let state = app.state::<AppState>();
+    if state.meetings.status()?.recording {
+        return Err(
+            "Meeting notes are recording. Stop the meeting before starting dictation.".into(),
+        );
+    }
     let settings = state.settings.snapshot()?;
     let mut pipeline = state
         .pipeline
@@ -322,6 +375,61 @@ fn stop_recording(app: AppHandle) -> Result<EngineStatus, String> {
 }
 
 #[tauri::command]
+fn start_meeting_recording(
+    app: AppHandle,
+    title: String,
+) -> Result<meeting::MeetingRecord, String> {
+    let state = app.state::<AppState>();
+    let pipeline = state
+        .pipeline
+        .lock()
+        .map_err(|_| "pipeline lock poisoned")?;
+    if matches!(pipeline.status.phase, Phase::Listening | Phase::Processing) {
+        return Err("Finish dictation before starting meeting notes".into());
+    }
+    drop(pipeline);
+    let settings = state.settings.snapshot()?;
+    let record = state.meetings.start(title, settings.microphone_id)?;
+    let _ = app.emit(
+        "meeting-status",
+        serde_json::json!({ "recording": true, "meeting": record, "elapsedSeconds": 0 }),
+    );
+    Ok(record)
+}
+
+#[tauri::command]
+fn stop_meeting_recording(app: AppHandle) -> Result<meeting::MeetingRecord, String> {
+    let state = app.state::<AppState>();
+    let stopped = state.meetings.stop()?;
+    let settings = state.settings.snapshot()?;
+    let engine = state.engine.lock().map_err(|_| "engine lock poisoned")?;
+    let engine = engine
+        .as_ref()
+        .ok_or_else(|| "Transcription engine is still starting".to_string())?;
+    engine.transcribe_meeting(MeetingTranscriptionJob {
+        id: stopped.record.id.clone(),
+        title: stopped.record.title.clone(),
+        audio_path: stopped.audio_path,
+        settings,
+    })?;
+    let _ = app.emit(
+        "meeting-status",
+        serde_json::json!({ "recording": false, "meeting": stopped.record, "elapsedSeconds": 0 }),
+    );
+    Ok(stopped.record)
+}
+
+#[tauri::command]
+fn get_meeting_status(state: tauri::State<'_, AppState>) -> Result<meeting::MeetingStatus, String> {
+    state.meetings.status()
+}
+
+#[tauri::command]
+fn get_meetings(state: tauri::State<'_, AppState>) -> Result<Vec<meeting::MeetingRecord>, String> {
+    state.meetings.list()
+}
+
+#[tauri::command]
 fn transcribe_media_file(
     app: AppHandle,
     file_name: String,
@@ -527,6 +635,52 @@ fn resize_microphone_overlay(app: AppHandle, width: f64) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn resize_overlay(app: AppHandle, width: f64, height: f64) -> Result<(), String> {
+    if !width.is_finite()
+        || !height.is_finite()
+        || !(100.0..=420.0).contains(&width)
+        || !(30.0..=180.0).contains(&height)
+    {
+        return Err("Invalid overlay size".into());
+    }
+    let overlay = app
+        .get_webview_window("overlay")
+        .ok_or_else(|| "Pronto overlay is unavailable".to_string())?;
+    overlay
+        .set_size(LogicalSize::new(width, height))
+        .map_err(|e| e.to_string())?;
+    position_overlay_custom(&overlay, width, height);
+    Ok(())
+}
+
+fn position_overlay_custom(window: &tauri::WebviewWindow, width: f64, height: f64) {
+    let Some(monitor) = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten())
+    else {
+        return;
+    };
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let size = monitor.size();
+    let origin = monitor.position();
+    let physical_width = (width * scale).round() as u32;
+    let physical_height = (height * scale).round() as u32;
+    let x = origin.x + (size.width.saturating_sub(physical_width) / 2) as i32;
+    let y = origin.y + size.height.saturating_sub(physical_height + 74) as i32;
+    let _ = window.set_position(PhysicalPosition::new(x, y));
+}
+
+#[tauri::command]
+fn dismiss_meeting_prompt(app: AppHandle) -> Result<(), String> {
+    if let Some(overlay) = app.get_webview_window("overlay") {
+        overlay.hide().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn get_hotkey_status(state: tauri::State<'_, AppState>) -> Result<HotkeyStatus, String> {
     let shortcut = state
         .active_shortcut
@@ -680,15 +834,19 @@ fn cleanup_notetaker_transcript(
         return Err("This transcript is too long to clean up in one request.".into());
     }
     let settings = state.settings.snapshot()?;
-    let api_key = settings::deepseek_key()
-        .ok_or_else(|| "Add a DeepSeek API key in Settings to enable Clean Up Speech.".to_string())?;
+    let api_key = settings::deepseek_key().ok_or_else(|| {
+        "Add a DeepSeek API key in Settings to enable Clean Up Speech.".to_string()
+    })?;
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
         .build()
         .map_err(|error| format!("DeepSeek cleanup failed: {error}"))?;
     let cleaned =
         engine::deepseek_longform_cleanup(&client, &api_key, &transcript, &settings.dictionary)?;
-    Ok(engine::apply_dictionary_public(&cleaned, &settings.dictionary))
+    Ok(engine::apply_dictionary_public(
+        &cleaned,
+        &settings.dictionary,
+    ))
 }
 
 #[tauri::command]
@@ -709,6 +867,7 @@ fn hide_main_window(app: AppHandle) -> Result<(), String> {
 
 fn create_tray(app: &tauri::App) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Open Pronto", true, None::<&str>)?;
+    let meeting = MenuItem::with_id(app, "meeting", "Take meeting notes", true, None::<&str>)?;
     let paste = MenuItem::with_id(
         app,
         "paste-last",
@@ -717,7 +876,7 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
         None::<&str>,
     )?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open, &paste, &quit])?;
+    let menu = Menu::with_items(app, &[&open, &meeting, &paste, &quit])?;
     let mut tray = TrayIconBuilder::new()
         .tooltip("Pronto dictation")
         .menu(&menu)
@@ -728,6 +887,15 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
                     let _ = window.show();
                     let _ = window.set_focus();
                 }
+            }
+            "meeting" => {
+                if let Some(overlay) = app.get_webview_window("overlay") {
+                    let _ = overlay.show();
+                }
+                let _ = app.emit(
+                    "meeting-suggestion",
+                    serde_json::json!({ "title": "Untitled meeting" }),
+                );
             }
             "paste-last" => {
                 let result = paste_last(app);
@@ -794,6 +962,11 @@ pub fn run() {
                 .engine
                 .lock()
                 .expect("engine lock poisoned") = Some(engine);
+            #[cfg(windows)]
+            meeting_detector::start(
+                app.handle().clone(),
+                app.state::<AppState>().meetings.activity_flag(),
+            );
             let handle = app.handle().clone();
             match HotkeyController::new(shortcut, move |event| handle_hotkey_event(&handle, event))
             {
@@ -832,6 +1005,10 @@ pub fn run() {
             get_model_status,
             start_recording,
             stop_recording,
+            start_meeting_recording,
+            stop_meeting_recording,
+            get_meeting_status,
+            get_meetings,
             transcribe_media_file,
             cancel_recording,
             reset,
@@ -841,6 +1018,8 @@ pub fn run() {
             set_microphone,
             compact_overlay,
             resize_microphone_overlay,
+            resize_overlay,
+            dismiss_meeting_prompt,
             get_hotkey_status,
             set_hotkey,
             save_api_key,

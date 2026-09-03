@@ -7,11 +7,15 @@
     <link rel="stylesheet" href="overlay.css" />
   </head>
   <body>
+    <section id="meeting-prompt" class="meeting-prompt" aria-live="polite" hidden>
+      <strong>Take notes for this meeting?</strong>
+      <span>Your microphone and computer audio will be saved locally.</span>
+    </section>
     <div id="microphone-label" class="microphone-label" hidden></div>
     <main aria-label="Pronto dictation controls">
-      <button id="cancel" aria-label="Cancel dictation">×</button>
       <div class="signal" aria-label="Listening"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
-      <button id="finish" aria-label="Finish dictation">✓</button>
+      <span id="meeting-time" class="meeting-time" hidden>00:00</span>
+      <button id="meeting-record" class="meeting-record" aria-label="Start meeting notes" title="Start meeting notes"><span></span></button>
     </main>
     <script src="overlay.js"></script>
   </body>

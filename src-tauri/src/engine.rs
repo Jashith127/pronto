@@ -1,11 +1,14 @@
 use crate::audio::Recording;
 use crate::gpu_memory::{GpuMemoryMonitor, MemoryInfo};
-use crate::settings::{deepseek_key, HistoryEntry, UserSettings, DEFAULT_CLEANUP_PROMPT, DEFAULT_LONGFORM_CLEANUP_PROMPT};
+use crate::settings::{
+    deepseek_key, HistoryEntry, UserSettings, DEFAULT_CLEANUP_PROMPT,
+    DEFAULT_LONGFORM_CLEANUP_PROMPT,
+};
 use reqwest::blocking::{multipart, Client};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fs::{self, OpenOptions};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::net::TcpListener;
 #[cfg(windows)]
 use std::os::windows::{io::AsRawHandle, process::CommandExt};
@@ -28,6 +31,20 @@ pub struct TranscriptionJob {
     pub recording: Recording,
     pub settings: UserSettings,
     pub target_window: isize,
+}
+
+pub struct MeetingTranscriptionJob {
+    pub id: String,
+    pub title: String,
+    pub audio_path: PathBuf,
+    pub settings: UserSettings,
+}
+
+pub struct CompletedMeetingTranscription {
+    pub id: String,
+    pub transcript: String,
+    pub notes: String,
+    pub warning: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -58,6 +75,12 @@ impl EngineController {
             .map_err(|_| "transcription engine stopped".into())
     }
 
+    pub fn transcribe_meeting(&self, job: MeetingTranscriptionJob) -> Result<(), String> {
+        self.commands
+            .send(EngineCommand::TranscribeMeeting(job))
+            .map_err(|_| "transcription engine stopped".into())
+    }
+
     pub fn warm(&self) {
         let _ = self.commands.send(EngineCommand::Warm);
     }
@@ -71,6 +94,7 @@ impl EngineController {
 
 enum EngineCommand {
     Transcribe(TranscriptionJob),
+    TranscribeMeeting(MeetingTranscriptionJob),
     Warm,
     ConfigureGpuMemory(bool),
 }
@@ -289,6 +313,24 @@ fn engine_worker(
                 };
                 crate::complete_transcription(&app, result);
             }
+            EngineCommand::TranscribeMeeting(job) => {
+                let started = Instant::now();
+                policy.note_activity(started);
+                let meeting_id = job.id.clone();
+                if server.is_none() {
+                    server =
+                        warm_server(&app, runtime.as_ref().map_err(String::as_str), &mut policy);
+                    last_start_failure = server.is_none().then(Instant::now);
+                }
+                let result = match server.as_mut() {
+                    Some(server) => process_meeting_job(&client, server, job),
+                    None => Err("Parakeet could not start to process the meeting".into()),
+                };
+                match result {
+                    Ok(completed) => crate::complete_meeting_transcription(&app, Ok(completed)),
+                    Err(error) => crate::fail_meeting_transcription(&app, &meeting_id, error),
+                }
+            }
         }
     }
 
@@ -331,41 +373,8 @@ fn process_job(
 ) -> Result<CompletedTranscription, String> {
     let audio_ms = job.recording.samples.len() as u128 * 1_000
         / (job.recording.sample_rate as u128 * job.recording.channels.max(1) as u128);
-    let wav = recording_to_wav(&job.recording)?;
     let asr_started = Instant::now();
-    let mut form = multipart::Form::new()
-        .part(
-            "file",
-            multipart::Part::bytes(wav)
-                .file_name("dictation.wav")
-                .mime_str("audio/wav")
-                .map_err(|error| error.to_string())?,
-        )
-        .text("model", "parakeet")
-        .text("response_format", "json");
-    if job.settings.language != "auto" {
-        form = form.text("language", job.settings.language.clone());
-    }
-
-    let response = client
-        .post(format!("{}/v1/audio/transcriptions", server.base_url))
-        .timeout(Duration::from_secs(
-            ((audio_ms / 10_000) + 30).clamp(30, 600) as u64,
-        ))
-        .multipart(form)
-        .send()
-        .map_err(|error| format!("Local transcription request failed: {error}"))?;
-    if !response.status().is_success() {
-        let status = response.status();
-        let detail = response.text().unwrap_or_default();
-        return Err(format!("Parakeet returned {status}: {detail}"));
-    }
-    let raw = response
-        .json::<AsrResponse>()
-        .map_err(|error| format!("Invalid Parakeet response: {error}"))?
-        .text
-        .trim()
-        .to_string();
+    let raw = transcribe_recording(client, server, &job.recording, &job.settings.language)?;
     let asr_ms = asr_started.elapsed().as_millis();
     if raw.is_empty() {
         return Err("No speech was detected".into());
@@ -424,6 +433,169 @@ fn process_job(
         auto_insert: job.settings.auto_insert,
         cleanup_warning,
     })
+}
+
+fn transcribe_recording(
+    client: &Client,
+    server: &SpeechServer,
+    recording: &Recording,
+    language: &str,
+) -> Result<String, String> {
+    let audio_ms = recording.samples.len() as u128 * 1_000
+        / (recording.sample_rate as u128 * recording.channels.max(1) as u128);
+    let wav = recording_to_wav(recording)?;
+    let mut form = multipart::Form::new()
+        .part(
+            "file",
+            multipart::Part::bytes(wav)
+                .file_name("audio.wav")
+                .mime_str("audio/wav")
+                .map_err(|e| e.to_string())?,
+        )
+        .text("model", "parakeet")
+        .text("response_format", "json");
+    if language != "auto" {
+        form = form.text("language", language.to_string());
+    }
+    let response = client
+        .post(format!("{}/v1/audio/transcriptions", server.base_url))
+        .timeout(Duration::from_secs(
+            ((audio_ms / 10_000) + 30).clamp(30, 600) as u64,
+        ))
+        .multipart(form)
+        .send()
+        .map_err(|e| format!("Local transcription request failed: {e}"))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let detail = response.text().unwrap_or_default();
+        return Err(format!("Parakeet returned {status}: {detail}"));
+    }
+    Ok(response
+        .json::<AsrResponse>()
+        .map_err(|e| format!("Invalid Parakeet response: {e}"))?
+        .text
+        .trim()
+        .to_string())
+}
+
+fn process_meeting_job(
+    client: &Client,
+    server: &SpeechServer,
+    job: MeetingTranscriptionJob,
+) -> Result<CompletedMeetingTranscription, String> {
+    const CHUNK_SAMPLES: usize = 16_000 * 120;
+    let mut file = BufReader::new(
+        fs::File::open(&job.audio_path)
+            .map_err(|e| format!("Could not open meeting audio: {e}"))?,
+    );
+    file.seek(SeekFrom::Start(44)).map_err(|e| e.to_string())?;
+    let mut transcript_parts = Vec::new();
+    loop {
+        let mut bytes = vec![0u8; CHUNK_SAMPLES * 2];
+        let read = file.read(&mut bytes).map_err(|e| e.to_string())?;
+        if read == 0 {
+            break;
+        }
+        bytes.truncate(read - (read % 2));
+        let samples = bytes
+            .chunks_exact(2)
+            .map(|v| i16::from_le_bytes([v[0], v[1]]) as f32 / 32768.0)
+            .collect();
+        let recording = Recording {
+            samples,
+            sample_rate: 16_000,
+            channels: 1,
+        };
+        let text = transcribe_recording(client, server, &recording, &job.settings.language)?;
+        if !text.is_empty() {
+            transcript_parts.push(text);
+        }
+    }
+    let transcript = apply_dictionary(
+        &local_cleanup(&transcript_parts.join(" ")),
+        &job.settings.dictionary,
+    );
+    if transcript.is_empty() {
+        return Err("No speech was detected in the meeting".into());
+    }
+    let (notes, warning) = match deepseek_key() {
+        Some(key) => match generate_meeting_notes(client, &key, &job.title, &transcript) {
+            Ok(notes) => (notes, None),
+            Err(error) => (local_meeting_notes(&job.title, &transcript), Some(error)),
+        },
+        None => (
+            local_meeting_notes(&job.title, &transcript),
+            Some("Add a DeepSeek API key for structured AI meeting notes".into()),
+        ),
+    };
+    Ok(CompletedMeetingTranscription {
+        id: job.id,
+        transcript,
+        notes,
+        warning,
+    })
+}
+
+fn generate_meeting_notes(
+    client: &Client,
+    key: &str,
+    title: &str,
+    transcript: &str,
+) -> Result<String, String> {
+    const PROMPT: &str = "Create concise Markdown meeting notes grounded only in the transcript. Use sections: Summary, Decisions, Action items, Open questions, and Key points. Never invent an owner, deadline, decision, or fact. Write 'None captured' when a section has no evidence.";
+    let mut partials = Vec::new();
+    for chunk in split_utf8_chunks(transcript, 36_000) {
+        partials.push(deepseek_cleanup_at(
+            client,
+            "https://api.deepseek.com/chat/completions",
+            key,
+            chunk,
+            &[],
+            PROMPT,
+            3000,
+        )?);
+    }
+    if partials.len() == 1 {
+        return Ok(partials.remove(0));
+    }
+    let combined = format!(
+        "Meeting: {title}\n\nPARTIAL NOTES:\n{}",
+        partials.join("\n\n---\n\n")
+    );
+    deepseek_cleanup_at(
+        client,
+        "https://api.deepseek.com/chat/completions",
+        key,
+        &combined,
+        &[],
+        PROMPT,
+        5000,
+    )
+}
+
+fn split_utf8_chunks(text: &str, maximum: usize) -> Vec<&str> {
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    while start < text.len() {
+        let mut end = (start + maximum).min(text.len());
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        chunks.push(&text[start..end]);
+        start = end;
+    }
+    chunks
+}
+
+fn local_meeting_notes(title: &str, transcript: &str) -> String {
+    let summary = transcript
+        .split_terminator(['.', '!', '?'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .take(4)
+        .collect::<Vec<_>>()
+        .join(". ");
+    format!("# {title}\n\n## Summary\n\n{}.\n\n## Decisions\n\nNone captured automatically.\n\n## Action items\n\nNone captured automatically.\n\n## Open questions\n\nNone captured automatically.\n\n## Key points\n\nSee the complete transcript below.", summary)
 }
 
 pub fn recording_from_pcm16_wav(bytes: &[u8]) -> Result<Recording, String> {
