@@ -35,9 +35,9 @@ nav { display: flex; flex-direction: column; gap: 4px; margin-top: 34px; }
 .shell { min-width: 0; overflow: hidden; background: var(--paper); }
 .titlebar { display: flex; align-items: center; justify-content: flex-end; height: 50px; border-bottom: 1px solid #ebe9e2; }
 .window-actions { align-self: stretch; display: flex; -webkit-app-region: no-drag; }
-.window-actions button { width: 45px; border: 0; background: transparent; color: #686964; font-size: 18px; -webkit-app-region: no-drag; }
+.window-actions button { display: grid; place-items: center; width: 45px; border: 0; background: transparent; color: #686964; font-size: 18px; -webkit-app-region: no-drag; }
 .window-actions button:hover { background: #eceae4; color: var(--ink); }
-#maximize { font-size: 13px; }
+.window-actions button svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 #close:hover { background: #c94d42; color: white; }
 
 .view { display: none; height: calc(100vh - 50px); padding: 39px 48px 48px; overflow-y: auto; scrollbar-color: #cbc9c1 transparent; scrollbar-width: thin; }
@@ -178,6 +178,7 @@ nav { display: flex; flex-direction: column; gap: 4px; margin-top: 34px; }
 .notes-upload-action:hover { border-color: #9db5a8; background: #f2f6f3; box-shadow: 0 3px 10px rgba(63,109,96,.15); }
 .notes-upload-action:active { transform: translateY(1px); }
 .notes-upload-action svg { width: 16px; height: 16px; fill: none; stroke: var(--sage); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.meeting-start-action b, .notes-upload-action b { font-family: "Inter", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif; font-size: 10.5px; font-weight: 600; letter-spacing: .06em; }
 .notes-live-row { display: flex; justify-content: flex-end; gap: 18px; min-height: 22px; margin-top: -20px; padding-bottom: 8px; color: #777972; font-size: 10px; font-variant-numeric: tabular-nums; }
 #meeting-live-status { color: #a74738; }
 .notes-explorer { display: grid; grid-template-columns: 220px minmax(0, 1fr); height: min(560px, calc(100vh - 205px)); min-height: 390px; overflow: hidden; border: 1px solid #dfddd5; border-radius: 14px; background: #fff; box-shadow: 0 1px 2px rgba(35,35,29,.04); }

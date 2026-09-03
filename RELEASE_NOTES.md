@@ -4,12 +4,12 @@ Pronto 0.7.1 cleans up the dictation pill, gives meeting notes their own space, 
 
 ## What's new
 
-- Dictation pill restored to its compact centered shape (cancel, waveform, finish) with the liquid waveform color scheme kept.
+- Dictation pill restored to its compact centered shape (cancel, waveform, finish) with the liquid waveform color scheme kept. The waveform now visibly moves with a faster liquid drift, shimmer, and gentle pulse.
 - Meeting notes moved out of the pill into a dedicated prompt bubble with **Start meeting notes** / **Not now** actions and a recording state with timer and **Stop and create notes**.
-- New round Note Taker button sits just right of the pill and opens the main window straight into the Note Taker view.
+- New round recording button (thick ring with a center dot, turning red while recording) sits just right of the pill. Clicking it asks "Do you want to start the recording now?" and starts recording directly from the overlay without opening the main Pronto window.
 - Hovering the meeting button no longer shows a loading cursor.
-- Note Taker header simplified: the extra **New folder** button is removed (folder creation stays in the sidebar) and **Start meeting** / **Upload audio** are larger and clearer.
-- Main window now has minimize, maximize/restore, and close controls, including double-click on the title bar to toggle maximize.
+- Note Taker header simplified: the extra **New folder** button is removed (folder creation stays in the sidebar) and **Start meeting** / **Upload audio** are larger and clearer, with a more neutral, higher-end label typeface.
+- Main window now has minimize, maximize/restore, and close controls with matching line-icon styling, including double-click on the title bar to toggle maximize.
 - Release builds now strip symbols to trim the executable.
 
 ## Package size

@@ -681,16 +681,6 @@ fn dismiss_meeting_prompt(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn open_notetaker(app: AppHandle) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("main") {
-        window.show().map_err(|e| e.to_string())?;
-        let _ = window.set_focus();
-    }
-    let _ = app.emit("open-notetaker", serde_json::json!({}));
-    Ok(())
-}
-
-#[tauri::command]
 fn get_hotkey_status(state: tauri::State<'_, AppState>) -> Result<HotkeyStatus, String> {
     let shortcut = state
         .active_shortcut
@@ -1044,7 +1034,6 @@ pub fn run() {
             resize_microphone_overlay,
             resize_overlay,
             dismiss_meeting_prompt,
-            open_notetaker,
             get_hotkey_status,
             set_hotkey,
             save_api_key,

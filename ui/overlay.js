@@ -17,6 +17,7 @@ const meetingStopButton = document.querySelector('#meeting-stop');
 const meetingPromptTitle = document.querySelector('#meeting-prompt-title');
 const meetingPromptDesc = document.querySelector('#meeting-prompt-desc');
 const meetingTime = document.querySelector('#meeting-time');
+const notetakerButton = document.querySelector('#notetaker-open');
 
 async function showNotice(text) {
   microphoneLabel.textContent = text;
@@ -41,13 +42,14 @@ function formatTime(seconds) {
 function renderMeetingPrompt() {
   meetingIdle.hidden = meetingRecording;
   meetingActive.hidden = !meetingRecording;
+  notetakerButton.classList.toggle('recording', meetingRecording);
 }
 
-async function showMeetingPrompt(title) {
+async function showMeetingPrompt(title, question, desc) {
   meetingTitle = title || 'Untitled meeting';
   meetingPromptOpen = true;
-  meetingPromptTitle.textContent = 'Take notes for this meeting?';
-  meetingPromptDesc.textContent = 'Your microphone and computer audio will be saved locally.';
+  meetingPromptTitle.textContent = question || 'Take notes for this meeting?';
+  meetingPromptDesc.textContent = desc || 'Your microphone and computer audio will be saved locally.';
   renderMeetingPrompt();
   meetingPrompt.hidden = false;
   overlayRow.hidden = true;
@@ -106,7 +108,17 @@ meetingDismissButton.addEventListener('click', closeMeetingPrompt);
 
 document.querySelector('#cancel').addEventListener('click', () => invoke('cancel_recording'));
 document.querySelector('#finish').addEventListener('click', () => invoke('stop_recording'));
-document.querySelector('#notetaker-open').addEventListener('click', () => invoke('open_notetaker'));
+notetakerButton.addEventListener('click', () => {
+  if (meetingRecording) {
+    renderMeetingPrompt();
+    meetingPrompt.hidden = false;
+    overlayRow.hidden = true;
+    invoke('resize_overlay', { width: 300, height: 132 });
+    meetingStopButton.focus();
+    return;
+  }
+  showMeetingPrompt('Untitled meeting', 'Do you want to start the recording now?', 'Your microphone and computer audio will be saved locally.');
+});
 
 document.addEventListener('keydown', event => { if (event.key === 'Escape' && meetingPromptOpen && !meetingRecording) closeMeetingPrompt(); });
 setInterval(() => { if (meetingRecording) meetingTime.textContent = formatTime((Date.now() - meetingStartedAt) / 1000); }, 1000);
@@ -120,6 +132,7 @@ listen('meeting-status', event => {
   const wasRecording = meetingRecording;
   meetingRecording = Boolean(event.payload.recording);
   if (meetingRecording && !wasRecording) meetingStartedAt = Date.now() - Number(event.payload.elapsedSeconds || 0) * 1000;
+  notetakerButton.classList.toggle('recording', meetingRecording);
   if (meetingPromptOpen) {
     renderMeetingPrompt();
     meetingPrompt.hidden = false;

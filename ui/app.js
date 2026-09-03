@@ -374,7 +374,6 @@ listen('model-status', event => renderModel(event.payload));
 listen('hotkey-status', event => renderHotkey(event.payload));
 listen('audio-warning', event => showToast(event.payload, true));
 listen('tray-message', event => showToast(event.payload.message, event.payload.error));
-listen('open-notetaker', () => setView('notetaker'));
 listen('meeting-updated', event => {
   meetings = [event.payload, ...meetings.filter(item => item.id !== event.payload.id)];
   selectedMeetingId = event.payload.id; renderMeetings(); showToast('Meeting notes are ready');
