@@ -32,7 +32,7 @@ main button:hover { background: #62635e; }
 .meeting-prompt::after { content: ""; position: absolute; bottom: -5px; left: calc(50% - 18px); width: 9px; height: 9px; border-right: 1px solid #2b2d29; border-bottom: 1px solid #2b2d29; background: #111210; transform: translateX(-50%) rotate(45deg); }
 .meeting-prompt[hidden] { display: none; }
 .meeting-prompt strong { font-size: 12px; font-weight: 650; }
-.meeting-prompt #meeting-prompt-desc, .meeting-prompt #meeting-active-desc { margin-top: 4px; color: #b8bbb4; font-size: 9px; line-height: 1.4; }
+.meeting-prompt #meeting-prompt-desc { margin-top: 4px; color: #b8bbb4; font-size: 9px; line-height: 1.4; }
 .meeting-prompt-actions { display: flex; gap: 8px; margin-top: 10px; }
 .meeting-prompt-actions button { flex: 1; min-height: 30px; padding: 0 12px; border-radius: 8px; font-size: 11px; font-weight: 650; cursor: pointer; }
 .meeting-prompt-actions button:disabled { opacity: .55; cursor: default; }
@@ -48,13 +48,14 @@ main button:hover { background: #62635e; }
 @keyframes meeting-blink { 50% { opacity: .35; } }
 .meeting-time { margin-left: auto; color: #f0a092; font-size: 11px; font-variant-numeric: tabular-nums; }
 #meeting-idle[hidden] { display: none; }
-/* Meeting-started sequence: right circle merges into the pill, waveform is
-   red only for the animation duration, X/✓ are hidden, then pill is gone. */
-#overlay-row.merging #notetaker-open { animation: merge-into-pill 1.1s ease-in forwards; }
-#overlay-row.merging #dictation-pill { animation: pill-hold-then-fade 2.6s ease forwards; }
+/* Explicit layers: pill on top, status label beneath it. */
+#dictation-pill { position: relative; z-index: 2; }
+.microphone-label { z-index: 1; }
+/* Meeting-started sequence: circle fades out smoothly in place (no zoom),
+   pill holds static and centered, then the whole row fades. X/✓ stay hidden
+   and the waveform stays red until the fade begins. */
+#overlay-row.meeting-start #notetaker-open { transition: opacity .55s ease, transform .55s ease; opacity: 0; transform: translateX(-6px) scale(.92); }
 #overlay-row.meeting-flash .signal i { background: linear-gradient(180deg, #ff6b5e 0%, #e5322b 60%, #b11a14 100%); box-shadow: 0 0 5px rgba(229,50,43,.65); }
 #overlay-row.meeting-flash #cancel, #overlay-row.meeting-flash #finish { visibility: hidden; }
 #overlay-row.meeting-gone { opacity: 0; transition: opacity .45s ease; }
-@keyframes merge-into-pill { 0% { transform: translateX(0) scale(1); opacity: 1; } 55% { transform: translateX(-20px) scale(.85); opacity: 1; } 100% { transform: translateX(-33px) scale(.35); opacity: 0; } }
-@keyframes pill-hold-then-fade { 0%, 78% { opacity: 1; transform: translateX(0) scale(1); } 100% { opacity: 0; transform: translateX(-8px) scale(.96); } }
-@media (prefers-reduced-motion: reduce) { #overlay-row.merging #notetaker-open, #overlay-row.merging #dictation-pill { animation-duration: .01s; } }
+@media (prefers-reduced-motion: reduce) { #overlay-row.meeting-start #notetaker-open, #overlay-row.meeting-gone { transition-duration: .01s; } }

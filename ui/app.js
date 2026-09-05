@@ -652,7 +652,7 @@ function renderNotetaker() {
   const entries = folderEntries(folder);
   document.querySelector('#notetaker-files-title').textContent = folder.name;
   document.querySelector('#notetaker-files-count').textContent = `${entries.length} ${entries.length === 1 ? 'item' : 'items'}`;
-  fileList.innerHTML = entries.length ? entries.map(entryMarkup).join('') : '<div class="empty">This folder is empty. Upload audio to add your first transcript.</div>';
+  fileList.innerHTML = entries.length ? entries.map(entryMarkup).join('') : '<div class="empty">This folder is empty.<br><br><button class="secondary-action" type="button" data-empty-upload>Upload audio</button></div>';
   const activeJobs = [
     ...notetaker.folders.flatMap(item => item.items).filter(item => item.status === 'preparing' || item.status === 'transcribing'),
     ...meetings.filter(item => item.status === 'processing')
@@ -824,6 +824,7 @@ document.querySelector('#notetaker-folder-list')?.addEventListener('click', even
   if (folderId) { notetaker.selectedFolderId = folderId; saveNotetaker(); renderNotetaker(); }
 });
 document.querySelector('#notetaker-file-list')?.addEventListener('click', event => {
+  if (event.target.closest('[data-empty-upload]')) { document.querySelector('#notetaker-file').click(); return; }
   const menuBtn = event.target.closest('[data-row-menu]');
   if (menuBtn) {
     event.stopPropagation();
@@ -894,6 +895,7 @@ async function deleteRowItem(kind, id) {
   if (kind === 'meeting') {
     const item = meetings.find(entry => entry.id === id);
     if (!item) return;
+    if (item.status === 'processing' || item.status === 'recording') { showToast('Wait until recording and notes finish before deleting', true); return; }
     if (!confirm(`Delete "${item.title || 'this meeting'}" and its saved audio?`)) return;
     try {
       await call('delete_meeting', { id });

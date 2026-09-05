@@ -1,4 +1,6 @@
 /target
 /src-tauri/target
 *.pdb
+# Local-only model distribution spec — never commit or push.
+docs/MODEL_DISTRIBUTION.md
 

@@ -14,8 +14,8 @@ const meetingPromptTitle = document.querySelector('#meeting-prompt-title');
 const meetingPromptDesc = document.querySelector('#meeting-prompt-desc');
 const notetakerButton = document.querySelector('#notetaker-open');
 const overlayRow = document.querySelector('#overlay-row');
-const pill = document.querySelector('#dictation-pill');
 let meetingHideTimer = null;
+let meetingSequenceActive = false;
 
 async function showNotice(text) {
   microphoneLabel.textContent = text;
@@ -32,7 +32,6 @@ async function hideNotice() {
 
 function renderMeetingPrompt() {
   meetingIdle.hidden = false;
-  notetakerButton.classList.toggle('recording', meetingRecording);
 }
 
 async function showMeetingPrompt(title, question, desc) {
@@ -62,18 +61,22 @@ function showMeetingError(message) {
   invoke('resize_overlay', { width: 300, height: 148 });
 }
 
-// After confirmation: circle merges into pill with a brief red waveform,
-// a microphone-style status label is shown, then the whole pill disappears.
+// After confirmation: the circle fades out smoothly in place behind the
+// pill (top layer), the status label sits on the bottom layer, the pill
+// holds static and centered, then the whole row fades. The tray owns the
+// recording from here, so the circle never shows recording state.
 // Normal dictation pill UI/behavior is otherwise untouched.
 async function playMeetingStartedSequence() {
   clearTimeout(meetingHideTimer);
+  meetingSequenceActive = true;
   meetingPromptOpen = false;
   meetingPrompt.hidden = true;
+  notetakerButton.classList.remove('recording');
   overlayRow.hidden = false;
-  overlayRow.classList.remove('merging', 'meeting-flash', 'meeting-gone');
-  // Force reflow so the merge animation restarts cleanly.
+  overlayRow.classList.remove('meeting-start', 'meeting-flash', 'meeting-gone');
+  // Force reflow so the fade transition restarts cleanly.
   void overlayRow.offsetWidth;
-  overlayRow.classList.add('merging', 'meeting-flash');
+  overlayRow.classList.add('meeting-start', 'meeting-flash');
   await showNotice('Meeting recording has started. You can end it from the tray.');
   clearTimeout(microphoneTimer);
   meetingHideTimer = setTimeout(async () => {
@@ -83,10 +86,11 @@ async function playMeetingStartedSequence() {
     setTimeout(async () => {
       microphoneLabel.hidden = true;
       try { await invoke('dismiss_meeting_prompt'); } catch (_) {}
-      overlayRow.classList.remove('merging', 'meeting-flash', 'meeting-gone');
+      overlayRow.classList.remove('meeting-start', 'meeting-flash', 'meeting-gone');
       overlayRow.hidden = false;
+      meetingSequenceActive = false;
     }, 450);
-  }, 2200);
+  }, 3500);
 }
 
 meetingStartButton.addEventListener('click', async () => {
@@ -94,7 +98,6 @@ meetingStartButton.addEventListener('click', async () => {
   try {
     await invoke('start_meeting_recording', { title: meetingTitle });
     meetingRecording = true;
-    notetakerButton.classList.add('recording');
     await playMeetingStartedSequence();
   } catch (error) {
     showMeetingError(String(error));
@@ -129,7 +132,8 @@ listen('engine-status', event => {
 listen('meeting-suggestion', event => showMeetingPrompt(event.payload.title));
 listen('meeting-status', event => {
   meetingRecording = Boolean(event.payload.recording);
-  notetakerButton.classList.toggle('recording', meetingRecording);
+  // Never re-apply recording styling while the started-sequence owns the UI.
+  if (!meetingSequenceActive) notetakerButton.classList.toggle('recording', meetingRecording);
 });
 
 listen('microphone-activated', async event => {

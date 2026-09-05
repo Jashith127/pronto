@@ -1,3 +1,32 @@
+# Pronto 0.7.3
+
+Pronto 0.7.3 shrinks the installer from ~743 MB to ~101 MB by downloading the speech model during setup, polishes the Note Taker and overlay experience, and makes the tray meeting item follow recording state.
+
+## What's new
+
+- Slim installer (~101 MB): the 681 MB speech model is no longer bundled. The installer downloads it with progress, verifies its SHA256, and retries on failure. Internet is needed once at install time; afterwards transcription stays fully offline.
+- Updates and reinstalls skip the download: if the model is already present and its hash matches, setup reuses it instead of fetching ~700 MB again.
+- Uninstall removes the downloaded model on real uninstalls (updates keep it). Add/Remove Programs reports a truthful size.
+- Note Taker reading view uses flexible heights: meeting notes and transcript share the window proportionally with independent scrolling instead of fixed caps. The explorer grows with tall windows.
+- Whole-app UX pass: visible keyboard focus on recording rows, hover-reveal row menus with press feedback, inline Upload action in empty folders, delete blocked while an item is still recording or processing, and reduced-motion support for new transitions.
+- Meeting overlay reworked: explicit pill-on-top layering, the circle fades out smoothly in place (no more zoom-out), the pill holds ~3.5s while static and centered, then the row fades. Fixed the red recording style leaking into and after the fade.
+- System tray meeting item now reads "Stop meeting recording" while recording and stops the meeting when clicked, with toast feedback. It reverts to "Take meeting notes" afterwards.
+
+## Validation
+
+- 23 automated tests pass.
+- 10 hardware or interactive tests remain opt-in because they require a microphone, NVIDIA GPU, Windows audio endpoint, desktop input, audio output, or a live DeepSeek key.
+- Installer fetch-script hash and failure paths verified locally; full installer compile clean.
+
+## Requirements
+
+- Windows 10 or 11, 64-bit.
+- A supported NVIDIA GPU and current NVIDIA driver for local CUDA transcription.
+- Internet connection during installation (one-time ~681 MB model download).
+- DeepSeek API key is optional and is used only for advanced cleanup and meeting-note generation.
+
+---
+
 # Pronto 0.7.2
 
 Pronto 0.7.2 fixes freezing on long-file transcription, separates Note Taker and meeting uploads from Dictation History, reworks the meeting overlay flow, and upgrades the Note Taker workspace.

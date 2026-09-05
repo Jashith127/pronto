@@ -51,6 +51,20 @@ struct AppState {
     hotkey_error: Mutex<Option<String>>,
     show_microphone_once: Mutex<bool>,
     pending_uploads: Mutex<HashMap<String, PendingUpload>>,
+    meeting_tray_item: Mutex<Option<MenuItem<tauri::Wry>>>,
+}
+
+fn sync_meeting_tray_item(app: &AppHandle, recording: bool) {
+    let label = if recording {
+        "Stop meeting recording"
+    } else {
+        "Take meeting notes"
+    };
+    if let Ok(guard) = app.state::<AppState>().meeting_tray_item.lock() {
+        if let Some(item) = guard.as_ref() {
+            let _ = item.set_text(label);
+        }
+    }
 }
 
 impl AppState {
@@ -94,6 +108,7 @@ impl AppState {
             hotkey_error: Mutex::new(None),
             show_microphone_once: Mutex::new(true),
             pending_uploads: Mutex::new(HashMap::new()),
+            meeting_tray_item: Mutex::new(None),
         }
     }
 }
@@ -432,6 +447,7 @@ fn start_meeting_recording(
     }
     let settings = state.settings.snapshot()?;
     let record = state.meetings.start(title, settings.microphone_id)?;
+    sync_meeting_tray_item(&app, true);
     let _ = app.emit(
         "meeting-status",
         serde_json::json!({ "recording": true, "meeting": record, "elapsedSeconds": 0 }),
@@ -439,10 +455,12 @@ fn start_meeting_recording(
     Ok(record)
 }
 
-#[tauri::command]
-fn stop_meeting_recording(app: AppHandle) -> Result<meeting::MeetingRecord, String> {
+fn finish_meeting_recording(app: &AppHandle) -> Result<meeting::MeetingRecord, String> {
     let state = app.state::<AppState>();
     let stopped = state.meetings.stop()?;
+    // Recording has ended regardless of what follows, so the tray goes
+    // back to its idle label even on the error paths below.
+    sync_meeting_tray_item(app, false);
     let settings = state.settings.snapshot()?;
     let engine = state.engine.lock().map_err(|_| "engine lock poisoned")?;
     let engine = engine
@@ -459,6 +477,11 @@ fn stop_meeting_recording(app: AppHandle) -> Result<meeting::MeetingRecord, Stri
         serde_json::json!({ "recording": false, "meeting": stopped.record, "elapsedSeconds": 0 }),
     );
     Ok(stopped.record)
+}
+
+#[tauri::command]
+fn stop_meeting_recording(app: AppHandle) -> Result<meeting::MeetingRecord, String> {
+    finish_meeting_recording(&app)
 }
 
 #[tauri::command]
@@ -1097,6 +1120,10 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
     )?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &meeting, &paste, &quit])?;
+    *app.state::<AppState>()
+        .meeting_tray_item
+        .lock()
+        .expect("tray item lock poisoned") = Some(meeting);
     let mut tray = TrayIconBuilder::new()
         .tooltip("Pronto dictation")
         .menu(&menu)
@@ -1109,6 +1136,35 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
                 }
             }
             "meeting" => {
+                let recording = app
+                    .state::<AppState>()
+                    .meetings
+                    .status()
+                    .map(|status| status.recording)
+                    .unwrap_or(false);
+                if recording {
+                    match finish_meeting_recording(app) {
+                        Ok(_) => {
+                            let _ = app.emit(
+                                "tray-message",
+                                serde_json::json!({
+                                    "message": "Recording saved. Creating notes…",
+                                    "error": false
+                                }),
+                            );
+                        }
+                        Err(message) => {
+                            let _ = app.emit(
+                                "tray-message",
+                                serde_json::json!({
+                                    "message": message,
+                                    "error": true
+                                }),
+                            );
+                        }
+                    }
+                    return;
+                }
                 if let Some(overlay) = app.get_webview_window("overlay") {
                     let _ = overlay.show();
                 }

@@ -1,0 +1,6 @@
+# Source of truth for the install-time speech-model download.
+# Keep the PRONTO_MODEL_* defines in installer-hooks.nsh in sync with this file.
+SHA256=e3880d0aaaaf2c308ea2c35016b2b895c423eb3fda924c1b463d1c19b7f4d32e
+FILE=parakeet-tdt-0.6b-v3.q8_0.gguf
+URL=https://github.com/Jashith127/pronto/releases/download/parakeet-model-v1/parakeet-tdt-0.6b-v3.q8_0.gguf
+SIZE_BYTES=713975456
