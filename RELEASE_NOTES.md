@@ -11,6 +11,7 @@ Pronto 0.7.3 shrinks the installer from ~743 MB to ~101 MB by downloading the sp
 - Whole-app UX pass: visible keyboard focus on recording rows, hover-reveal row menus with press feedback, inline Upload action in empty folders, delete blocked while an item is still recording or processing, and reduced-motion support for new transitions.
 - Meeting overlay reworked: explicit pill-on-top layering, the circle fades out smoothly in place (no more zoom-out), the pill holds ~3.5s while static and centered, then the row fades. Fixed the red recording style leaking into and after the fade.
 - System tray meeting item now reads "Stop meeting recording" while recording and stops the meeting when clicked, with toast feedback. It reverts to "Take meeting notes" afterwards.
+- New global "paste last transcript" shortcut (default Win + Shift + V): pastes your most recent transcript wherever you are typing, without opening Pronto. Fully configurable in Settings; the two shortcuts can never collide.
 
 ## Validation
 

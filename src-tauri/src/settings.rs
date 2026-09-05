@@ -39,6 +39,8 @@ pub struct UserSettings {
     pub auto_insert: bool,
     pub dictionary: Vec<String>,
     pub hotkey: String,
+    #[serde(default)]
+    pub paste_hotkey: String,
     pub duck_audio: bool,
     pub activation_mode: ActivationMode,
     pub launch_at_startup: bool,
@@ -67,6 +69,7 @@ impl Default for UserSettings {
             auto_insert: true,
             dictionary: Vec::new(),
             hotkey: "control+alt+Space".into(),
+            paste_hotkey: crate::hotkey::DEFAULT_PASTE_HOTKEY.into(),
             duck_audio: false,
             activation_mode: ActivationMode::Hold,
             launch_at_startup: false,

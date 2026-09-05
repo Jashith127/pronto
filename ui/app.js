@@ -10,6 +10,7 @@ let microphoneStatus = null;
 let history = [];
 let engineStatus = null;
 let pendingShortcut = '';
+let pendingShortcutTarget = 'dictation';
 let meetings = [];
 let selectedMeetingId = null;
 let meetingRecording = false;
@@ -102,8 +103,10 @@ function shortcutMarkup(shortcut) {
 function renderHotkey(next) {
   hotkeyStatus = next;
   document.querySelector('#settings-hotkey').innerHTML = shortcutMarkup(next.shortcut);
+  document.querySelector('#settings-paste-hotkey').innerHTML = shortcutMarkup(next.pasteShortcut);
   if (engineStatus?.phase === 'idle') renderStatus(engineStatus);
   if (next.error) showToast(next.error, true);
+  if (next.pasteError) showToast(next.pasteError, true);
 }
 
 function renderMicrophones() {
@@ -172,7 +175,12 @@ function capturedShortcut(event) {
   return { preview: [...modifiers, event.code].join('+'), complete: true };
 }
 
-function openHotkeyDialog() {
+function openHotkeyDialog(target = 'dictation') {
+  pendingShortcutTarget = target;
+  document.querySelector('#hotkey-dialog-title').textContent = target === 'paste' ? 'Set paste shortcut' : 'Set dictation shortcut';
+  document.querySelector('#hotkey-dialog-desc').textContent = target === 'paste'
+    ? 'Press the combination that pastes your last transcript, then save it.'
+    : 'Press your combination, then save it. Modifier-only chords such as Win + Ctrl are supported.';
   document.querySelector('#hotkey-error').textContent = '';
   document.querySelector('#capture-keys').innerHTML = '';
   document.querySelector('.capture-prompt').hidden = false;
@@ -412,7 +420,8 @@ async function copyTranscript(event) {
 document.querySelector('#recent-list').addEventListener('click', copyTranscript);
 document.querySelector('#history-list').addEventListener('click', copyTranscript);
 
-document.querySelector('#change-hotkey').addEventListener('click', openHotkeyDialog);
+document.querySelector('#change-hotkey').addEventListener('click', () => openHotkeyDialog('dictation'));
+document.querySelector('#change-paste-hotkey').addEventListener('click', () => openHotkeyDialog('paste'));
 hotkeyCapture.addEventListener('keydown', event => {
   event.preventDefault();
   event.stopPropagation();
@@ -429,7 +438,8 @@ document.querySelector('#cancel-hotkey').addEventListener('click', () => hotkeyD
 document.querySelector('#save-hotkey').addEventListener('click', async () => {
   if (!pendingShortcut) return;
   try {
-    renderHotkey(await call('set_hotkey', { hotkey: pendingShortcut }));
+    const command = pendingShortcutTarget === 'paste' ? 'set_paste_hotkey' : 'set_hotkey';
+    renderHotkey(await call(command, { hotkey: pendingShortcut }));
     hotkeyDialog.close();
     showToast('Shortcut updated');
   } catch (error) {

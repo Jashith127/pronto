@@ -143,6 +143,10 @@
                   <div><strong>Dictation shortcut</strong><p>Works globally, including modifier-only combinations such as Win + Ctrl.</p></div>
                   <div class="setting-control"><div class="shortcut-keys" id="settings-hotkey"></div><button class="change-button" id="change-hotkey">Change</button></div>
                 </div>
+                <div class="setting-row hotkey-row">
+                  <div><strong>Paste last transcript</strong><p>Works globally. Pastes your most recent transcript where you are typing.</p></div>
+                  <div class="setting-control"><div class="shortcut-keys" id="settings-paste-hotkey"></div><button class="change-button" id="change-paste-hotkey">Change</button></div>
+                </div>
                 <div class="setting-row">
                   <div><strong>Activation behavior</strong><p>Hold to talk, or press once to start and again to stop.</p></div>
                   <div class="segmented" role="group" aria-label="Activation behavior">
@@ -210,8 +214,8 @@
     <dialog class="hotkey-dialog" id="hotkey-dialog">
       <form method="dialog">
         <button class="dialog-close" value="cancel" aria-label="Close">×</button>
-        <h2>Set dictation shortcut</h2>
-        <p>Press your combination, then save it. Modifier-only chords such as Win + Ctrl are supported.</p>
+        <h2 id="hotkey-dialog-title">Set dictation shortcut</h2>
+        <p id="hotkey-dialog-desc">Press your combination, then save it. Modifier-only chords such as Win + Ctrl are supported.</p>
         <div class="capture-box" id="hotkey-capture" tabindex="0">
           <span class="capture-prompt">Press your shortcut</span>
           <div class="shortcut-keys" id="capture-keys"></div>

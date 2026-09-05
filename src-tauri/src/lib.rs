@@ -19,7 +19,7 @@ use engine::{
     CompletedMeetingTranscription, CompletedTranscription, EngineController,
     MeetingTranscriptionJob, ModelStatus, TranscriptionJob,
 };
-use hotkey::{Hotkey, HotkeyController, HotkeyEvent, HotkeyStatus};
+use hotkey::{Hotkey, HotkeyController, HotkeyEvent, HotkeyId, HotkeyStatus};
 use pipeline::{EngineStatus, Phase, Pipeline};
 use settings::{ActivationMode, AppPreferences, HistoryEntry, SettingsStore, UserSettings};
 use sound::SoundController;
@@ -47,8 +47,10 @@ struct AppState {
     target_window: Mutex<isize>,
     model_status: Mutex<ModelStatus>,
     active_shortcut: Mutex<Hotkey>,
+    paste_shortcut: Mutex<Hotkey>,
     hotkey_controller: Mutex<Option<HotkeyController>>,
     hotkey_error: Mutex<Option<String>>,
+    paste_hotkey_error: Mutex<Option<String>>,
     show_microphone_once: Mutex<bool>,
     pending_uploads: Mutex<HashMap<String, PendingUpload>>,
     meeting_tray_item: Mutex<Option<MenuItem<tauri::Wry>>>,
@@ -82,9 +84,26 @@ impl AppState {
             .or_else(|_| hotkey::parse(hotkey::DEFAULT_HOTKEY))
             .expect("the built-in shortcut must be valid");
         let canonical = active_shortcut.canonical().to_string();
-        if canonical != configured {
+        let paste_configured = settings
+            .snapshot()
+            .map(|value| value.paste_hotkey)
+            .unwrap_or_else(|_| hotkey::DEFAULT_PASTE_HOTKEY.into());
+        let mut paste_shortcut = hotkey::parse(&paste_configured)
+            .or_else(|_| hotkey::parse(hotkey::DEFAULT_PASTE_HOTKEY))
+            .expect("the built-in paste shortcut must be valid");
+        if hotkey::shortcuts_conflict(&paste_shortcut, &active_shortcut) {
+            paste_shortcut = hotkey::parse(hotkey::DEFAULT_PASTE_HOTKEY)
+                .expect("the built-in paste shortcut must be valid");
+        }
+        if hotkey::shortcuts_conflict(&paste_shortcut, &active_shortcut) {
+            paste_shortcut = hotkey::parse("control+super+KeyV")
+                .expect("the fallback paste shortcut must be valid");
+        }
+        let paste_canonical = paste_shortcut.canonical().to_string();
+        if canonical != configured || paste_canonical != paste_configured {
             if let Ok(mut repaired) = settings.snapshot() {
                 repaired.hotkey = canonical;
+                repaired.paste_hotkey = paste_canonical;
                 let _ = settings.replace(repaired);
             }
         }
@@ -104,8 +123,10 @@ impl AppState {
                 backend: "NVIDIA Parakeet TDT 0.6B v3 · CUDA".into(),
             }),
             active_shortcut: Mutex::new(active_shortcut),
+            paste_shortcut: Mutex::new(paste_shortcut),
             hotkey_controller: Mutex::new(None),
             hotkey_error: Mutex::new(None),
+            paste_hotkey_error: Mutex::new(None),
             show_microphone_once: Mutex::new(true),
             pending_uploads: Mutex::new(HashMap::new()),
             meeting_tray_item: Mutex::new(None),
@@ -730,7 +751,30 @@ fn cancel_recording(app: AppHandle) -> Result<EngineStatus, String> {
     Ok(pipeline.status.clone())
 }
 
-fn handle_hotkey_event(app: &AppHandle, event: HotkeyEvent) {
+fn handle_paste_hotkey(app: &AppHandle) {
+    match paste_last(app) {
+        Ok(message) => {
+            let _ = app.emit(
+                "tray-message",
+                serde_json::json!({ "message": message, "error": false }),
+            );
+        }
+        Err(message) => {
+            let _ = app.emit(
+                "tray-message",
+                serde_json::json!({ "message": message, "error": true }),
+            );
+        }
+    }
+}
+
+fn handle_hotkey_event(app: &AppHandle, id: HotkeyId, event: HotkeyEvent) {
+    if id == HotkeyId::Paste {
+        if event == HotkeyEvent::Pressed {
+            handle_paste_hotkey(app);
+        }
+        return;
+    }
     let mode = app
         .state::<AppState>()
         .settings
@@ -795,6 +839,7 @@ fn save_settings(
     let gpu_memory_management_changed =
         settings.gpu_memory_management != previous.gpu_memory_management;
     settings.hotkey = previous.hotkey;
+    settings.paste_hotkey = previous.paste_hotkey;
     settings.microphone_id = previous.microphone_id;
     settings.microphone_name = previous.microphone_name;
     settings.gpu_memory_management_configured = true;
@@ -909,10 +954,14 @@ fn dismiss_meeting_prompt(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-fn get_hotkey_status(state: tauri::State<'_, AppState>) -> Result<HotkeyStatus, String> {
+fn hotkey_status(state: &AppState) -> Result<HotkeyStatus, String> {
     let shortcut = state
         .active_shortcut
+        .lock()
+        .map_err(|_| "shortcut lock poisoned")?
+        .clone();
+    let paste_shortcut = state
+        .paste_shortcut
         .lock()
         .map_err(|_| "shortcut lock poisoned")?
         .clone();
@@ -921,15 +970,27 @@ fn get_hotkey_status(state: tauri::State<'_, AppState>) -> Result<HotkeyStatus, 
         .lock()
         .map_err(|_| "shortcut status lock poisoned")?
         .clone();
+    let paste_error = state
+        .paste_hotkey_error
+        .lock()
+        .map_err(|_| "shortcut status lock poisoned")?
+        .clone();
     Ok(HotkeyStatus {
         shortcut: shortcut.canonical().to_string(),
+        paste_shortcut: paste_shortcut.canonical().to_string(),
         registered: state
             .hotkey_controller
             .lock()
             .map(|value| value.is_some())
             .unwrap_or(false),
         error,
+        paste_error,
     })
+}
+
+#[tauri::command]
+fn get_hotkey_status(state: tauri::State<'_, AppState>) -> Result<HotkeyStatus, String> {
+    hotkey_status(&state)
 }
 
 #[tauri::command]
@@ -937,6 +998,17 @@ fn set_hotkey(app: AppHandle, hotkey: String) -> Result<HotkeyStatus, String> {
     let next = hotkey::parse(&hotkey)?;
     let canonical = next.canonical().to_string();
     let state = app.state::<AppState>();
+    {
+        let paste = state
+            .paste_shortcut
+            .lock()
+            .map_err(|_| "shortcut lock poisoned")?;
+        if hotkey::shortcuts_conflict(&next, &paste) {
+            return Err(
+                "That shortcut is already used for pasting the last transcript".into(),
+            );
+        }
+    }
     let previous = state
         .active_shortcut
         .lock()
@@ -949,12 +1021,12 @@ fn set_hotkey(app: AppHandle, hotkey: String) -> Result<HotkeyStatus, String> {
     let controller = controller
         .as_ref()
         .ok_or_else(|| "Shortcut listener is still starting".to_string())?;
-    controller.update(next.clone())?;
+    controller.update(HotkeyId::Dictation, next.clone())?;
 
     let mut settings = state.settings.snapshot()?;
     settings.hotkey = canonical;
     if let Err(error) = state.settings.replace(settings) {
-        let _ = controller.update(previous);
+        let _ = controller.update(HotkeyId::Dictation, previous);
         return Err(format!(
             "The shortcut worked but could not be saved: {error}"
         ));
@@ -967,11 +1039,56 @@ fn set_hotkey(app: AppHandle, hotkey: String) -> Result<HotkeyStatus, String> {
         .hotkey_error
         .lock()
         .map_err(|_| "shortcut status lock poisoned")? = None;
-    let status = HotkeyStatus {
-        shortcut: next.canonical().to_string(),
-        registered: true,
-        error: None,
-    };
+    let status = hotkey_status(&state)?;
+    let _ = app.emit("hotkey-status", status.clone());
+    Ok(status)
+}
+
+#[tauri::command]
+fn set_paste_hotkey(app: AppHandle, hotkey: String) -> Result<HotkeyStatus, String> {
+    let next = hotkey::parse(&hotkey)?;
+    let canonical = next.canonical().to_string();
+    let state = app.state::<AppState>();
+    {
+        let active = state
+            .active_shortcut
+            .lock()
+            .map_err(|_| "shortcut lock poisoned")?;
+        if hotkey::shortcuts_conflict(&next, &active) {
+            return Err("That shortcut is already used for dictation".into());
+        }
+    }
+    let previous = state
+        .paste_shortcut
+        .lock()
+        .map_err(|_| "shortcut lock poisoned")?
+        .clone();
+    let controller = state
+        .hotkey_controller
+        .lock()
+        .map_err(|_| "shortcut controller lock poisoned")?;
+    let controller = controller
+        .as_ref()
+        .ok_or_else(|| "Shortcut listener is still starting".to_string())?;
+    controller.update(HotkeyId::Paste, next.clone())?;
+
+    let mut settings = state.settings.snapshot()?;
+    settings.paste_hotkey = canonical;
+    if let Err(error) = state.settings.replace(settings) {
+        let _ = controller.update(HotkeyId::Paste, previous);
+        return Err(format!(
+            "The shortcut worked but could not be saved: {error}"
+        ));
+    }
+    *state
+        .paste_shortcut
+        .lock()
+        .map_err(|_| "shortcut lock poisoned")? = next.clone();
+    *state
+        .paste_hotkey_error
+        .lock()
+        .map_err(|_| "shortcut status lock poisoned")? = None;
+    let status = hotkey_status(&state)?;
     let _ = app.emit("hotkey-status", status.clone());
     Ok(status)
 }
@@ -1243,9 +1360,20 @@ pub fn run() {
                 app.handle().clone(),
                 app.state::<AppState>().meetings.activity_flag(),
             );
+            let paste_shortcut = app
+                .state::<AppState>()
+                .paste_shortcut
+                .lock()
+                .expect("shortcut lock poisoned")
+                .clone();
             let handle = app.handle().clone();
-            match HotkeyController::new(shortcut, move |event| handle_hotkey_event(&handle, event))
-            {
+            match HotkeyController::new(
+                vec![
+                    (HotkeyId::Dictation, shortcut),
+                    (HotkeyId::Paste, paste_shortcut),
+                ],
+                move |id, event| handle_hotkey_event(&handle, id, event),
+            ) {
                 Ok(controller) => {
                     *app.state::<AppState>()
                         .hotkey_controller
@@ -1307,6 +1435,7 @@ pub fn run() {
             dismiss_meeting_prompt,
             get_hotkey_status,
             set_hotkey,
+            set_paste_hotkey,
             save_api_key,
             add_dictionary_term,
             remove_dictionary_term,

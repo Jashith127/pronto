@@ -14,7 +14,20 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 pub const DEFAULT_HOTKEY: &str = "control+alt+Space";
+pub const DEFAULT_PASTE_HOTKEY: &str = "shift+super+KeyV";
 const STOP_HOOK: u32 = WM_APP + 0x564;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HotkeyId {
+    Dictation,
+    Paste,
+}
+
+/// Two shortcuts can never share one canonical chord; the hook would
+/// otherwise fire both actions at once.
+pub fn shortcuts_conflict(first: &Hotkey, second: &Hotkey) -> bool {
+    first.canonical() == second.canonical()
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Hotkey {
@@ -36,8 +49,10 @@ pub enum HotkeyEvent {
 #[serde(rename_all = "camelCase")]
 pub struct HotkeyStatus {
     pub shortcut: String,
+    pub paste_shortcut: String,
     pub registered: bool,
     pub error: Option<String>,
+    pub paste_error: Option<String>,
 }
 
 impl Hotkey {
@@ -189,11 +204,16 @@ fn is_reserved_windows_chord(hotkey: &Hotkey) -> bool {
         && matches!(hotkey.key, Some(0x4C | 0x55 | 0x52 | 0x49 | 0x45 | 0x44))
 }
 
-struct HookState {
+struct WatchedHotkey {
+    id: HotkeyId,
     config: Hotkey,
-    pressed: HashSet<u32>,
     active: bool,
-    events: mpsc::Sender<HotkeyEvent>,
+}
+
+struct HookState {
+    watched: Vec<WatchedHotkey>,
+    pressed: HashSet<u32>,
+    events: mpsc::Sender<(HotkeyId, HotkeyEvent)>,
 }
 static HOOK_STATE: OnceLock<Mutex<Option<HookState>>> = OnceLock::new();
 
@@ -209,14 +229,19 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
                     } else {
                         state.pressed.remove(&data.vkCode);
                     }
-                    let active = state.config.matches(&state.pressed);
-                    if active != state.active {
-                        state.active = active;
-                        let _ = state.events.send(if active {
-                            HotkeyEvent::Pressed
-                        } else {
-                            HotkeyEvent::Released
-                        });
+                    for watched in state.watched.iter_mut() {
+                        let active = watched.config.matches(&state.pressed);
+                        if active != watched.active {
+                            watched.active = active;
+                            let _ = state.events.send((
+                                watched.id,
+                                if active {
+                                    HotkeyEvent::Pressed
+                                } else {
+                                    HotkeyEvent::Released
+                                },
+                            ));
+                        }
                     }
                 }
             }
@@ -231,15 +256,15 @@ pub struct HotkeyController {
 
 impl HotkeyController {
     pub fn new(
-        config: Hotkey,
-        callback: impl Fn(HotkeyEvent) + Send + 'static,
+        configs: Vec<(HotkeyId, Hotkey)>,
+        callback: impl Fn(HotkeyId, HotkeyEvent) + Send + 'static,
     ) -> Result<Self, String> {
         let (events, event_rx) = mpsc::channel();
         std::thread::Builder::new()
             .name("pronto-hotkey-events".into())
             .spawn(move || {
-                while let Ok(event) = event_rx.recv() {
-                    callback(event);
+                while let Ok((id, event)) = event_rx.recv() {
+                    callback(id, event);
                 }
             })
             .map_err(|error| format!("Could not start shortcut event thread: {error}"))?;
@@ -250,9 +275,15 @@ impl HotkeyController {
                 let thread_id = unsafe { GetCurrentThreadId() };
                 if let Ok(mut state) = HOOK_STATE.get_or_init(|| Mutex::new(None)).lock() {
                     *state = Some(HookState {
-                        config,
+                        watched: configs
+                            .into_iter()
+                            .map(|(id, config)| WatchedHotkey {
+                                id,
+                                config,
+                                active: false,
+                            })
+                            .collect(),
                         pressed: HashSet::new(),
-                        active: false,
                         events,
                     });
                 }
@@ -288,7 +319,7 @@ impl HotkeyController {
         Ok(Self { thread_id })
     }
 
-    pub fn update(&self, config: Hotkey) -> Result<(), String> {
+    pub fn update(&self, id: HotkeyId, config: Hotkey) -> Result<(), String> {
         let mut guard = HOOK_STATE
             .get_or_init(|| Mutex::new(None))
             .lock()
@@ -296,12 +327,17 @@ impl HotkeyController {
         let state = guard
             .as_mut()
             .ok_or_else(|| "Shortcut listener is not running".to_string())?;
-        if state.active {
-            let _ = state.events.send(HotkeyEvent::Released);
+        let watched = state
+            .watched
+            .iter_mut()
+            .find(|watched| watched.id == id)
+            .ok_or_else(|| "Shortcut listener is not running".to_string())?;
+        if watched.active {
+            let _ = state.events.send((id, HotkeyEvent::Released));
         }
-        state.config = config;
+        watched.config = config;
         state.pressed.clear();
-        state.active = false;
+        watched.active = false;
         Ok(())
     }
 }
@@ -333,6 +369,21 @@ mod tests {
             "shift+super+KeyV"
         );
     }
+    #[test]
+    fn paste_default_is_valid_and_distinct_from_dictation() {
+        let paste = parse(DEFAULT_PASTE_HOTKEY).unwrap();
+        assert_eq!(paste.canonical(), "shift+super+KeyV");
+        let dictation = parse(DEFAULT_HOTKEY).unwrap();
+        assert!(!shortcuts_conflict(&paste, &dictation));
+    }
+    #[test]
+    fn identical_shortcuts_conflict() {
+        let first = parse("control+alt+Space").unwrap();
+        let second = parse("Control+Alt+Space").unwrap();
+        assert!(shortcuts_conflict(&first, &second));
+        let other = parse(DEFAULT_PASTE_HOTKEY).unwrap();
+        assert!(!shortcuts_conflict(&first, &other));
+    }
 
     #[test]
     #[ignore = "injects a real Win+Ctrl chord on the interactive Windows desktop"]
@@ -343,9 +394,12 @@ mod tests {
             SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_LWIN,
         };
         let (sender, receiver) = mpsc::channel();
-        let _controller = HotkeyController::new(parse("Win+Ctrl").unwrap(), move |event| {
-            let _ = sender.send(event);
-        })
+        let _controller = HotkeyController::new(
+            vec![(HotkeyId::Dictation, parse("Win+Ctrl").unwrap())],
+            move |_id, event| {
+                let _ = sender.send(event);
+            },
+        )
         .unwrap();
         let input = |key, flags| INPUT {
             r#type: INPUT_KEYBOARD,
