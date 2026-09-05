@@ -23,8 +23,14 @@ use hotkey::{Hotkey, HotkeyController, HotkeyEvent, HotkeyStatus};
 use pipeline::{EngineStatus, Phase, Pipeline};
 use settings::{ActivationMode, AppPreferences, HistoryEntry, SettingsStore, UserSettings};
 use sound::SoundController;
+use std::collections::HashMap;
 use std::sync::Mutex;
 use system_audio::SystemAudioController;
+
+struct PendingUpload {
+    file_name: String,
+    bytes: Vec<u8>,
+}
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition};
@@ -44,6 +50,7 @@ struct AppState {
     hotkey_controller: Mutex<Option<HotkeyController>>,
     hotkey_error: Mutex<Option<String>>,
     show_microphone_once: Mutex<bool>,
+    pending_uploads: Mutex<HashMap<String, PendingUpload>>,
 }
 
 impl AppState {
@@ -86,6 +93,7 @@ impl AppState {
             hotkey_controller: Mutex::new(None),
             hotkey_error: Mutex::new(None),
             show_microphone_once: Mutex::new(true),
+            pending_uploads: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -245,11 +253,7 @@ fn finish_recording(app: &AppHandle) -> Result<EngineStatus, String> {
 
     let engine = state.engine.lock().map_err(|_| "engine lock poisoned")?;
     if let Some(engine) = engine.as_ref() {
-        engine.transcribe(TranscriptionJob {
-            recording,
-            settings,
-            target_window,
-        })?;
+        engine.transcribe(TranscriptionJob::live(recording, settings, target_window))?;
     } else {
         pipeline.fail("Transcription engine is still starting");
         emit_status(app, &pipeline.status);
@@ -331,8 +335,21 @@ pub(crate) fn complete_transcription(
                 completed.entry.total_ms,
                 message,
             );
-            let _ = state.settings.push_history(completed.entry.clone());
-            let _ = app.emit("history-updated", completed.entry);
+            if completed.skip_history {
+                // Note Taker file uploads and other background imports must not
+                // pollute the Dictation History clipboard. They are delivered
+                // on a dedicated channel so the Note Taker can attach them.
+                let _ = app.emit(
+                    "notetaker-transcription",
+                    serde_json::json!({
+                        "uploadId": completed.upload_id,
+                        "entry": completed.entry,
+                    }),
+                );
+            } else {
+                let _ = state.settings.push_history(completed.entry.clone());
+                let _ = app.emit("history-updated", completed.entry);
+            }
         }
         Err(error) => {
             state.insertion_target.cancel();
@@ -454,19 +471,28 @@ fn get_meetings(state: tauri::State<'_, AppState>) -> Result<Vec<meeting::Meetin
     state.meetings.list()
 }
 
-#[tauri::command]
-fn transcribe_media_file(
-    app: AppHandle,
+const MAX_WAV_BYTES: usize = 180 * 1024 * 1024;
+
+fn queue_file_import(
+    app: &AppHandle,
     file_name: String,
-    wav_bytes: Vec<u8>,
+    wav_bytes: &[u8],
+    skip_history: bool,
+    upload_id: Option<String>,
 ) -> Result<EngineStatus, String> {
-    const MAX_WAV_BYTES: usize = 180 * 1024 * 1024;
     if wav_bytes.len() > MAX_WAV_BYTES {
         return Err(
             "This file is too long. Import a recording shorter than about 90 minutes.".into(),
         );
     }
-    let recording = engine::recording_from_pcm16_wav(&wav_bytes)?;
+    // Note Taker uploads persist their WAV to disk so a failed item ("Needs
+    // attention") keeps its audio for retry even after restart.
+    if skip_history {
+        if let Some(id) = upload_id.as_deref() {
+            let _ = meeting::save_notetaker_audio(id, wav_bytes);
+        }
+    }
+    let recording = engine::recording_from_pcm16_wav(wav_bytes)?;
     let state = app.state::<AppState>();
     let settings = state.settings.snapshot()?;
     let mut pipeline = state
@@ -477,16 +503,16 @@ fn transcribe_media_file(
         return Err("Pronto is already recording or transcribing another item.".into());
     }
     pipeline.status.message = format!("Transcribing {file_name} locally…");
-    emit_status(&app, &pipeline.status);
+    emit_status(app, &pipeline.status);
     drop(pipeline);
 
     let engine = state.engine.lock().map_err(|_| "engine lock poisoned")?;
     let engine = engine
         .as_ref()
         .ok_or_else(|| "Transcription engine is still starting".to_string())?;
-    engine.transcribe(TranscriptionJob {
+    engine.transcribe(TranscriptionJob::file_import(
         recording,
-        settings: UserSettings {
+        UserSettings {
             auto_insert: false,
             // Local file imports never go through automatic cleanup, even
             // when "Clean up speech" is enabled for live dictation.
@@ -495,8 +521,9 @@ fn transcribe_media_file(
             cleanup_enabled: false,
             ..settings
         },
-        target_window: 0,
-    })?;
+        skip_history,
+        upload_id,
+    ))?;
     state.insertion_target.cancel();
     let status = state
         .pipeline
@@ -505,6 +532,160 @@ fn transcribe_media_file(
         .status
         .clone();
     Ok(status)
+}
+
+#[tauri::command]
+fn transcribe_media_file(
+    app: AppHandle,
+    file_name: String,
+    wav_bytes: Vec<u8>,
+    skip_history: Option<bool>,
+    upload_id: Option<String>,
+) -> Result<EngineStatus, String> {
+    queue_file_import(
+        &app,
+        file_name,
+        &wav_bytes,
+        skip_history.unwrap_or(false),
+        upload_id,
+    )
+}
+
+#[tauri::command]
+fn start_media_upload(
+    state: tauri::State<'_, AppState>,
+    upload_id: String,
+    file_name: String,
+    total_bytes: usize,
+) -> Result<(), String> {
+    if upload_id.trim().is_empty() || upload_id.len() > 128 {
+        return Err("Invalid upload identifier".into());
+    }
+    if total_bytes == 0 || total_bytes > MAX_WAV_BYTES {
+        return Err(
+            "This file is too long. Import a recording shorter than about 90 minutes.".into(),
+        );
+    }
+    let mut pending = state
+        .pending_uploads
+        .lock()
+        .map_err(|_| "upload lock poisoned")?;
+    pending.insert(
+        upload_id,
+        PendingUpload {
+            file_name,
+            bytes: Vec::new(),
+        },
+    );
+    Ok(())
+}
+
+#[tauri::command]
+fn append_media_chunk(
+    state: tauri::State<'_, AppState>,
+    upload_id: String,
+    chunk: Vec<u8>,
+) -> Result<usize, String> {
+    let mut pending = state
+        .pending_uploads
+        .lock()
+        .map_err(|_| "upload lock poisoned")?;
+    let entry = pending
+        .get_mut(&upload_id)
+        .ok_or_else(|| "Upload session expired. Please try again.".to_string())?;
+    if entry.bytes.len().saturating_add(chunk.len()) > MAX_WAV_BYTES {
+        return Err(
+            "This file is too long. Import a recording shorter than about 90 minutes.".into(),
+        );
+    }
+    entry.bytes.extend_from_slice(&chunk);
+    Ok(entry.bytes.len())
+}
+
+#[tauri::command]
+fn abort_media_upload(state: tauri::State<'_, AppState>, upload_id: String) -> Result<(), String> {
+    state
+        .pending_uploads
+        .lock()
+        .map_err(|_| "upload lock poisoned")?
+        .remove(&upload_id);
+    Ok(())
+}
+
+#[tauri::command]
+fn finish_media_upload(
+    app: AppHandle,
+    upload_id: String,
+    skip_history: Option<bool>,
+) -> Result<EngineStatus, String> {
+    let (file_name, bytes) = {
+        let state = app.state::<AppState>();
+        let mut pending = state
+            .pending_uploads
+            .lock()
+            .map_err(|_| "upload lock poisoned")?;
+        let entry = pending.remove(&upload_id).ok_or_else(|| {
+            "Upload session expired. Please try again.".to_string()
+        })?;
+        (entry.file_name, entry.bytes)
+    };
+    // queue_file_import re-validates size and decodes the WAV off the
+    // small-chunk IPC path, so the webview never blocks on one giant payload.
+    queue_file_import(
+        &app,
+        file_name,
+        &bytes,
+        skip_history.unwrap_or(false),
+        Some(upload_id),
+    )
+}
+
+#[tauri::command]
+fn rename_meeting(
+    _app: AppHandle,
+    id: String,
+    title: String,
+) -> Result<meeting::MeetingRecord, String> {
+    meeting::rename_record(&id, &title)
+}
+
+#[tauri::command]
+fn delete_meeting(_app: AppHandle, id: String) -> Result<(), String> {
+    meeting::delete_record(&id)
+}
+
+#[tauri::command]
+fn retry_meeting(app: AppHandle, id: String) -> Result<meeting::MeetingRecord, String> {
+    let state = app.state::<AppState>();
+    let (record, audio_path) = meeting::record_for_retry(&id)?;
+    let settings = state.settings.snapshot()?;
+    let engine = state.engine.lock().map_err(|_| "engine lock poisoned")?;
+    let engine = engine
+        .as_ref()
+        .ok_or_else(|| "Transcription engine is still starting".to_string())?;
+    engine.transcribe_meeting(MeetingTranscriptionJob {
+        id: record.id.clone(),
+        title: record.title.clone(),
+        audio_path,
+        settings,
+    })?;
+    Ok(record)
+}
+
+#[tauri::command]
+fn retry_notetaker_upload(app: AppHandle, item_id: String) -> Result<EngineStatus, String> {
+    let path = meeting::notetaker_audio_path(&item_id)
+        .ok_or_else(|| "That recording was not found.".to_string())?;
+    let bytes = std::fs::read(&path).map_err(|_| {
+        "The saved audio for this item is missing, so it cannot be retried.".to_string()
+    })?;
+    let file_name = format!("{item_id}.wav");
+    queue_file_import(&app, file_name, &bytes, true, Some(item_id))
+}
+
+#[tauri::command]
+fn delete_notetaker_audio(_app: AppHandle, item_id: String) -> Result<(), String> {
+    meeting::delete_notetaker_audio(&item_id)
 }
 
 #[tauri::command]
@@ -1049,6 +1230,15 @@ pub fn run() {
             get_meeting_status,
             get_meetings,
             transcribe_media_file,
+            start_media_upload,
+            append_media_chunk,
+            abort_media_upload,
+            finish_media_upload,
+            rename_meeting,
+            delete_meeting,
+            retry_meeting,
+            retry_notetaker_upload,
+            delete_notetaker_audio,
             cancel_recording,
             reset,
             get_preferences,

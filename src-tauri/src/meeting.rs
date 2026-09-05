@@ -604,6 +604,82 @@ pub fn mark_error(id: &str, error: String) -> Result<MeetingRecord, String> {
     save_record(&directory, &record)?;
     Ok(record)
 }
+
+pub fn rename_record(id: &str, title: &str) -> Result<MeetingRecord, String> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err("Enter a name for this recording.".into());
+    }
+    let directory = meetings_root().join(id);
+    let path = directory.join("meeting.json");
+    let mut record: MeetingRecord =
+        serde_json::from_slice(&fs::read(&path).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    record.title = title.chars().take(120).collect();
+    save_record(&directory, &record)?;
+    Ok(record)
+}
+
+pub fn delete_record(id: &str) -> Result<(), String> {
+    if id.trim().is_empty() || id.contains(['/', '\\', '.']) {
+        return Err("Invalid recording identifier.".into());
+    }
+    let directory = meetings_root().join(id);
+    if !directory.join("meeting.json").is_file() {
+        return Err("That recording was not found.".into());
+    }
+    fs::remove_dir_all(&directory).map_err(|e| e.to_string())
+}
+
+pub fn record_for_retry(id: &str) -> Result<(MeetingRecord, PathBuf), String> {
+    let directory = meetings_root().join(id);
+    let path = directory.join("meeting.json");
+    let mut record: MeetingRecord =
+        serde_json::from_slice(&fs::read(&path).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    let audio = directory.join("meeting.wav");
+    if !audio.is_file() {
+        return Err("The saved audio for this meeting is missing, so it cannot be retried.".into());
+    }
+    record.status = "processing".into();
+    record.error = None;
+    save_record(&directory, &record)?;
+    Ok((record, audio))
+}
+
+pub fn notetaker_audio_root() -> PathBuf {
+    std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("Pronto")
+        .join("NoteTakerAudio")
+}
+
+pub fn notetaker_audio_path(item_id: &str) -> Option<PathBuf> {
+    if item_id.trim().is_empty()
+        || item_id.len() > 128
+        || item_id.contains(['/', '\\', '.', ':'])
+    {
+        return None;
+    }
+    Some(notetaker_audio_root().join(format!("{item_id}.wav")))
+}
+
+pub fn save_notetaker_audio(item_id: &str, bytes: &[u8]) -> Result<(), String> {
+    let path = notetaker_audio_path(item_id)
+        .ok_or_else(|| "Invalid recording identifier.".to_string())?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::write(&path, bytes).map_err(|e| e.to_string())
+}
+
+pub fn delete_notetaker_audio(item_id: &str) -> Result<(), String> {
+    if let Some(path) = notetaker_audio_path(item_id) {
+        let _ = fs::remove_file(path);
+    }
+    Ok(())
+}
 fn save_record(directory: &Path, record: &MeetingRecord) -> Result<(), String> {
     let path = directory.join("meeting.json");
     let temporary = directory.join("meeting.json.tmp");

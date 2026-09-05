@@ -1,3 +1,31 @@
+# Pronto 0.7.2
+
+Pronto 0.7.2 fixes freezing on long-file transcription, separates Note Taker and meeting uploads from Dictation History, reworks the meeting overlay flow, and upgrades the Note Taker workspace.
+
+## What's new
+
+- Long audio/video files no longer freeze the app. WAV conversion runs in slices with progress, and audio uploads travel to the backend in small chunks instead of one giant payload.
+- Note Taker file uploads and meeting recordings no longer appear in the Dictation History clipboard. Note Taker transcripts arrive on a dedicated channel; Dictation History only holds live dictations and Dictate-screen imports.
+- Meeting overlay after confirmation: the right-side circle animates merging into the pill, the waveform flashes red only for the animation, and a microphone-style label reads "Meeting recording has started. You can end it from the tray." The second overlay box above the pill is gone, X/✓ stay hidden in meeting state, and the pill fully disappears after a few seconds. Recording continues and is stopped from the tray. Normal dictation pill behavior is unchanged.
+- Note Taker reading view is now responsive: transcript text fills the window width instead of a fixed column. The Back button is an icon-only button with a bolder arrow.
+- Meeting notes now render Markdown (headings, bold, lists) instead of raw `#`/`**` markers, in a scrollable notes pane with **Meeting notes** / **Transcript** tabs. Copy follows the active tab.
+- Each recording row has a `⋮` menu: **Edit name** and **Delete** (with confirmation) for everything, plus **Try again** for anything not ready. Meeting delete removes its audio and record from disk.
+- Failed Note Taker uploads keep their saved audio on disk, so they can be retried even after restart; meetings retry from their saved `meeting.wav`.
+- Upload audio button now shows an upload (up-arrow) icon instead of a download arrow.
+
+## Validation
+
+- 23 automated tests pass.
+- 10 hardware or interactive tests remain opt-in because they require a microphone, NVIDIA GPU, Windows audio endpoint, desktop input, audio output, or a live DeepSeek key.
+
+## Requirements
+
+- Windows 10 or 11, 64-bit.
+- A supported NVIDIA GPU and current NVIDIA driver for local CUDA transcription.
+- DeepSeek API key is optional and is used only for advanced cleanup and meeting-note generation.
+
+---
+
 # Pronto 0.7.1
 
 Pronto 0.7.1 cleans up the dictation pill, gives meeting notes their own space, and adds quick access to Note Taker plus a standard maximize control.

@@ -6,17 +6,16 @@ let persistentNotice = false;
 let meetingTitle = 'Untitled meeting';
 let meetingPromptOpen = false;
 let meetingRecording = false;
-let meetingStartedAt = 0;
 const meetingPrompt = document.querySelector('#meeting-prompt');
 const meetingIdle = document.querySelector('#meeting-idle');
-const meetingActive = document.querySelector('#meeting-active');
 const meetingStartButton = document.querySelector('#meeting-start');
 const meetingDismissButton = document.querySelector('#meeting-dismiss');
-const meetingStopButton = document.querySelector('#meeting-stop');
 const meetingPromptTitle = document.querySelector('#meeting-prompt-title');
 const meetingPromptDesc = document.querySelector('#meeting-prompt-desc');
-const meetingTime = document.querySelector('#meeting-time');
 const notetakerButton = document.querySelector('#notetaker-open');
+const overlayRow = document.querySelector('#overlay-row');
+const pill = document.querySelector('#dictation-pill');
+let meetingHideTimer = null;
 
 async function showNotice(text) {
   microphoneLabel.textContent = text;
@@ -31,16 +30,8 @@ async function hideNotice() {
   await invoke('compact_overlay');
 }
 
-function formatTime(seconds) {
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60).toString().padStart(2, '0');
-  const rest = Math.floor(seconds % 60).toString().padStart(2, '0');
-  return hours ? `${hours}:${minutes}:${rest}` : `${minutes}:${rest}`;
-}
-
 function renderMeetingPrompt() {
-  meetingIdle.hidden = meetingRecording;
-  meetingActive.hidden = !meetingRecording;
+  meetingIdle.hidden = false;
   notetakerButton.classList.toggle('recording', meetingRecording);
 }
 
@@ -52,7 +43,7 @@ async function showMeetingPrompt(title, question, desc) {
   renderMeetingPrompt();
   meetingPrompt.hidden = false;
   await invoke('resize_overlay', { width: 300, height: 148 });
-  (meetingRecording ? meetingStopButton : meetingStartButton).focus();
+  meetingStartButton.focus();
 }
 
 async function closeMeetingPrompt() {
@@ -71,31 +62,44 @@ function showMeetingError(message) {
   invoke('resize_overlay', { width: 300, height: 148 });
 }
 
+// After confirmation: circle merges into pill with a brief red waveform,
+// a microphone-style status label is shown, then the whole pill disappears.
+// Normal dictation pill UI/behavior is otherwise untouched.
+async function playMeetingStartedSequence() {
+  clearTimeout(meetingHideTimer);
+  meetingPromptOpen = false;
+  meetingPrompt.hidden = true;
+  overlayRow.hidden = false;
+  overlayRow.classList.remove('merging', 'meeting-flash', 'meeting-gone');
+  // Force reflow so the merge animation restarts cleanly.
+  void overlayRow.offsetWidth;
+  overlayRow.classList.add('merging', 'meeting-flash');
+  await showNotice('Meeting recording has started. You can end it from the tray.');
+  clearTimeout(microphoneTimer);
+  meetingHideTimer = setTimeout(async () => {
+    overlayRow.classList.remove('meeting-flash');
+    overlayRow.classList.add('meeting-gone');
+    // Let the fade finish, then fully hide the pill and restore state.
+    setTimeout(async () => {
+      microphoneLabel.hidden = true;
+      try { await invoke('dismiss_meeting_prompt'); } catch (_) {}
+      overlayRow.classList.remove('merging', 'meeting-flash', 'meeting-gone');
+      overlayRow.hidden = false;
+    }, 450);
+  }, 2200);
+}
+
 meetingStartButton.addEventListener('click', async () => {
   meetingStartButton.disabled = true;
   try {
     await invoke('start_meeting_recording', { title: meetingTitle });
-    meetingPromptOpen = true;
     meetingRecording = true;
-    meetingStartedAt = Date.now();
-    renderMeetingPrompt();
-    meetingPrompt.hidden = false;
-    await invoke('resize_overlay', { width: 300, height: 132 });
+    notetakerButton.classList.add('recording');
+    await playMeetingStartedSequence();
   } catch (error) {
     showMeetingError(String(error));
   } finally {
     meetingStartButton.disabled = false;
-  }
-});
-
-meetingStopButton.addEventListener('click', async () => {
-  meetingStopButton.disabled = true;
-  try {
-    await invoke('stop_meeting_recording');
-    meetingRecording = false;
-    await invoke('dismiss_meeting_prompt');
-  } finally {
-    meetingStopButton.disabled = false;
   }
 });
 
@@ -105,17 +109,18 @@ document.querySelector('#cancel').addEventListener('click', () => invoke('cancel
 document.querySelector('#finish').addEventListener('click', () => invoke('stop_recording'));
 notetakerButton.addEventListener('click', () => {
   if (meetingRecording) {
-    renderMeetingPrompt();
-    meetingPrompt.hidden = false;
-    invoke('resize_overlay', { width: 300, height: 132 });
-    meetingStopButton.focus();
+    // Recording is controlled from the tray; surface the status label again.
+    showNotice('Meeting recording has started. You can end it from the tray.');
+    clearTimeout(microphoneTimer);
+    microphoneTimer = setTimeout(async () => {
+      if (!persistentNotice) await hideNotice();
+    }, 2500);
     return;
   }
   showMeetingPrompt('Untitled meeting', 'Do you want to start the recording now?', 'Your microphone and computer audio will be saved locally.');
 });
 
 document.addEventListener('keydown', event => { if (event.key === 'Escape' && meetingPromptOpen && !meetingRecording) closeMeetingPrompt(); });
-setInterval(() => { if (meetingRecording) meetingTime.textContent = formatTime((Date.now() - meetingStartedAt) / 1000); }, 1000);
 
 listen('engine-status', event => {
   document.documentElement.classList.toggle('processing', event.payload.phase === 'processing');
@@ -123,14 +128,8 @@ listen('engine-status', event => {
 
 listen('meeting-suggestion', event => showMeetingPrompt(event.payload.title));
 listen('meeting-status', event => {
-  const wasRecording = meetingRecording;
   meetingRecording = Boolean(event.payload.recording);
-  if (meetingRecording && !wasRecording) meetingStartedAt = Date.now() - Number(event.payload.elapsedSeconds || 0) * 1000;
   notetakerButton.classList.toggle('recording', meetingRecording);
-  if (meetingPromptOpen) {
-    renderMeetingPrompt();
-    meetingPrompt.hidden = false;
-  }
 });
 
 listen('microphone-activated', async event => {

@@ -79,7 +79,7 @@
               <div><h1>Note Taker</h1><p>Record a meeting or add audio to a folder. Transcription continues quietly in the background.</p></div>
               <div class="notes-top-actions">
                 <button class="meeting-start-action" id="meeting-toggle" type="button"><span class="record-glyph" aria-hidden="true"><i></i></span><b>Start meeting</b></button>
-                <button class="notes-upload-action" id="notetaker-upload" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m0 0 4-4m-4 4-4-4M5 20h14"/></svg><b>Upload audio</b></button>
+                <button class="notes-upload-action" id="notetaker-upload" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4m0 0 4 4m-4-4-4 4M5 20h14"/></svg><b>Upload audio</b></button>
                 <input id="notetaker-file" type="file" accept="audio/*,video/*,.m4a,.mkv,.mov,.webm" hidden />
               </div>
             </div>
@@ -95,14 +95,14 @@
               </aside>
               <section class="notes-files" aria-label="Transcripts">
                 <div class="notes-files-head"><div><h2 id="notetaker-files-title">My recordings</h2><p>Audio and meeting transcripts</p></div><small id="notetaker-files-count"></small></div>
-                <div class="notes-file-columns" aria-hidden="true"><span>Name</span><span>Status</span><span>Date</span></div>
+                <div class="notes-file-columns" aria-hidden="true"><span>Name</span><span>Status</span><span>Date</span><span></span></div>
                 <div id="notetaker-file-list" class="notes-file-list"></div>
               </section>
             </div>
           </section>
           <article id="notetaker-detail" class="notes-detail-view" aria-label="Full transcript" hidden>
             <header class="notes-detail-head">
-              <button class="notes-back" id="notetaker-back" type="button" aria-label="Back to recordings"><span aria-hidden="true">←</span> Back</button>
+              <button class="notes-back" id="notetaker-back" type="button" aria-label="Back to recordings" title="Back"><span aria-hidden="true">←</span></button>
               <div class="notes-detail-title"><h1 id="notetaker-viewer-title">Transcript</h1><p id="notetaker-viewer-meta"></p></div>
               <div class="notes-viewer-actions">
                 <button class="secondary-action" id="notetaker-copy" type="button">Copy</button>
@@ -111,9 +111,13 @@
             </header>
             <audio id="notetaker-audio" controls hidden></audio>
             <div id="notetaker-cleanup-status" class="notes-status" role="status"></div>
-            <section id="notetaker-meeting-notes" class="notes-summary" hidden><h2>Meeting notes</h2><div></div></section>
+            <div class="notes-tabs" id="notetaker-tabs" hidden role="tablist" aria-label="Meeting content">
+              <button type="button" data-notetaker-tab="notes" role="tab">Meeting notes</button><button type="button" data-notetaker-tab="transcript" role="tab">Transcript</button>
+            </div>
+            <section id="notetaker-meeting-notes" class="notes-summary" hidden><h2>Meeting notes</h2><div class="notes-markdown"></div></section>
             <div id="notetaker-viewer-body" class="notes-viewer-body"></div>
           </article>
+          <div class="notes-menu-layer" id="notetaker-menu-layer" hidden><div class="notes-menu" id="notetaker-menu" role="menu"></div></div>
         </div>
 
         <div class="view" id="dictionary">

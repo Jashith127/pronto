@@ -31,6 +31,37 @@ pub struct TranscriptionJob {
     pub recording: Recording,
     pub settings: UserSettings,
     pub target_window: isize,
+    #[allow(dead_code)]
+    pub skip_history: bool,
+    #[allow(dead_code)]
+    pub upload_id: Option<String>,
+}
+
+impl TranscriptionJob {
+    pub fn live(recording: Recording, settings: UserSettings, target_window: isize) -> Self {
+        Self {
+            recording,
+            settings,
+            target_window,
+            skip_history: false,
+            upload_id: None,
+        }
+    }
+
+    pub fn file_import(
+        recording: Recording,
+        settings: UserSettings,
+        skip_history: bool,
+        upload_id: Option<String>,
+    ) -> Self {
+        Self {
+            recording,
+            settings,
+            target_window: 0,
+            skip_history,
+            upload_id,
+        }
+    }
 }
 
 pub struct MeetingTranscriptionJob {
@@ -432,6 +463,8 @@ fn process_job(
         target_window: job.target_window,
         auto_insert: job.settings.auto_insert,
         cleanup_warning,
+        skip_history: job.skip_history,
+        upload_id: job.upload_id,
     })
 }
 
@@ -650,6 +683,8 @@ pub struct CompletedTranscription {
     pub target_window: isize,
     pub auto_insert: bool,
     pub cleanup_warning: Option<String>,
+    pub skip_history: bool,
+    pub upload_id: Option<String>,
 }
 
 struct RuntimePaths {
@@ -1611,11 +1646,7 @@ mod tests {
         let result = process_job(
             &client,
             &mut server,
-            TranscriptionJob {
-                recording,
-                settings,
-                target_window: 0,
-            },
+            TranscriptionJob::file_import(recording, settings, false, None),
             Instant::now(),
         )
         .unwrap();
