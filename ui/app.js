@@ -82,7 +82,7 @@ function renderHistory() {
 
 function renderDictionary() {
   const terms = preferences.settings.dictionary;
-  document.querySelector('#dictionary-list').innerHTML = terms.map(term => `<div class="dictionary-item"><span>${escapeHtml(term)}</span><button data-remove="${escapeAttr(term)}" aria-label="Remove ${escapeAttr(term)}">×</button></div>`).join('');
+  document.querySelector('#dictionary-list').innerHTML = terms.map(term => `<div class="dictionary-item"><span>${escapeHtml(term)}</span><button data-remove="${escapeAttr(term)}" aria-label="Remove ${escapeAttr(term)}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>`).join('');
   document.querySelector('#dictionary-empty').hidden = terms.length > 0;
   document.querySelector('#term-count').textContent = `${terms.length} ${terms.length === 1 ? 'term' : 'terms'}`;
 }
@@ -164,6 +164,69 @@ async function persistSettings() {
 
 function escapeHtml(value) { const node = document.createElement('div'); node.textContent = value; return node.innerHTML; }
 function escapeAttr(value) { return escapeHtml(value).replaceAll('"', '&quot;'); }
+
+// Custom modal replacing native confirm()/prompt() so every confirmation
+// and text input uses Pronto styling. Resolves true/false for confirms,
+// string/null for prompts (null = cancelled).
+let modalResolve = null;
+function closeModal(result) {
+  const layer = document.querySelector('#modal-layer');
+  layer.hidden = true;
+  document.querySelector('#modal-input').hidden = true;
+  document.removeEventListener('keydown', modalKeyHandler, true);
+  const resolve = modalResolve;
+  modalResolve = null;
+  if (resolve) resolve(result);
+}
+function modalKeyHandler(event) {
+  if (event.key === 'Escape') { event.preventDefault(); closeModal(modalCancelled); }
+  else if (event.key === 'Enter' && !document.querySelector('#modal-input').hidden) {
+    event.preventDefault();
+    closeModal(document.querySelector('#modal-input').value);
+  }
+}
+let modalCancelled = null;
+function openModal({ title, message, confirmLabel, danger, inputValue, maxLength }) {
+  if (modalResolve) closeModal(modalCancelled);
+  modalCancelled = inputValue == null ? false : null;
+  return new Promise(resolve => {
+    modalResolve = resolve;
+    document.querySelector('#modal-title').textContent = title;
+    document.querySelector('#modal-desc').textContent = message || '';
+    document.querySelector('#modal-desc').hidden = !message;
+    const confirmBtn = document.querySelector('#modal-confirm');
+    confirmBtn.textContent = confirmLabel;
+    confirmBtn.classList.toggle('danger', Boolean(danger));
+    const input = document.querySelector('#modal-input');
+    if (inputValue == null) {
+      input.hidden = true;
+    } else {
+      input.hidden = false;
+      input.value = inputValue;
+      input.maxLength = maxLength || 120;
+    }
+    document.querySelector('#modal-layer').hidden = false;
+    document.addEventListener('keydown', modalKeyHandler, true);
+    setTimeout(() => {
+      if (input.hidden) confirmBtn.focus();
+      else { input.focus(); input.select(); }
+    }, 0);
+  });
+}
+function confirmDialog({ title, message, confirmLabel = 'Delete', danger = true }) {
+  return openModal({ title, message, confirmLabel, danger, inputValue: null }).then(result => result === true);
+}
+function promptDialog({ title, message = '', initial = '', confirmLabel = 'Save', maxLength = 120 }) {
+  return openModal({ title, message, confirmLabel, danger: false, inputValue: initial, maxLength });
+}
+document.querySelector('#modal-cancel')?.addEventListener('click', () => closeModal(modalCancelled));
+document.querySelector('#modal-confirm')?.addEventListener('click', () => {
+  const input = document.querySelector('#modal-input');
+  closeModal(input.hidden ? true : input.value);
+});
+document.querySelector('#modal-layer')?.addEventListener('click', event => {
+  if (event.target.id === 'modal-layer') closeModal(modalCancelled);
+});
 
 function capturedShortcut(event) {
   const modifiers = [];
@@ -302,6 +365,7 @@ async function importMedia(file) {
   const button = document.querySelector('#choose-media');
   const status = document.querySelector('#import-status');
   card.classList.add('busy'); button.disabled = true;
+  status.hidden = false;
   try {
     status.textContent = `Reading ${file.name}…`;
     const context = new AudioContext();
@@ -330,7 +394,8 @@ async function importMedia(file) {
     showToast(detail.includes('Unable to decode') || detail.includes('EncodingError') ? 'This media format or audio track is not supported.' : detail, true);
   } finally {
     card.classList.remove('busy'); button.disabled = false;
-    status.textContent = 'MP3, WAV, M4A, MP4, MOV, WebM, and other supported media';
+    status.textContent = '';
+    status.hidden = true;
     document.querySelector('#media-file').value = '';
   }
 }
@@ -404,7 +469,8 @@ document.querySelector('#reset-cleanup-prompt').addEventListener('click', async 
   showToast('Default cleanup prompt restored');
 });
 document.querySelector('#clear-history').addEventListener('click', async () => {
-  if (!confirm('Clear all locally stored transcripts?')) return;
+  const ok = await confirmDialog({ title: 'Clear history?', message: 'This permanently deletes all locally stored transcripts.', confirmLabel: 'Clear history' });
+  if (!ok) return;
   await call('clear_history');
   history = [];
   renderHistory();
@@ -619,7 +685,7 @@ function entryMarkup(entry) {
   const timestamp = entry.kind === 'meeting' ? item.createdAt : item.createdAt;
   const data = entry.kind === 'meeting' ? `data-meeting-id="${escapeAttr(item.id)}"` : `data-item="${escapeAttr(item.id)}"`;
   const menuData = entry.kind === 'meeting' ? `data-row-menu="meeting:${escapeAttr(item.id)}"` : `data-row-menu="upload:${escapeAttr(item.id)}"`;
-  return `<div class="notes-file-row${ready ? '' : ' processing'}${failed ? ' failed' : ''}"><button type="button" class="notes-file-open" ${data} ${ready ? '' : 'disabled'}><span class="notes-file-name"><span class="notes-file-icon">${transcriptIcon}</span><span><strong>${escapeHtml(item.title || item.name)}</strong><em>${detail}</em></span></span><span class="notes-file-status">${entryStatus(entry)}</span><span class="notes-file-date">${new Date(timestamp).toLocaleDateString()}</span></button><button class="notes-row-menu-btn" type="button" ${menuData} aria-label="More actions" title="More actions">⋮</button></div>`;
+  return `<div class="notes-file-row${ready ? '' : ' processing'}${failed ? ' failed' : ''}"><button type="button" class="notes-file-open" ${data} ${ready ? '' : 'disabled'}><span class="notes-file-name"><span class="notes-file-icon">${transcriptIcon}</span><span><strong>${escapeHtml(item.title || item.name)}</strong><em>${detail}</em></span></span><span class="notes-file-status">${entryStatus(entry)}</span><span class="notes-file-date">${new Date(timestamp).toLocaleDateString()}</span></button><button class="notes-row-menu-btn" type="button" ${menuData} aria-label="More actions" title="More actions"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg></button></div>`;
 }
 
 function closeRowMenu() {
@@ -657,14 +723,14 @@ function renderNotetaker() {
   if (!notetakerFolder(notetaker.selectedFolderId)) notetaker.selectedFolderId = DEFAULT_FOLDER_ID;
   folderList.innerHTML = notetaker.folders.map(folder => {
     const count = folderEntries(folder).length;
-    const remove = folder.isDefault ? '<span></span>' : `<button class="notes-folder-delete" data-delete-folder="${escapeAttr(folder.id)}" aria-label="Delete ${escapeAttr(folder.name)}" title="Delete folder">×</button>`;
+    const remove = folder.isDefault ? '<span></span>' : `<button class="notes-folder-delete" data-delete-folder="${escapeAttr(folder.id)}" aria-label="Delete ${escapeAttr(folder.name)}" title="Delete folder"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>`;
     return `<div class="notes-folder-row"><button class="notes-folder${folder.id === notetaker.selectedFolderId ? ' active' : ''}" data-folder="${escapeAttr(folder.id)}">${folderIcon}<span>${escapeHtml(folder.name)}</span><small>${count}</small></button>${remove}</div>`;
   }).join('');
   const folder = notetakerFolder(notetaker.selectedFolderId);
   const entries = folderEntries(folder);
   document.querySelector('#notetaker-files-title').textContent = folder.name;
   document.querySelector('#notetaker-files-count').textContent = `${entries.length} ${entries.length === 1 ? 'item' : 'items'}`;
-  fileList.innerHTML = entries.length ? entries.map(entryMarkup).join('') : '<div class="empty">This folder is empty.<br><br><button class="secondary-action" type="button" data-empty-upload>Upload audio</button></div>';
+  fileList.innerHTML = entries.length ? entries.map(entryMarkup).join('') : '<div class="empty">This folder is empty.<br><br><button class="secondary-action" type="button" data-empty-upload><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4m0 0 4 4m-4-4-4 4M5 20h14"/></svg>Upload audio</button></div>';
   const activeJobs = [
     ...notetaker.folders.flatMap(item => item.items).filter(item => item.status === 'preparing' || item.status === 'transcribing'),
     ...meetings.filter(item => item.status === 'processing')
@@ -820,12 +886,13 @@ document.querySelector('#notetaker-new-folder')?.addEventListener('submit', even
   renderNotetaker();
 });
 document.querySelector('#notetaker-sidebar-plus')?.addEventListener('click', () => setNewFolderOpen(document.querySelector('#notetaker-new-folder').hidden));
-document.querySelector('#notetaker-folder-list')?.addEventListener('click', event => {
+document.querySelector('#notetaker-folder-list')?.addEventListener('click', async event => {
   const deleteId = event.target.closest('[data-delete-folder]')?.dataset.deleteFolder;
   if (deleteId) {
     const folder = notetakerFolder(deleteId);
     if (folder?.items.some(item => item.status === 'preparing' || item.status === 'transcribing')) { showToast('Wait for this folder’s upload to finish', true); return; }
-    if (!confirm('Delete this folder and all its transcripts?')) return;
+    const ok = await confirmDialog({ title: 'Delete folder?', message: `Delete "${folder?.name || 'this folder'}" and all its transcripts? This cannot be undone.`, confirmLabel: 'Delete folder' });
+    if (!ok) return;
     notetaker.folders = notetaker.folders.filter(folder => folder.id !== deleteId);
     if (notetaker.selectedFolderId === deleteId) notetaker.selectedFolderId = DEFAULT_FOLDER_ID;
     saveNotetaker();
@@ -880,7 +947,7 @@ async function renameRowItem(kind, id) {
   if (kind === 'meeting') {
     const item = meetings.find(entry => entry.id === id);
     if (!item) return;
-    const next = prompt('Rename meeting notes', item.title || '');
+    const next = await promptDialog({ title: 'Rename meeting notes', initial: item.title || '', maxLength: 120, confirmLabel: 'Rename' });
     if (next === null) return;
     const title = next.trim();
     if (!title || title === item.title) return;
@@ -893,7 +960,7 @@ async function renameRowItem(kind, id) {
   } else {
     const found = notetakerFindItem(id);
     if (!found.item) return;
-    const next = prompt('Rename recording', found.item.name || '');
+    const next = await promptDialog({ title: 'Rename recording', initial: found.item.name || '', maxLength: 60, confirmLabel: 'Rename' });
     if (next === null) return;
     const name = next.trim();
     if (!name || name === found.item.name) return;
@@ -909,7 +976,8 @@ async function deleteRowItem(kind, id) {
     const item = meetings.find(entry => entry.id === id);
     if (!item) return;
     if (item.status === 'processing' || item.status === 'recording') { showToast('Wait until notes are finished before deleting', true); return; }
-    if (!confirm(`Delete "${item.title || 'this meeting'}" and its saved audio?`)) return;
+    const okMeeting = await confirmDialog({ title: 'Delete meeting notes?', message: `Delete "${item.title || 'this meeting'}" and its saved audio? This cannot be undone.`, confirmLabel: 'Delete' });
+    if (!okMeeting) return;
     try {
       await call('delete_meeting', { id });
       meetings = meetings.filter(entry => entry.id !== id);
@@ -924,7 +992,8 @@ async function deleteRowItem(kind, id) {
     const found = notetakerFindItem(id);
     if (!found.item) return;
     if (found.item.status === 'preparing' || found.item.status === 'transcribing') { showToast('Wait for this upload to finish', true); return; }
-    if (!confirm(`Delete "${found.item.name || 'this transcript'}"?`)) return;
+    const okItem = await confirmDialog({ title: 'Delete recording?', message: `Delete "${found.item.name || 'this transcript'}"? This cannot be undone.`, confirmLabel: 'Delete' });
+    if (!okItem) return;
     found.folder.items = found.folder.items.filter(entry => entry.id !== id);
     try { notetakerAudioUrls.get(id) && URL.revokeObjectURL(notetakerAudioUrls.get(id)); } catch (_) {}
     notetakerAudioUrls.delete(id);

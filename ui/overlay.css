@@ -1,36 +1,43 @@
 * { box-sizing: border-box; }
 html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; }
-body { position: relative; color: white; font-family: "Segoe UI Variable", "Segoe UI", sans-serif; }
-#overlay-row { position: absolute; bottom: 0; left: 50%; z-index: 2; display: flex; align-items: center; gap: 3px; transform: translateX(-50%); }
+body { position: relative; color: white; font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; }
+button { -webkit-tap-highlight-color: transparent; }
+button svg { shape-rendering: geometricPrecision; }
+#overlay-row { position: absolute; bottom: 1px; left: 50%; z-index: 2; display: flex; align-items: center; gap: 6px; transform: translateX(-50%); }
 #overlay-row[hidden] { display: none; }
-.meeting-pill { position: absolute; bottom: 0; left: 50%; z-index: 3; display: flex; align-items: center; gap: 10px; width: max-content; max-width: 340px; padding: 8px 8px 8px 14px; border: 1px solid #2b2d29; border-radius: 999px; background: #111210; color: #f8f8f4; transform: translateX(-50%); animation: meeting-pill-in .25s ease; }
+.meeting-pill { position: absolute; bottom: 0; left: 50%; z-index: 3; display: flex; align-items: center; gap: 10px; width: max-content; max-width: 340px; padding: 6px 6px 6px 14px; border: 1px solid #34362f; border-radius: 999px; background: rgb(17, 18, 16); color: #f8f8f4; transform: translateX(-50%); animation: meeting-pill-in .25s ease; }
 .meeting-pill[hidden] { display: none; }
-.meeting-pill-icon { display: grid; place-items: center; flex: 0 0 20px; width: 20px; height: 20px; overflow: hidden; }
-.meeting-pill-icon canvas { width: 20px; height: 20px; }
-.meeting-pill-icon svg { width: 17px; height: 17px; }
-.meeting-pill-title { flex: 1 1 auto; min-width: 0; max-width: 170px; overflow: hidden; font-size: 11px; font-weight: 600; color: #e8e9e4; text-overflow: ellipsis; white-space: nowrap; }
-#meeting-pill-start { flex: 0 0 auto; min-height: 30px; padding: 0 12px; border: 0; border-radius: 999px; color: #111210; background: #f4f4ef; font-size: 11px; font-weight: 650; cursor: pointer; }
+.meeting-pill-icon { display: grid; place-items: center; flex: 0 0 22px; width: 22px; height: 22px; overflow: hidden; border-radius: 50%; }
+.meeting-pill-icon canvas { width: 20px; height: 20px; image-rendering: -webkit-optimize-contrast; }
+.meeting-pill-icon svg { width: 18px; height: 18px; }
+.meeting-pill-title { flex: 1 1 auto; min-width: 0; max-width: 172px; overflow: hidden; font-size: 11px; font-weight: 600; letter-spacing: -.01em; color: #e8e9e4; text-overflow: ellipsis; white-space: nowrap; }
+#meeting-pill-start { flex: 0 0 auto; display: inline-flex; align-items: center; min-height: 30px; padding: 0 13px; border: 0; border-radius: 999px; color: #111210; background: #f4f4ef; font-size: 11px; font-weight: 650; line-height: 1; cursor: pointer; transition: background .12s ease, transform .08s ease; }
 #meeting-pill-start:hover { background: #fff; }
+#meeting-pill-start:active { transform: scale(.97); }
 #meeting-pill-start:disabled { opacity: .55; cursor: default; }
-#meeting-pill-dismiss { display: grid; place-items: center; flex: 0 0 30px; width: 30px; height: 30px; min-height: 30px; padding: 0 0 2px; border: 1px solid #3a3c37; border-radius: 9px; color: #b8bbb4; background: transparent; font-size: 15px; font-weight: 600; line-height: 1; cursor: pointer; }
-#meeting-pill-dismiss:hover { border-color: #4b4d47; color: #f8f8f4; }
+#meeting-pill-dismiss { display: grid; place-items: center; flex: 0 0 30px; width: 30px; height: 30px; min-height: 30px; padding: 0; border: 1px solid #3a3c37; border-radius: 9px; color: #b8bbb4; background: transparent; cursor: pointer; transition: border-color .12s ease, color .12s ease, background .12s ease; }
+#meeting-pill-dismiss:hover { border-color: #4b4d47; color: #f8f8f4; background: rgba(255,255,255,.06); }
+#meeting-pill-dismiss svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 @keyframes meeting-pill-in { from { opacity: 0; transform: translate(-50%, 6px); } to { opacity: 1; transform: translate(-50%, 0); } }
-main { display: flex; align-items: center; justify-content: center; gap: 2px; width: 100px; height: 30px; padding: 4px; border: 1px solid #242522; border-radius: 999px; background: #090a09; }
-#notetaker-open { display: grid; place-items: center; flex: 0 0 30px; width: 30px; height: 30px; padding: 0; border: 1px solid #242522; border-radius: 50%; color: #f8f8f4; background: #090a09; cursor: pointer; }
-#notetaker-open svg { width: 17px; height: 17px; }
-#notetaker-open .record-ring { fill: none; stroke: currentColor; stroke-width: 3; }
+main { display: flex; align-items: center; justify-content: center; gap: 4px; width: 98px; height: 30px; padding: 3px 4px; border: 1px solid #2e2f2b; border-radius: 999px; background: rgb(9, 10, 9); }
+#notetaker-open { display: grid; place-items: center; flex: 0 0 30px; width: 30px; height: 30px; padding: 0; border: 1px solid #2e2f2b; border-radius: 50%; color: #f8f8f4; background: rgb(9, 10, 9); cursor: pointer; transition: background .12s ease, border-color .12s ease, transform .08s ease; }
+#notetaker-open svg { width: 16px; height: 16px; }
+#notetaker-open .record-ring { fill: none; stroke: currentColor; stroke-width: 2.4; }
 #notetaker-open .record-dot { fill: currentColor; stroke: none; }
 #notetaker-open:hover { border-color: #3a3c37; background: #1b1c19; }
+#notetaker-open:active { transform: scale(.94); }
 #notetaker-open:focus-visible { outline: 2px solid #d97460; outline-offset: 2px; }
 #notetaker-open.recording { color: #ef6a56; border-color: #5a2b25; }
 #notetaker-open.recording .record-dot { animation: meeting-blink 1.2s ease-in-out infinite; }
-.microphone-label { position: absolute; bottom: 35px; left: 50%; display: flex; align-items: center; justify-content: center; width: max-content; max-width: calc(100vw - 16px); height: 28px; padding: 4px 14px; border: 1px solid #242522; border-radius: 999px; background: #090a09; color: #f8f8f4; font-size: 11px; font-weight: 600; line-height: 1; white-space: nowrap; transform: translateX(-50%); }
+.microphone-label { position: absolute; bottom: 34px; left: 50%; display: flex; align-items: center; justify-content: center; width: max-content; max-width: min(420px, calc(100vw - 16px)); min-height: 32px; padding: 8px 18px; border: 1px solid #2e2f2b; border-radius: 999px; background: rgb(9, 10, 9); color: #f8f8f4; font-size: 11px; font-weight: 600; letter-spacing: -.01em; line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transform: translateX(-50%); }
 .microphone-label[hidden] { display: none; }
-main button { display: grid; place-items: center; flex: 0 0 20px; width: 20px; height: 20px; padding: 0 0 2px; border: 0; border-radius: 50%; color: white; background: #4b4c48; font: 600 14px/1 "Segoe UI", sans-serif; cursor: pointer; }
+main button { display: grid; place-items: center; flex: 0 0 22px; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%; color: white; background: #4b4c48; cursor: pointer; transition: background .12s ease, transform .08s ease; }
 main button:hover { background: #62635e; }
-#finish { padding: 0 0 1px; color: #11120f; background: #f4f4ef; font-size: 12px; }
+main button:active { transform: scale(.92); }
+main button svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+#finish { color: #11120f; background: #f4f4ef; }
 #finish:hover { background: white; }
-.signal { display: flex; align-items: center; justify-content: center; gap: 2px; width: 44px; height: 20px; overflow: hidden; }
+.signal { display: flex; align-items: center; justify-content: center; gap: 2.5px; width: 42px; height: 20px; overflow: hidden; }
 .signal i { display: block; flex: 0 0 3px; width: 3px; border-radius: 2px; background: linear-gradient(180deg, #ffb03a 0%, #f4337a 45%, #a03cd0 100%); box-shadow: 0 0 4px rgba(244,51,122,.45); transform-origin: 50% 50%; animation: bar-dance 1.15s cubic-bezier(.45,.05,.35,1) infinite alternate; }
 .signal i:nth-child(even) { background: linear-gradient(180deg, #f4337a 0%, #a03cd0 55%, #3b4a8f 100%); }
 .signal i:nth-child(1), .signal i:nth-child(8) { height: 7px; animation-duration: .98s; }
@@ -58,14 +65,14 @@ main button:hover { background: #62635e; }
 .processing .signal i:nth-child(7) { animation-delay: .48s; }
 .processing .signal i:nth-child(8) { animation-delay: .56s; }
 @keyframes bar-sweep { 0%, 100% { opacity: .3; transform: scaleY(.7); } 50% { opacity: 1; transform: scaleY(1.4); } }
-@media (prefers-reduced-motion: reduce) { .signal i { animation: none; } #overlay-row.pill-enter, #overlay-row.pill-exit { animation: none; } }
-.meeting-prompt { position: absolute; bottom: 38px; left: 50%; display: flex; flex-direction: column; width: 300px; padding: 12px 14px; border: 1px solid #2b2d29; border-radius: 12px; color: #f8f8f4; background: #111210; transform: translateX(-50%); }
-.meeting-prompt::after { content: ""; position: absolute; bottom: -5px; left: calc(50% - 18px); width: 9px; height: 9px; border-right: 1px solid #2b2d29; border-bottom: 1px solid #2b2d29; background: #111210; transform: translateX(-50%) rotate(45deg); }
+@media (prefers-reduced-motion: reduce) { .signal i { animation: none; } #overlay-row.pill-enter, #overlay-row.pill-exit, #overlay-row.meeting-gone { animation: none; } }
+.meeting-prompt { position: absolute; bottom: 38px; left: 50%; display: flex; flex-direction: column; width: 284px; padding: 12px 14px; border: 1px solid #34362f; border-radius: 13px; color: #f8f8f4; background: rgb(17, 18, 16); transform: translateX(-50%); }
+.meeting-prompt::after { content: ""; position: absolute; bottom: -5px; left: calc(50% + 52px); width: 9px; height: 9px; border-right: 1px solid #34362f; border-bottom: 1px solid #34362f; background: #111210; transform: translateX(-50%) rotate(45deg); }
 .meeting-prompt[hidden] { display: none; }
-.meeting-prompt strong { font-size: 12px; font-weight: 650; }
-.meeting-prompt #meeting-prompt-desc { margin-top: 4px; color: #b8bbb4; font-size: 9px; line-height: 1.4; }
+.meeting-prompt strong { font-size: 12px; font-weight: 650; letter-spacing: -.01em; line-height: 1.35; }
+.meeting-prompt #meeting-prompt-desc { margin-top: 5px; color: #b8bbb4; font-size: 11px; line-height: 1.5; }
 .meeting-prompt-actions { display: flex; gap: 8px; margin-top: 10px; }
-.meeting-prompt-actions button { flex: 1; min-height: 30px; padding: 0 12px; border-radius: 8px; font-size: 11px; font-weight: 650; cursor: pointer; }
+.meeting-prompt-actions button { flex: 1; display: inline-flex; align-items: center; justify-content: center; min-height: 30px; padding: 0 12px; border-radius: 8px; font-size: 11px; font-weight: 650; line-height: 1; cursor: pointer; transition: background .12s ease, border-color .12s ease; }
 .meeting-prompt-actions button:disabled { opacity: .55; cursor: default; }
 #meeting-start { border: 0; color: #111210; background: #f4f4ef; }
 #meeting-start:hover { background: #fff; }
@@ -82,13 +89,17 @@ main button:hover { background: #62635e; }
 /* Explicit layers: pill on top, status label beneath it. */
 #dictation-pill { position: relative; z-index: 2; }
 .microphone-label { z-index: 1; }
-/* Meeting-started sequence: circle fades out smoothly in place (no zoom),
-   pill holds static and centered, then the whole row fades. X/✓ stay hidden
-   and the waveform stays red until the fade begins. */
-#overlay-row.meeting-start #notetaker-open { transition: opacity .55s ease, transform .55s ease; opacity: 0; transform: translateX(-6px); }
+/* Meeting-started sequence: the circle collapses (width + gap go to zero)
+   so the remaining pill is truly centered on screen — a merely faded
+   button would keep occupying 30px + gap and push the pill 18px left.
+   X/✓ stay hidden and the waveform stays red until the fade begins. */
+#overlay-row.meeting-start { gap: 0; }
+#overlay-row.meeting-start #notetaker-open { flex: 0 0 0; width: 0; padding: 0; border-width: 0; overflow: hidden; opacity: 0; transform: none; pointer-events: none; transition: opacity .55s ease, width .55s ease; }
 #overlay-row.meeting-flash .signal i { background: linear-gradient(180deg, #ff6b5e 0%, #e5322b 60%, #b11a14 100%); box-shadow: 0 0 5px rgba(229,50,43,.65); }
 #overlay-row.meeting-flash #cancel, #overlay-row.meeting-flash #finish { visibility: hidden; }
-/* Exit is a slide down, not a fade. meeting-flash stays on through the
-   slide so X/✓ never pop back in while leaving. */
-#overlay-row.meeting-gone { transform: translate(-50%, 18px); transition: transform .4s ease; }
-@media (prefers-reduced-motion: reduce) { #overlay-row.meeting-start #notetaker-open, #overlay-row.meeting-gone { transition: none; } .meeting-pill { animation: none; } }
+/* Exit mimics the regular transcription pill exit (pill-out: quick fade
+   with a slight downward settle), so both pills leave the screen the same
+   way. meeting-flash stays on through the exit so the X/✓ buttons never
+   pop back in while leaving. */
+#overlay-row.meeting-gone { animation: pill-out .16s ease-in forwards; }
+@media (prefers-reduced-motion: reduce) { #overlay-row.meeting-start #notetaker-open, #overlay-row.meeting-gone { transition: none; } #overlay-row.meeting-gone { animation: none; } .meeting-pill { animation: none; } }

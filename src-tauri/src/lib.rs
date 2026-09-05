@@ -360,10 +360,14 @@ fn finish_recording(app: &AppHandle) -> Result<EngineStatus, String> {
 }
 
 fn position_overlay(window: &tauri::WebviewWindow, microphone_width: Option<f64>) {
+    // Mic label floats 34px above the pill row at ~32px tall, so the
+    // window needs 34 + 32 = 66px plus slack to avoid clipping its top.
+    // The pill row itself sits 1px off the window bottom inside a 32px
+    // window so fractional display scaling can't shave its bottom edge.
     let logical_height = if microphone_width.is_some() {
-        60.0
+        72.0
     } else {
-        30.0
+        32.0
     };
     let monitor = window
         .current_monitor()

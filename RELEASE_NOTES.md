@@ -1,3 +1,29 @@
+# Pronto 0.7.5
+
+Pronto 0.7.5 is a UI polish release: a full spacing/typography/icon pass over the app, overlay clipping and centering fixes, custom dialogs replacing every native browser popup, and a calmer Transcribe-a-File card.
+
+## What's new
+
+- App-wide polish: consistent spacing rhythm and design tokens, readable type scale (no more 8–9px micro-text), unified stroke-style SVG icon set (settings gear, copy, upload, back, plus, close, and row-menu glyphs replace text characters), focus-visible rings, and matching scrollbars.
+- Overlay no longer boxes out: drop shadows removed from pill, circle button, mic notice, and meeting cards (transparent windows clip shadows into hard rectangles), and all surfaces are opaque.
+- Meeting prompt never cuts off: the window now sizes itself to the card's measured height instead of a fixed 300×148, and the prompt narrowed to fit with slack.
+- Prompt triangle repointed: the card stays centered while its pointer targets the note-taker circle's center.
+- Meeting-started pill truly centered: the faded circle collapses to zero width instead of holding its 30px slot, and the exit reuses the regular pill's fade-and-settle instead of a long slide.
+- Mic and recording notices fit: taller window, roomier label padding, full-text measurement (long names no longer truncate to the old window width), and smaller 11px toast type.
+- Pill survives display scaling: the row floats 1px inside a 32px window so fractional scaling can't shave its bottom edge.
+- No more native popups: confirmations (clear history, deletes) and renames use custom Pronto-styled modals with danger variants, keyboard support, and backdrop dismiss.
+- Meeting notes / Transcript is a real segmented switcher instead of floating pills.
+- Transcribe-a-File card simplified: solid card, plain file icon, single formats line, icon button, and a status line that only appears while working.
+
+## Requirements
+
+- Windows 10 or 11, 64-bit.
+- A supported NVIDIA GPU and current NVIDIA driver for local CUDA transcription.
+- Internet connection during installation (one-time ~681 MB model download).
+- DeepSeek API key is optional and is used only for advanced cleanup and meeting-note generation.
+
+---
+
 # Pronto 0.7.4
 
 Pronto 0.7.4 overhauls meeting detection and the meeting pill, fixes Note Taker recordings not opening, enlarges the meeting notes view, reworks overlay motion and the waveform states, redesigns the dictation cues with Bluetooth-aware timing, and makes pasting follow the most recently selected textbox.

@@ -27,7 +27,7 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h10a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3V4Zm3 12h10M9 8h5"/></svg><span>Dictionary</span>
           </button>
           <button class="nav" data-view="settings">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1A8 8 0 0 0 15 6l-.3-2.6h-4L10.5 6A8 8 0 0 0 9 7.1l-2.4-1-2 3.4 2 1.5a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.4-1A8 8 0 0 0 10.5 18l.3 2.6h4L15 18a8 8 0 0 0 1.5-1.1l2.4 1 2-3.4-2-1.5a7 7 0 0 0 .1-1Z"/></svg><span>Settings</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg><span>Settings</span>
           </button>
         </nav>
       </aside>
@@ -55,9 +55,12 @@
 
           <section class="transcripts-panel">
             <div class="import-card" id="import-card">
-              <div class="import-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 19h14"/></svg></div>
-              <div><h2>Transcribe a file</h2><p>Audio or video stays on this computer and is transcribed with Parakeet.</p><small id="import-status">MP3, WAV, M4A, MP4, MOV, WebM, and other supported media</small></div>
-              <button id="choose-media" type="button">Choose file</button>
+              <div class="import-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 3.5h7l4 4V20H7zM14 3.5v4h4"/></svg></div>
+              <div class="import-copy"><h2>Transcribe a file</h2><p>Audio or video is transcribed on this computer with Parakeet.</p>
+                <small class="import-formats">MP3 · WAV · M4A · MP4 · MOV · WebM</small>
+                <small id="import-status" class="import-status" hidden></small>
+              </div>
+              <button id="choose-media" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4m0 0 4 4m-4-4-4 4M5 20h14"/></svg>Choose file</button>
               <input id="media-file" type="file" accept="audio/*,video/*,.m4a,.mkv,.mov,.webm" hidden />
             </div>
             <div class="section-title"><div><h2>Recent transcripts</h2><p>Stored locally on this computer</p></div><button data-view-link="history">View all</button></div>
@@ -86,7 +89,7 @@
             <div class="notes-live-row"><span id="meeting-live-status" role="status"></span><span id="notetaker-background-status" role="status"></span></div>
             <div class="notes-explorer">
               <aside class="notes-folders" aria-label="Folders">
-                <div class="notes-sidebar-head"><span>Folders</span><button id="notetaker-sidebar-plus" type="button" aria-label="Create a new folder" title="New folder">＋</button></div>
+                <div class="notes-sidebar-head"><span>Folders</span><button id="notetaker-sidebar-plus" type="button" aria-label="Create a new folder" title="New folder"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button></div>
                 <form class="notes-new-folder" id="notetaker-new-folder" hidden>
                   <input id="notetaker-folder-input" maxlength="60" placeholder="Folder name" aria-label="Folder name" autocomplete="off" />
                   <button type="submit">Add</button>
@@ -102,10 +105,10 @@
           </section>
           <article id="notetaker-detail" class="notes-detail-view" aria-label="Full transcript" hidden>
             <header class="notes-detail-head">
-              <button class="notes-back" id="notetaker-back" type="button" aria-label="Back to recordings" title="Back"><span aria-hidden="true">←</span></button>
+              <button class="notes-back" id="notetaker-back" type="button" aria-label="Back to recordings" title="Back"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12H5m0 0 6-6m-6 6 6 6"/></svg></button>
               <div class="notes-detail-title"><h1 id="notetaker-viewer-title">Transcript</h1><p id="notetaker-viewer-meta"></p></div>
               <div class="notes-viewer-actions">
-                <button class="secondary-action" id="notetaker-copy" type="button">Copy</button>
+                <button class="secondary-action" id="notetaker-copy" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>Copy</button>
                 <button id="notetaker-cleanup" type="button">Clean Up Speech</button>
               </div>
             </header>
@@ -220,7 +223,7 @@
 
     <dialog class="hotkey-dialog" id="hotkey-dialog">
       <form method="dialog">
-        <button class="dialog-close" value="cancel" aria-label="Close">×</button>
+        <button class="dialog-close" value="cancel" aria-label="Close"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
         <h2 id="hotkey-dialog-title">Set dictation shortcut</h2>
         <p id="hotkey-dialog-desc">Press your combination, then save it. Modifier-only chords such as Win + Ctrl are supported.</p>
         <div class="capture-box" id="hotkey-capture" tabindex="0">
@@ -232,6 +235,17 @@
         <div class="dialog-actions"><button type="button" class="change-button" id="cancel-hotkey">Cancel</button><button type="button" id="save-hotkey" disabled>Save shortcut</button></div>
       </form>
     </dialog>
+    <div class="modal-layer" id="modal-layer" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <h2 id="modal-title"></h2>
+        <p id="modal-desc"></p>
+        <input id="modal-input" maxlength="120" autocomplete="off" hidden />
+        <div class="modal-actions">
+          <button type="button" class="change-button" id="modal-cancel">Cancel</button>
+          <button type="button" id="modal-confirm">Confirm</button>
+        </div>
+      </div>
+    </div>
     <div class="toast" id="toast" role="status"></div>
     <script src="app.js"></script>
   </body>

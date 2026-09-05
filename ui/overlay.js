@@ -37,13 +37,24 @@ const VENDOR_ICONS = {
 function renderMeetingPillIcon(icon, vendor) {
   if (icon && Number(icon.width) > 0 && Number(icon.height) > 0 && Array.isArray(icon.rgba) && icon.rgba.length >= icon.width * icon.height * 4) {
     try {
+      // Render at devicePixelRatio so tray/window icons stay crisp on 125-200% scaling.
+      const dpr = Math.min(3, Math.max(1, Number(window.devicePixelRatio) || 1));
       const context = meetingPillCanvas.getContext('2d');
-      meetingPillCanvas.width = icon.width;
-      meetingPillCanvas.height = icon.height;
+      meetingPillCanvas.width = icon.width * dpr;
+      meetingPillCanvas.height = icon.height * dpr;
+      meetingPillCanvas.style.width = '20px';
+      meetingPillCanvas.style.height = '20px';
+      context.setTransform(dpr, 0, 0, dpr, 0, 0);
+      context.imageSmoothingEnabled = true;
+      context.imageSmoothingQuality = 'high';
       const image = context.createImageData(icon.width, icon.height);
       image.data.set(icon.rgba.slice(0, icon.width * icon.height * 4));
+      const offscreen = document.createElement('canvas');
+      offscreen.width = icon.width;
+      offscreen.height = icon.height;
+      offscreen.getContext('2d').putImageData(image, 0, 0);
       context.clearRect(0, 0, icon.width, icon.height);
-      context.putImageData(image, 0, 0);
+      context.drawImage(offscreen, 0, 0, icon.width, icon.height);
       meetingPillCanvas.hidden = false;
       meetingPillIcon.querySelectorAll('svg').forEach(node => node.remove());
       return;
@@ -62,7 +73,12 @@ async function showNotice(text) {
   microphoneLabel.textContent = text;
   microphoneLabel.hidden = false;
   await new Promise(requestAnimationFrame);
-  const responsiveWidth = Math.max(136, Math.ceil(microphoneLabel.getBoundingClientRect().width + 4));
+  // Measure scrollWidth, not the rendered box: the CSS max-width cap uses
+  // 100vw (the still-small window), so long notices render ellipsized and
+  // measuring the box would size the window to the truncated text.
+  // scrollWidth reports the full text; the backend clamps to the monitor.
+  const fullWidth = Math.ceil(microphoneLabel.scrollWidth + 6);
+  const responsiveWidth = Math.max(136, Math.min(480, fullWidth));
   await invoke('resize_microphone_overlay', { width: responsiveWidth });
 }
 
@@ -75,6 +91,16 @@ function renderMeetingPrompt() {
   meetingIdle.hidden = false;
 }
 
+// Size the window to the prompt's real footprint (prompt height + the
+// 38px it floats above the pill row + slack) so the card is never cut
+// off by a fixed-size window. Width stays fixed; only height is measured.
+async function fitMeetingPrompt() {
+  await new Promise(requestAnimationFrame);
+  const promptHeight = Math.ceil(meetingPrompt.getBoundingClientRect().height);
+  const height = Math.min(180, Math.max(30, promptHeight + 38 + 8));
+  await invoke('resize_overlay', { width: 300, height });
+}
+
 async function showMeetingPrompt(title, question, desc) {
   meetingTitle = title || 'Untitled meeting';
   meetingPromptOpen = true;
@@ -82,7 +108,7 @@ async function showMeetingPrompt(title, question, desc) {
   meetingPromptDesc.textContent = desc || 'Your microphone and computer audio will be saved locally.';
   renderMeetingPrompt();
   meetingPrompt.hidden = false;
-  await invoke('resize_overlay', { width: 300, height: 148 });
+  await fitMeetingPrompt();
   meetingStartButton.focus();
 }
 
@@ -132,7 +158,7 @@ function showMeetingError(message) {
   meetingPrompt.hidden = false;
   meetingPromptTitle.textContent = 'Could not start meeting notes';
   meetingPromptDesc.textContent = String(message).replace(/^Error:\s*/, '');
-  invoke('resize_overlay', { width: 300, height: 148 });
+  fitMeetingPrompt();
 }
 
 // After confirmation: the circle fades out smoothly in place behind the
@@ -155,17 +181,17 @@ async function playMeetingStartedSequence() {
   await showNotice('Meeting notes started. You can end it from the tray.');
   clearTimeout(microphoneTimer);
   meetingHideTimer = setTimeout(async () => {
-    // Slide down (no fade). meeting-flash stays on through the slide so
-    // the X/✓ buttons never pop back in while leaving.
+    // Same exit as the regular transcription pill (pill-out). meeting-flash
+    // stays on through the exit so the X/✓ buttons never pop back in.
     overlayRow.classList.add('meeting-gone');
-    // Let the slide finish, then fully hide the pill and restore state.
+    // Let the exit finish, then fully hide the pill and restore state.
     setTimeout(async () => {
       microphoneLabel.hidden = true;
       try { await invoke('dismiss_meeting_prompt'); } catch (_) {}
       overlayRow.classList.remove('meeting-start', 'meeting-flash', 'meeting-gone');
       overlayRow.hidden = false;
       meetingSequenceActive = false;
-    }, 450);
+    }, 220);
   }, 3500);
 }
 
