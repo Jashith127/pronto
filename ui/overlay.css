@@ -1,8 +1,20 @@
 * { box-sizing: border-box; }
 html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; }
 body { position: relative; color: white; font-family: "Segoe UI Variable", "Segoe UI", sans-serif; }
-#overlay-row { position: absolute; bottom: 0; left: 50%; display: flex; align-items: center; gap: 3px; transform: translateX(-50%); }
+#overlay-row { position: absolute; bottom: 0; left: 50%; z-index: 2; display: flex; align-items: center; gap: 3px; transform: translateX(-50%); }
 #overlay-row[hidden] { display: none; }
+.meeting-pill { position: absolute; bottom: 0; left: 50%; z-index: 3; display: flex; align-items: center; gap: 10px; width: max-content; max-width: 340px; padding: 8px 8px 8px 14px; border: 1px solid #2b2d29; border-radius: 999px; background: #111210; color: #f8f8f4; transform: translateX(-50%); animation: meeting-pill-in .25s ease; }
+.meeting-pill[hidden] { display: none; }
+.meeting-pill-icon { display: grid; place-items: center; flex: 0 0 20px; width: 20px; height: 20px; overflow: hidden; }
+.meeting-pill-icon canvas { width: 20px; height: 20px; }
+.meeting-pill-icon svg { width: 17px; height: 17px; }
+.meeting-pill-title { flex: 1 1 auto; min-width: 0; max-width: 170px; overflow: hidden; font-size: 11px; font-weight: 600; color: #e8e9e4; text-overflow: ellipsis; white-space: nowrap; }
+#meeting-pill-start { flex: 0 0 auto; min-height: 30px; padding: 0 12px; border: 0; border-radius: 999px; color: #111210; background: #f4f4ef; font-size: 11px; font-weight: 650; cursor: pointer; }
+#meeting-pill-start:hover { background: #fff; }
+#meeting-pill-start:disabled { opacity: .55; cursor: default; }
+#meeting-pill-dismiss { display: grid; place-items: center; flex: 0 0 30px; width: 30px; height: 30px; min-height: 30px; padding: 0 0 2px; border: 1px solid #3a3c37; border-radius: 9px; color: #b8bbb4; background: transparent; font-size: 15px; font-weight: 600; line-height: 1; cursor: pointer; }
+#meeting-pill-dismiss:hover { border-color: #4b4d47; color: #f8f8f4; }
+@keyframes meeting-pill-in { from { opacity: 0; transform: translate(-50%, 6px); } to { opacity: 1; transform: translate(-50%, 0); } }
 main { display: flex; align-items: center; justify-content: center; gap: 2px; width: 100px; height: 30px; padding: 4px; border: 1px solid #242522; border-radius: 999px; background: #090a09; }
 #notetaker-open { display: grid; place-items: center; flex: 0 0 30px; width: 30px; height: 30px; padding: 0; border: 1px solid #242522; border-radius: 50%; color: #f8f8f4; background: #090a09; cursor: pointer; }
 #notetaker-open svg { width: 17px; height: 17px; }
@@ -12,22 +24,41 @@ main { display: flex; align-items: center; justify-content: center; gap: 2px; wi
 #notetaker-open:focus-visible { outline: 2px solid #d97460; outline-offset: 2px; }
 #notetaker-open.recording { color: #ef6a56; border-color: #5a2b25; }
 #notetaker-open.recording .record-dot { animation: meeting-blink 1.2s ease-in-out infinite; }
-.microphone-label { position: absolute; bottom: 35px; left: 50%; display: flex; align-items: center; width: max-content; height: 25px; padding: 4px 12px; border: 1px solid #242522; border-radius: 999px; background: #090a09; color: #f8f8f4; font-size: 10px; line-height: 1; white-space: nowrap; transform: translateX(-50%); }
+.microphone-label { position: absolute; bottom: 35px; left: 50%; display: flex; align-items: center; justify-content: center; width: max-content; max-width: calc(100vw - 16px); height: 28px; padding: 4px 14px; border: 1px solid #242522; border-radius: 999px; background: #090a09; color: #f8f8f4; font-size: 11px; font-weight: 600; line-height: 1; white-space: nowrap; transform: translateX(-50%); }
 .microphone-label[hidden] { display: none; }
 main button { display: grid; place-items: center; flex: 0 0 20px; width: 20px; height: 20px; padding: 0 0 2px; border: 0; border-radius: 50%; color: white; background: #4b4c48; font: 600 14px/1 "Segoe UI", sans-serif; cursor: pointer; }
 main button:hover { background: #62635e; }
 #finish { padding: 0 0 1px; color: #11120f; background: #f4f4ef; font-size: 12px; }
 #finish:hover { background: white; }
 .signal { display: flex; align-items: center; justify-content: center; gap: 2px; width: 44px; height: 20px; overflow: hidden; }
-.signal i { display: block; flex: 0 0 3px; width: 3px; border-radius: 2px; background: linear-gradient(180deg, #ffb03a 0%, #f4337a 45%, #a03cd0 100%); box-shadow: 0 0 4px rgba(244,51,122,.45); transform-origin: 50% 50%; animation: bar-dance 1s ease-in-out infinite alternate; }
+.signal i { display: block; flex: 0 0 3px; width: 3px; border-radius: 2px; background: linear-gradient(180deg, #ffb03a 0%, #f4337a 45%, #a03cd0 100%); box-shadow: 0 0 4px rgba(244,51,122,.45); transform-origin: 50% 50%; animation: bar-dance 1.15s cubic-bezier(.45,.05,.35,1) infinite alternate; }
 .signal i:nth-child(even) { background: linear-gradient(180deg, #f4337a 0%, #a03cd0 55%, #3b4a8f 100%); }
-.signal i:nth-child(1), .signal i:nth-child(8) { height: 7px; animation-duration: .82s; }
-.signal i:nth-child(2), .signal i:nth-child(7) { height: 11px; animation-duration: 1.06s; animation-delay: -.3s; }
-.signal i:nth-child(3), .signal i:nth-child(6) { height: 15px; animation-duration: .9s; animation-delay: -.55s; }
-.signal i:nth-child(4), .signal i:nth-child(5) { height: 10px; animation-duration: 1.14s; animation-delay: -.2s; }
-@keyframes bar-dance { from { transform: scaleY(.28); opacity: .6; } to { transform: scaleY(1); opacity: 1; } }
+.signal i:nth-child(1), .signal i:nth-child(8) { height: 7px; animation-duration: .98s; }
+.signal i:nth-child(2), .signal i:nth-child(7) { height: 11px; animation-duration: 1.24s; animation-delay: -.4s; }
+.signal i:nth-child(3), .signal i:nth-child(6) { height: 15px; animation-duration: 1.08s; animation-delay: -.7s; }
+.signal i:nth-child(4), .signal i:nth-child(5) { height: 10px; animation-duration: 1.32s; animation-delay: -.25s; }
+@keyframes bar-dance { 0% { transform: scaleY(.3); opacity: .55; } 55% { opacity: 1; } 100% { transform: scaleY(1); opacity: .9; } }
 .processing .signal i { animation-duration: .5s; }
-@media (prefers-reduced-motion: reduce) { .signal i { animation: none; } }
+/* Pill lifecycle micro-animations: sub-200ms so they never feel like
+   latency. Enter plays when listening starts; exit plays in the ~140ms
+   the backend waits before hiding the window after a result. */
+#overlay-row.pill-enter { animation: pill-in .16s ease-out; }
+#overlay-row.pill-exit { animation: pill-out .13s ease-in forwards; }
+@keyframes pill-in { from { opacity: 0; transform: translate(-50%, 7px) scale(.96); } to { opacity: 1; transform: translate(-50%, 0) scale(1); } }
+@keyframes pill-out { from { opacity: 1; transform: translate(-50%, 0) scale(1); } to { opacity: 0; transform: translate(-50%, 5px) scale(.97); } }
+/* Processing must read as working, not listening: bars settle low and
+   cool while a highlight sweeps across, instead of dancing faster. */
+.processing .signal i { height: 6px; background: linear-gradient(180deg, #9fb2c8 0%, #5f7288 100%); box-shadow: 0 0 3px rgba(140,165,190,.35); animation: bar-sweep 1.15s ease-in-out infinite; }
+.processing .signal i:nth-child(1) { animation-delay: 0s; }
+.processing .signal i:nth-child(2) { animation-delay: .08s; }
+.processing .signal i:nth-child(3) { animation-delay: .16s; }
+.processing .signal i:nth-child(4) { animation-delay: .24s; }
+.processing .signal i:nth-child(5) { animation-delay: .32s; }
+.processing .signal i:nth-child(6) { animation-delay: .4s; }
+.processing .signal i:nth-child(7) { animation-delay: .48s; }
+.processing .signal i:nth-child(8) { animation-delay: .56s; }
+@keyframes bar-sweep { 0%, 100% { opacity: .3; transform: scaleY(.7); } 50% { opacity: 1; transform: scaleY(1.4); } }
+@media (prefers-reduced-motion: reduce) { .signal i { animation: none; } #overlay-row.pill-enter, #overlay-row.pill-exit { animation: none; } }
 .meeting-prompt { position: absolute; bottom: 38px; left: 50%; display: flex; flex-direction: column; width: 300px; padding: 12px 14px; border: 1px solid #2b2d29; border-radius: 12px; color: #f8f8f4; background: #111210; transform: translateX(-50%); }
 .meeting-prompt::after { content: ""; position: absolute; bottom: -5px; left: calc(50% - 18px); width: 9px; height: 9px; border-right: 1px solid #2b2d29; border-bottom: 1px solid #2b2d29; background: #111210; transform: translateX(-50%) rotate(45deg); }
 .meeting-prompt[hidden] { display: none; }
@@ -54,8 +85,10 @@ main button:hover { background: #62635e; }
 /* Meeting-started sequence: circle fades out smoothly in place (no zoom),
    pill holds static and centered, then the whole row fades. X/✓ stay hidden
    and the waveform stays red until the fade begins. */
-#overlay-row.meeting-start #notetaker-open { transition: opacity .55s ease, transform .55s ease; opacity: 0; transform: translateX(-6px) scale(.92); }
+#overlay-row.meeting-start #notetaker-open { transition: opacity .55s ease, transform .55s ease; opacity: 0; transform: translateX(-6px); }
 #overlay-row.meeting-flash .signal i { background: linear-gradient(180deg, #ff6b5e 0%, #e5322b 60%, #b11a14 100%); box-shadow: 0 0 5px rgba(229,50,43,.65); }
 #overlay-row.meeting-flash #cancel, #overlay-row.meeting-flash #finish { visibility: hidden; }
-#overlay-row.meeting-gone { opacity: 0; transition: opacity .45s ease; }
-@media (prefers-reduced-motion: reduce) { #overlay-row.meeting-start #notetaker-open, #overlay-row.meeting-gone { transition-duration: .01s; } }
+/* Exit is a slide down, not a fade. meeting-flash stays on through the
+   slide so X/✓ never pop back in while leaving. */
+#overlay-row.meeting-gone { transform: translate(-50%, 18px); transition: transform .4s ease; }
+@media (prefers-reduced-motion: reduce) { #overlay-row.meeting-start #notetaker-open, #overlay-row.meeting-gone { transition: none; } .meeting-pill { animation: none; } }

@@ -6,6 +6,8 @@ mod insert;
 mod meeting;
 #[cfg(windows)]
 mod meeting_detector;
+#[cfg(windows)]
+mod meeting_icon;
 mod pipeline;
 mod settings;
 #[cfg(windows)]
@@ -24,7 +26,10 @@ use pipeline::{EngineStatus, Phase, Pipeline};
 use settings::{ActivationMode, AppPreferences, HistoryEntry, SettingsStore, UserSettings};
 use sound::SoundController;
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 use system_audio::SystemAudioController;
 
 struct PendingUpload {
@@ -35,7 +40,7 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition};
 
-struct AppState {
+pub(crate) struct AppState {
     pipeline: Mutex<Pipeline>,
     audio: AudioController,
     system_audio: SystemAudioController,
@@ -54,11 +59,13 @@ struct AppState {
     show_microphone_once: Mutex<bool>,
     pending_uploads: Mutex<HashMap<String, PendingUpload>>,
     meeting_tray_item: Mutex<Option<MenuItem<tauri::Wry>>>,
+    detector_control: Arc<meeting_detector::DetectorControl>,
+    dictation_active: Arc<AtomicBool>,
 }
 
 fn sync_meeting_tray_item(app: &AppHandle, recording: bool) {
     let label = if recording {
-        "Stop meeting recording"
+        "Stop taking notes"
     } else {
         "Take meeting notes"
     };
@@ -70,6 +77,13 @@ fn sync_meeting_tray_item(app: &AppHandle, recording: bool) {
 }
 
 impl AppState {
+    pub(crate) fn meeting_suggestions_enabled(&self) -> bool {
+        self.settings
+            .snapshot()
+            .map(|settings| settings.meeting_suggestions)
+            .unwrap_or(true)
+    }
+
     fn new() -> Self {
         let settings = SettingsStore::load();
         let configured = settings
@@ -130,6 +144,8 @@ impl AppState {
             show_microphone_once: Mutex::new(true),
             pending_uploads: Mutex::new(HashMap::new()),
             meeting_tray_item: Mutex::new(None),
+            detector_control: Arc::new(meeting_detector::DetectorControl::new()),
+            dictation_active: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -189,7 +205,7 @@ fn begin_recording(app: &AppHandle) -> Result<EngineStatus, String> {
     let state = app.state::<AppState>();
     if state.meetings.status()?.recording {
         return Err(
-            "Meeting notes are recording. Stop the meeting before starting dictation.".into(),
+            "Meeting notes are being taken. Stop the meeting before starting dictation.".into(),
         );
     }
     let settings = state.settings.snapshot()?;
@@ -200,6 +216,7 @@ fn begin_recording(app: &AppHandle) -> Result<EngineStatus, String> {
     if !pipeline.begin() {
         return Ok(pipeline.status.clone());
     }
+    state.dictation_active.store(true, Ordering::Release);
     pipeline.status.message = match settings.activation_mode {
         ActivationMode::Hold => "Listening… release to transcribe".into(),
         ActivationMode::Toggle => "Listening… press your shortcut again to finish".into(),
@@ -211,6 +228,19 @@ fn begin_recording(app: &AppHandle) -> Result<EngineStatus, String> {
         .lock()
         .map_err(|_| "target window lock poisoned")? = initial_target;
     state.insertion_target.begin(initial_target);
+    // Bluetooth headsets flip to hands-free mode when the mic opens, and
+    // the switch gap swallows an immediate cue. On those routes the cue
+    // plays late on the settled link instead (capture still starts
+    // instantly, so no speech is lost); everywhere else it plays up front
+    // on the stable route at full volume.
+    let bluetooth_route =
+        settings.dictation_sounds && system_audio::default_render_is_bluetooth();
+    if settings.dictation_sounds && !bluetooth_route {
+        // Ducking still happens afterwards so it never touches the cue.
+        if let Err(error) = state.sounds.start_and_wait() {
+            let _ = app.emit("audio-warning", error);
+        }
+    }
     match state.audio.start() {
         Err(error) => {
             state.insertion_target.cancel();
@@ -218,14 +248,37 @@ fn begin_recording(app: &AppHandle) -> Result<EngineStatus, String> {
             pipeline.fail(format!("Microphone unavailable: {error}"));
         }
         Ok(microphone_name) => {
-            if settings.dictation_sounds {
-                // Let the complete start cue play at the user's normal volume;
-                // ducking the endpoint first made it almost inaudible.
-                if let Err(error) = state.sounds.start_and_wait() {
-                    let _ = app.emit("audio-warning", error);
-                }
-            }
-            if settings.duck_audio {
+            if bluetooth_route {
+                let cue_app = app.clone();
+                let duck_after_cue = settings.duck_audio;
+                std::thread::Builder::new()
+                    .name("pronto-start-cue".into())
+                    .spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_millis(700));
+                        let listening = cue_app
+                            .state::<AppState>()
+                            .pipeline
+                            .lock()
+                            .map(|pipeline| pipeline.status.phase == Phase::Listening)
+                            .unwrap_or(false);
+                        // A tap shorter than the settle delay skips the cue:
+                        // a start blip landing after dictation finished is
+                        // worse than no blip at all.
+                        if !listening {
+                            return;
+                        }
+                        let state = cue_app.state::<AppState>();
+                        if let Err(error) = state.sounds.start_and_wait() {
+                            let _ = cue_app.emit("audio-warning", error);
+                        }
+                        if duck_after_cue {
+                            if let Err(error) = state.system_audio.duck() {
+                                let _ = cue_app.emit("audio-warning", error);
+                            }
+                        }
+                    })
+                    .ok();
+            } else if settings.duck_audio {
                 if let Err(error) = state.system_audio.duck() {
                     let _ = app.emit("audio-warning", error);
                 }
@@ -264,20 +317,29 @@ fn begin_recording(app: &AppHandle) -> Result<EngineStatus, String> {
 
 fn finish_recording(app: &AppHandle) -> Result<EngineStatus, String> {
     let state = app.state::<AppState>();
-    let recording = state.audio.stop();
+    let settings = state.settings.snapshot()?;
+    // Restore the endpoint before cueing: ducking lowers the master volume,
+    // so a cue played first would be inaudible, and stopping the mic first
+    // flips Bluetooth headsets back to music mode whose switch gap eats the
+    // cue's attack. Restore, let the route settle, cue at full volume on
+    // the stable route, and only then stop the microphone.
     let restore_result = state.system_audio.restore();
-    let recording = recording?;
     if let Err(error) = restore_result {
         let _ = app.emit("audio-warning", error);
     }
+    if settings.dictation_sounds {
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        if let Err(error) = state.sounds.finish_and_wait() {
+            let _ = app.emit("audio-warning", error);
+        }
+    }
+    let recording = state.audio.stop();
+    state.dictation_active.store(false, Ordering::Release);
+    let recording = recording?;
     let target_window = *state
         .target_window
         .lock()
         .map_err(|_| "target window lock poisoned")?;
-    let settings = state.settings.snapshot()?;
-    if settings.dictation_sounds {
-        state.sounds.finish();
-    }
     let mut pipeline = state
         .pipeline
         .lock()
@@ -403,6 +465,9 @@ pub(crate) fn complete_transcription(
         .unwrap_or(false);
     if !meeting_active {
         if let Some(overlay) = app.get_webview_window("overlay") {
+            // The result is already inserted and reported; this pause only
+            // lets the pill play its ~130ms exit animation before hiding.
+            std::thread::sleep(std::time::Duration::from_millis(140));
             let _ = overlay.hide();
         }
     }
@@ -737,6 +802,7 @@ fn cancel_recording(app: AppHandle) -> Result<EngineStatus, String> {
     let state = app.state::<AppState>();
     let _ = state.audio.stop();
     state.insertion_target.cancel();
+    state.dictation_active.store(false, Ordering::Release);
     let _ = state.system_audio.restore();
     let mut pipeline = state
         .pipeline
@@ -746,6 +812,8 @@ fn cancel_recording(app: AppHandle) -> Result<EngineStatus, String> {
     pipeline.status.message = "Dictation cancelled".into();
     emit_status(&app, &pipeline.status);
     if let Some(overlay) = app.get_webview_window("overlay") {
+        // Lets the pill play its ~130ms exit animation before hiding.
+        std::thread::sleep(std::time::Duration::from_millis(140));
         let _ = overlay.hide();
     }
     Ok(pipeline.status.clone())
@@ -813,6 +881,7 @@ fn handle_hotkey_event(app: &AppHandle, id: HotkeyId, event: HotkeyEvent) {
 fn reset(app: AppHandle) -> Result<EngineStatus, String> {
     let state = app.state::<AppState>();
     state.insertion_target.cancel();
+    state.dictation_active.store(false, Ordering::Release);
     let _ = state.system_audio.restore();
     let mut pipeline = state
         .pipeline
@@ -951,6 +1020,15 @@ fn dismiss_meeting_prompt(app: AppHandle) -> Result<(), String> {
     if let Some(overlay) = app.get_webview_window("overlay") {
         overlay.hide().map_err(|e| e.to_string())?;
     }
+    Ok(())
+}
+
+#[tauri::command]
+fn dismiss_meeting_suggestion(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    // Suppress re-prompts for the meeting session that is currently
+    // visible. A new session (meeting goes away and returns) starts a new
+    // generation and prompts again.
+    state.detector_control.dismiss_current();
     Ok(())
 }
 
@@ -1143,7 +1221,7 @@ fn paste_last(app: &AppHandle) -> Result<String, String> {
         .target_window
         .lock()
         .map_err(|_| "target window lock poisoned")?;
-    if insert::copy_and_paste(target, &text)? {
+    if insert::copy_and_paste_focus(target, &text)? {
         Ok("Last transcript pasted".into())
     } else {
         Ok("Last transcript copied to the clipboard".into())
@@ -1265,7 +1343,7 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
                             let _ = app.emit(
                                 "tray-message",
                                 serde_json::json!({
-                                    "message": "Recording saved. Creating notes…",
+                                    "message": "Meeting saved. Creating notes…",
                                     "error": false
                                 }),
                             );
@@ -1359,6 +1437,8 @@ pub fn run() {
             meeting_detector::start(
                 app.handle().clone(),
                 app.state::<AppState>().meetings.activity_flag(),
+                Arc::clone(&app.state::<AppState>().dictation_active),
+                Arc::clone(&app.state::<AppState>().detector_control),
             );
             let paste_shortcut = app
                 .state::<AppState>()
@@ -1433,6 +1513,7 @@ pub fn run() {
             resize_microphone_overlay,
             resize_overlay,
             dismiss_meeting_prompt,
+            dismiss_meeting_suggestion,
             get_hotkey_status,
             set_hotkey,
             set_paste_hotkey,

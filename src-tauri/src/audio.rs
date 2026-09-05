@@ -577,6 +577,8 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+
+
     /// Hardware validation for release checks. It is ignored during ordinary
     /// unit tests because CI machines may not expose a microphone.
     #[test]

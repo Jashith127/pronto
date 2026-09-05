@@ -33,9 +33,21 @@ struct TargetState {
     active: bool,
     target: isize,
     own_process: u32,
+    /// Root window of the most recent click in any external application,
+    /// tracked at all times (not only during dictation) so pasting can
+    /// follow the textbox the user selected most recently.
+    last_focus_root: isize,
+    last_focus_at_ms: u64,
 }
 
 static TARGET_STATE: OnceLock<Mutex<TargetState>> = OnceLock::new();
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
+}
 
 pub struct InsertionTargetTracker {
     hook_thread: Option<u32>,
@@ -48,6 +60,8 @@ impl InsertionTargetTracker {
             active: false,
             target: 0,
             own_process,
+            last_focus_root: 0,
+            last_focus_at_ms: 0,
         }));
         let (ready, response) = mpsc::channel();
         let started = std::thread::Builder::new()
@@ -134,8 +148,15 @@ unsafe extern "system" fn mouse_hook(code: i32, wparam: WPARAM, lparam: LPARAM) 
         if !root.0.is_null() {
             if let Some(state) = TARGET_STATE.get() {
                 if let Ok(mut state) = state.lock() {
-                    if state.active && is_external_application_window(root, state.own_process) {
-                        state.target = root.0 as isize;
+                    if is_external_application_window(root, state.own_process) {
+                        // The focused control is resolved lazily at paste
+                        // time: at click-down the focus often has not moved
+                        // to the clicked control yet.
+                        state.last_focus_root = root.0 as isize;
+                        state.last_focus_at_ms = now_ms();
+                        if state.active {
+                            state.target = root.0 as isize;
+                        }
                     }
                 }
             }
@@ -174,10 +195,25 @@ pub fn insert_text(target: isize, text: &str) -> Result<(), String> {
 /// Copies a transcript and, when Windows permits foreground activation, pastes
 /// it into the remembered target. `false` means the clipboard fallback worked.
 pub fn copy_and_paste(target: isize, text: &str) -> Result<bool, String> {
+    paste_into(target, focused_control(target), text)
+}
+
+/// Pastes into the textbox the user selected most recently: the window of
+/// the latest external click wins when it is still alive, otherwise the
+/// remembered dictation target is used. Focusing a textbox in a new app
+/// after switching to it therefore redirects the paste there, while
+/// switching without clicking keeps pasting into the original textbox
+/// (which is brought back to the foreground).
+pub fn copy_and_paste_focus(fallback_root: isize, text: &str) -> Result<bool, String> {
+    let (root, control) = resolve_focus_target(fallback_root);
+    paste_into(root, control, text)
+}
+
+fn paste_into(root: isize, control: HWND, text: &str) -> Result<bool, String> {
     let mut snapshot = ClipboardSnapshot::capture();
     copy_to_clipboard(text)?;
     let transcript_sequence = unsafe { GetClipboardSequenceNumber() };
-    let pasted = paste_current_clipboard(target);
+    let pasted = paste_current_clipboard(root, control);
 
     // Give the receiving application time to consume Ctrl+V before restoring
     // the clipboard. Never overwrite clipboard content copied by the user (or
@@ -189,13 +225,50 @@ pub fn copy_and_paste(target: isize, text: &str) -> Result<bool, String> {
     Ok(pasted)
 }
 
-fn paste_current_clipboard(target: isize) -> bool {
-    if target == 0 {
+/// Most recent click target wins when alive; the focused control inside it
+/// is resolved now (it is only stable after the click was processed).
+/// Falls back to the remembered dictation target, then to no target.
+fn resolve_focus_target(fallback_root: isize) -> (isize, HWND) {
+    let last_root = TARGET_STATE
+        .get()
+        .and_then(|state| state.lock().ok())
+        .map(|state| state.last_focus_root)
+        .unwrap_or(0);
+    for root in [last_root, fallback_root] {
+        if root != 0 && window_alive(root) {
+            return (root, focused_control(root));
+        }
+    }
+    (0, HWND::default())
+}
+
+fn window_alive(root: isize) -> bool {
+    unsafe { IsWindow(Some(HWND(root as *mut _))).as_bool() }
+}
+
+fn focused_control(root: isize) -> HWND {
+    let window = HWND(root as *mut _);
+    let thread = unsafe { GetWindowThreadProcessId(window, None) };
+    if thread == 0 {
+        return HWND::default();
+    }
+    let mut info = GUITHREADINFO {
+        cbSize: size_of::<GUITHREADINFO>() as u32,
+        ..Default::default()
+    };
+    if unsafe { GetGUIThreadInfo(thread, &mut info) }.is_err() {
+        return HWND::default();
+    }
+    info.hwndFocus
+}
+
+fn paste_current_clipboard(root: isize, control: HWND) -> bool {
+    if root == 0 {
         return false;
     }
-    let target = HWND(target as *mut _);
+    let target = HWND(root as *mut _);
     if !activate_target(target) {
-        return paste_to_native_focused_control(target);
+        return paste_to_control(control);
     }
 
     // A hold shortcut becomes inactive as soon as its first key is released,
@@ -217,7 +290,7 @@ fn paste_current_clipboard(target: isize) -> bool {
     if sent == inputs.len() {
         true
     } else {
-        paste_to_native_focused_control(target)
+        paste_to_control(control)
     }
 }
 
@@ -343,28 +416,19 @@ unsafe fn release_clipboard_handle(format: u32, handle: HANDLE) {
     }
 }
 
-fn paste_to_native_focused_control(target: HWND) -> bool {
-    let target_thread = unsafe { GetWindowThreadProcessId(target, None) };
-    if target_thread == 0 {
-        return false;
-    }
-    let mut info = GUITHREADINFO {
-        cbSize: size_of::<GUITHREADINFO>() as u32,
-        ..Default::default()
-    };
-    if unsafe { GetGUIThreadInfo(target_thread, &mut info) }.is_err() || info.hwndFocus.0.is_null()
-    {
+fn paste_to_control(control: HWND) -> bool {
+    if control.0.is_null() {
         return false;
     }
     let mut class_name = [0u16; 64];
-    let length = unsafe { GetClassNameW(info.hwndFocus, &mut class_name) } as usize;
+    let length = unsafe { GetClassNameW(control, &mut class_name) } as usize;
     let class_name = String::from_utf16_lossy(&class_name[..length]).to_ascii_lowercase();
     if !(class_name == "edit" || class_name.starts_with("richedit") || class_name == "scintilla") {
         return false;
     }
     unsafe {
         let _ = SendMessageTimeoutW(
-            info.hwndFocus,
+            control,
             WM_PASTE,
             WPARAM(0),
             LPARAM(0),

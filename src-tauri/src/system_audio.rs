@@ -123,6 +123,40 @@ fn restore_endpoint(snapshot: &mut Option<Snapshot>) -> Result<(), String> {
     .map_err(|error| format!("Could not restore system audio: {error}"))
 }
 
+/// True when the default playback route is a Bluetooth device. Opening a
+/// microphone flips such headsets from music (A2DP) to hands-free mode,
+/// whose switch gap swallows any cue played during it. Any failure here
+/// returns false so callers fall back to immediate cueing.
+pub fn default_render_is_bluetooth() -> bool {
+    unsafe {
+        // COM is apartment-local; this runs on hotkey/caller threads that
+        // have no COM state, so initialize privately like the controller.
+        let initialized = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
+        let bluetooth = default_endpoint_id()
+            .map(|id| id.to_ascii_lowercase().contains("bthenum"))
+            .unwrap_or(false);
+        if initialized {
+            CoUninitialize();
+        }
+        bluetooth
+    }
+}
+
+fn default_endpoint_id() -> Result<String, String> {
+    unsafe {
+        let enumerator: IMMDeviceEnumerator =
+            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
+                .map_err(|error| format!("Could not access Windows audio devices: {error}"))?;
+        let device = enumerator
+            .GetDefaultAudioEndpoint(eRender, eConsole)
+            .map_err(|error| format!("No default playback device is available: {error}"))?;
+        device
+            .GetId()
+            .map(|id| id.to_string().unwrap_or_default())
+            .map_err(|error| format!("Could not identify playback device: {error}"))
+    }
+}
+
 fn default_endpoint() -> Result<IAudioEndpointVolume, String> {
     unsafe {
         let enumerator: IMMDeviceEnumerator =

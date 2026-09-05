@@ -132,6 +132,7 @@ function renderPreferences() {
   document.querySelector('#launch-at-startup').checked = preferences.settings.launchAtStartup;
   document.querySelector('#gpu-memory-management').checked = preferences.settings.gpuMemoryManagement;
   document.querySelector('#dictation-sounds').checked = preferences.settings.dictationSounds;
+  document.querySelector('#meeting-suggestions').checked = preferences.settings.meetingSuggestions !== false;
   document.querySelector('#language').value = preferences.settings.language;
   document.querySelectorAll('[data-activation]').forEach(button => button.classList.toggle('active', button.dataset.activation === preferences.settings.activationMode));
   document.querySelector('#api-status').textContent = preferences.apiKeyConfigured ? 'Stored securely in Windows Credential Manager' : 'Not configured — local cleanup will be used';
@@ -153,6 +154,7 @@ async function persistSettings() {
     launchAtStartup: document.querySelector('#launch-at-startup').checked,
     gpuMemoryManagement: document.querySelector('#gpu-memory-management').checked,
     dictationSounds: document.querySelector('#dictation-sounds').checked,
+    meetingSuggestions: document.querySelector('#meeting-suggestions').checked,
     language: document.querySelector('#language').value
   };
   preferences = await call('save_settings', { settings });
@@ -353,7 +355,7 @@ document.querySelector('#dictionary-list').addEventListener('click', async event
   preferences.settings = await call('remove_dictionary_term', { term });
   renderDictionary();
 });
-document.querySelectorAll('#cleanup-enabled,#auto-insert,#duck-audio,#dictation-sounds,#launch-at-startup,#gpu-memory-management,#language').forEach(input => input.addEventListener('change', persistSettings));
+document.querySelectorAll('#cleanup-enabled,#auto-insert,#duck-audio,#dictation-sounds,#meeting-suggestions,#launch-at-startup,#gpu-memory-management,#language').forEach(input => input.addEventListener('change', persistSettings));
 document.querySelectorAll('[data-activation]').forEach(button => button.addEventListener('click', async () => {
   preferences.settings.activationMode = button.dataset.activation;
   await persistSettings();
@@ -600,7 +602,7 @@ function entryStatus(entry) {
   if (entry.kind === 'meeting' && entry.item.status === 'ready') return 'Notes ready';
   if (entry.item.status === 'ready') return 'Transcript ready';
   if (entry.item.status === 'error' || entry.item.status === 'interrupted') return 'Needs attention';
-  if (entry.item.status === 'recording') return 'Recording now';
+  if (entry.item.status === 'recording') return 'Taking notes';
   if (entry.kind === 'meeting') return 'Creating notes';
   return entry.item.status === 'preparing' ? 'Preparing audio' : 'Transcribing';
 }
@@ -617,7 +619,7 @@ function entryMarkup(entry) {
   const timestamp = entry.kind === 'meeting' ? item.createdAt : item.createdAt;
   const data = entry.kind === 'meeting' ? `data-meeting-id="${escapeAttr(item.id)}"` : `data-item="${escapeAttr(item.id)}"`;
   const menuData = entry.kind === 'meeting' ? `data-row-menu="meeting:${escapeAttr(item.id)}"` : `data-row-menu="upload:${escapeAttr(item.id)}"`;
-  return `<div class="notes-file-row${ready ? '' : ' processing'}${failed ? ' failed' : ''}"><button class="notes-file" ${data} ${ready ? '' : 'disabled'}><span class="notes-file-name"><span class="notes-file-icon">${transcriptIcon}</span><span><strong>${escapeHtml(item.title || item.name)}</strong><em>${detail}</em></span></span><span class="notes-file-status">${entryStatus(entry)}</span><span class="notes-file-date">${new Date(timestamp).toLocaleDateString()}</span></button><button class="notes-row-menu-btn" type="button" ${menuData} aria-label="More actions" title="More actions">⋮</button></div>`;
+  return `<div class="notes-file-row${ready ? '' : ' processing'}${failed ? ' failed' : ''}"><button type="button" class="notes-file-open" ${data} ${ready ? '' : 'disabled'}><span class="notes-file-name"><span class="notes-file-icon">${transcriptIcon}</span><span><strong>${escapeHtml(item.title || item.name)}</strong><em>${detail}</em></span></span><span class="notes-file-status">${entryStatus(entry)}</span><span class="notes-file-date">${new Date(timestamp).toLocaleDateString()}</span></button><button class="notes-row-menu-btn" type="button" ${menuData} aria-label="More actions" title="More actions">⋮</button></div>`;
 }
 
 function closeRowMenu() {
@@ -845,6 +847,7 @@ document.querySelector('#notetaker-file-list')?.addEventListener('click', event 
     }
     return;
   }
+  closeRowMenu();
   const meetingId = event.target.closest('[data-meeting-id]')?.dataset.meetingId;
   const itemId = event.target.closest('[data-item]')?.dataset.item;
   if (meetingId) notetakerDetail = { kind: 'meeting', id: meetingId };
@@ -877,7 +880,7 @@ async function renameRowItem(kind, id) {
   if (kind === 'meeting') {
     const item = meetings.find(entry => entry.id === id);
     if (!item) return;
-    const next = prompt('Rename recording', item.title || '');
+    const next = prompt('Rename meeting notes', item.title || '');
     if (next === null) return;
     const title = next.trim();
     if (!title || title === item.title) return;
@@ -885,7 +888,7 @@ async function renameRowItem(kind, id) {
       const updated = await call('rename_meeting', { id, title: title.slice(0, 120) });
       meetings = [updated, ...meetings.filter(entry => entry.id !== id)];
       renderNotetaker();
-      showToast('Recording renamed');
+      showToast('Meeting notes renamed');
     } catch (error) { showToast(String(error).replace(/^Error:\s*/, ''), true); }
   } else {
     const found = notetakerFindItem(id);
@@ -905,7 +908,7 @@ async function deleteRowItem(kind, id) {
   if (kind === 'meeting') {
     const item = meetings.find(entry => entry.id === id);
     if (!item) return;
-    if (item.status === 'processing' || item.status === 'recording') { showToast('Wait until recording and notes finish before deleting', true); return; }
+    if (item.status === 'processing' || item.status === 'recording') { showToast('Wait until notes are finished before deleting', true); return; }
     if (!confirm(`Delete "${item.title || 'this meeting'}" and its saved audio?`)) return;
     try {
       await call('delete_meeting', { id });
@@ -915,7 +918,7 @@ async function deleteRowItem(kind, id) {
       saveNotetaker();
       if (notetakerDetail && notetakerDetail.kind === 'meeting' && notetakerDetail.id === id) notetakerDetail = null;
       renderNotetaker();
-      showToast('Recording deleted');
+      showToast('Meeting notes deleted');
     } catch (error) { showToast(String(error).replace(/^Error:\s*/, ''), true); }
   } else {
     const found = notetakerFindItem(id);
@@ -990,7 +993,7 @@ function renderMeetingStatus() {
   const button = document.querySelector('#meeting-toggle'); const status = document.querySelector('#meeting-live-status');
   button.classList.toggle('recording', meetingRecording);
   button.querySelector('b').textContent = meetingRecording ? 'Stop and create notes' : 'Start meeting';
-  status.textContent = meetingRecording ? `Recording · ${formatMeetingDuration((Date.now() - meetingStartedAt) / 1000)} · saving locally` : '';
+  status.textContent = meetingRecording ? `Taking notes · ${formatMeetingDuration((Date.now() - meetingStartedAt) / 1000)} · saving locally` : '';
 }
 
 function renderMeetings() {
@@ -1002,11 +1005,11 @@ document.querySelector('#meeting-toggle')?.addEventListener('click', async event
   try {
     if (meetingRecording) {
       const record = await call('stop_meeting_recording'); meetingRecording = false;
-      meetings = [record, ...meetings.filter(item => item.id !== record.id)]; selectedMeetingId = record.id; showToast('Recording saved. Creating notes…');
+      meetings = [record, ...meetings.filter(item => item.id !== record.id)]; selectedMeetingId = record.id; showToast('Meeting saved. Creating notes…');
     } else {
       const title = `Meeting ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
       const record = await call('start_meeting_recording', { title }); meetingRecording = true; meetingStartedAt = Date.now();
-      meetings = [record, ...meetings.filter(item => item.id !== record.id)]; selectedMeetingId = record.id; showToast('Meeting recording started');
+      meetings = [record, ...meetings.filter(item => item.id !== record.id)]; selectedMeetingId = record.id; showToast('Meeting notes started');
     }
     renderMeetingStatus(); renderMeetings();
   } finally { button.disabled = false; }

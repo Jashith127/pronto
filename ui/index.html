@@ -95,7 +95,7 @@
               </aside>
               <section class="notes-files" aria-label="Transcripts">
                 <div class="notes-files-head"><div><h2 id="notetaker-files-title">My recordings</h2><p>Audio and meeting transcripts</p></div><small id="notetaker-files-count"></small></div>
-                <div class="notes-file-columns" aria-hidden="true"><span>Name</span><span>Status</span><span>Date</span><span></span></div>
+                <div class="notes-file-columns" aria-hidden="true"><div class="notes-file-columns-main"><span>Name</span><span>Status</span><span class="notes-file-columns-date">Date</span></div><span></span></div>
                 <div id="notetaker-file-list" class="notes-file-list"></div>
               </section>
             </div>
@@ -163,6 +163,13 @@
                 </div>
                 <div class="setting-row"><div><strong>Insert automatically</strong><p>Type the result where dictation began.</p></div><label class="toggle"><input type="checkbox" id="auto-insert" /><span></span></label></div>
                 <div class="setting-row"><div><strong>Clean up speech</strong><p>Remove fillers and false starts, then repair punctuation.</p></div><label class="toggle"><input type="checkbox" id="cleanup-enabled" /><span></span></label></div>
+              </div>
+            </section>
+
+            <section class="settings-section">
+              <h2>Meeting notes</h2>
+              <div class="settings-card">
+                <div class="setting-row"><div><strong>Suggest meeting notes</strong><p>Show the note taker prompt when a meeting call is detected. Turn off to never be interrupted.</p></div><label class="toggle"><input type="checkbox" id="meeting-suggestions" /><span></span></label></div>
               </div>
             </section>
 

@@ -51,6 +51,12 @@ pub struct UserSettings {
     pub gpu_memory_management_configured: bool,
     pub dictation_sounds: bool,
     pub cleanup_prompt: Option<String>,
+    #[serde(default = "default_meeting_suggestions")]
+    pub meeting_suggestions: bool,
+}
+
+fn default_meeting_suggestions() -> bool {
+    true
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -79,6 +85,7 @@ impl Default for UserSettings {
             gpu_memory_management_configured: true,
             dictation_sounds: true,
             cleanup_prompt: None,
+            meeting_suggestions: true,
         }
     }
 }
@@ -355,6 +362,15 @@ mod tests {
             "".into(),
         ]);
         assert_eq!(values, vec!["deepSeek", "Pronto"]);
+    }
+
+    #[test]
+    fn older_settings_default_to_suggestions_enabled() {
+        let settings: UserSettings = serde_json::from_str(r#"{"language":"en"}"#).unwrap();
+        assert!(settings.meeting_suggestions);
+        let settings: UserSettings =
+            serde_json::from_str(r#"{"meetingSuggestions":false}"#).unwrap();
+        assert!(!settings.meeting_suggestions);
     }
 
     #[test]

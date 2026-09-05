@@ -13,7 +13,7 @@ const SAMPLE_RATE: u32 = 44_100;
 
 enum SoundCommand {
     Start(mpsc::Sender<Result<(), String>>),
-    Finish,
+    Finish(mpsc::Sender<Result<(), String>>),
 }
 
 pub struct SoundController {
@@ -33,8 +33,8 @@ impl SoundController {
                         SoundCommand::Start(completed) => {
                             let _ = completed.send(play_pcm(&mut start));
                         }
-                        SoundCommand::Finish => {
-                            let _ = play_pcm(&mut finish);
+                        SoundCommand::Finish(completed) => {
+                            let _ = completed.send(play_pcm(&mut finish));
                         }
                     }
                 }
@@ -53,8 +53,14 @@ impl SoundController {
             .map_err(|_| "The recording start cue timed out".to_string())?
     }
 
-    pub fn finish(&self) {
-        let _ = self.sender.send(SoundCommand::Finish);
+    pub fn finish_and_wait(&self) -> Result<(), String> {
+        let (completed, response) = mpsc::channel();
+        self.sender
+            .send(SoundCommand::Finish(completed))
+            .map_err(|_| "Dictation sound thread stopped".to_string())?;
+        response
+            .recv_timeout(Duration::from_millis(500))
+            .map_err(|_| "The recording stop cue timed out".to_string())?
     }
 }
 
@@ -124,28 +130,66 @@ fn play_pcm(samples: &mut [i16]) -> Result<(), String> {
     }
 }
 
+/// Modern two-tone UI blips: discrete low notes (A3 <-> E4) with a fast
+/// attack and exponential decay. No pitch glide, so nothing chirps or
+/// bubbles; direction alone tells start (ascending) from stop
+/// (descending). Fundamentals stay above 200 Hz to survive narrowband
+/// Bluetooth hands-free links.
 fn make_cue(starts: bool) -> Vec<i16> {
-    let duration_ms = if starts { 112 } else { 88 };
-    let sample_count = (SAMPLE_RATE * duration_ms / 1_000) as usize;
-    let mut samples = Vec::with_capacity(sample_count);
-    let mut phase = 0.0f32;
-    for index in 0..sample_count {
-        let progress = index as f32 / sample_count as f32;
-        let (from, to) = if starts {
-            (510.0, 720.0)
-        } else {
-            (650.0, 460.0)
-        };
-        let frequency = from + (to - from) * progress;
-        phase += TAU * frequency / SAMPLE_RATE as f32;
-        let attack = (progress / 0.035).min(1.0);
-        let release = (1.0 - progress).powf(1.55);
-        let envelope = attack * release;
-        let level = if starts { 0.19 } else { 0.14 };
-        let fundamental = phase.sin() * level;
-        let warm_partial = (phase * 1.5).sin() * if starts { 0.028 } else { 0.022 };
-        let sample = ((fundamental + warm_partial) * envelope).clamp(-1.0, 1.0);
-        samples.push((sample * i16::MAX as f32) as i16);
+    const A3: f32 = 220.0;
+    const E4: f32 = 329.63;
+    // (frequency, milliseconds, peak level)
+    let notes: [(f32, u32, f32); 2] = if starts {
+        [(A3, 48, 0.34), (E4, 58, 0.34)]
+    } else {
+        [(E4, 44, 0.30), (A3, 52, 0.30)]
+    };
+    let mut samples = Vec::new();
+    if starts {
+        // Endpoints in low-power idle (notably Bluetooth headsets) can
+        // swallow the first tens of milliseconds after opening. Leading
+        // silence wakes the route so the audible notes arrive complete.
+        samples.extend(std::iter::repeat_n(
+            0,
+            (SAMPLE_RATE * 70 / 1_000) as usize,
+        ));
+    }
+    for (note_index, &(frequency, duration_ms, target_peak)) in notes.iter().enumerate() {
+        if note_index > 0 {
+            // 6 ms of silence between notes keeps the two tones distinct.
+            samples.extend(std::iter::repeat_n(
+                0,
+                (SAMPLE_RATE * 6 / 1_000) as usize,
+            ));
+        }
+        let note_samples = (SAMPLE_RATE * duration_ms / 1_000) as usize;
+        // Synthesize unscaled first so the note can be normalized to its
+        // exact target peak: harmonic phase alignment otherwise makes the
+        // final loudness hard to predict.
+        let mut note = Vec::with_capacity(note_samples);
+        let mut phase = 0.0f32;
+        for index in 0..note_samples {
+            let time = index as f32 / SAMPLE_RATE as f32;
+            let length = note_samples as f32 / SAMPLE_RATE as f32;
+            phase += TAU * frequency / SAMPLE_RATE as f32;
+            let attack = (time / 0.004).min(1.0);
+            let decay = (-3.2 * time / length).exp();
+            let tone = phase.sin() * 0.72
+                + (phase * 2.0).sin() * 0.20
+                + (phase * 3.0).sin() * 0.08;
+            note.push(tone * attack * decay);
+        }
+        let peak = note
+            .iter()
+            .map(|sample| sample.abs())
+            .max_by(|left, right| left.total_cmp(right))
+            .unwrap_or(0.0)
+            .max(f32::EPSILON);
+        let gain = target_peak / peak;
+        samples.extend(
+            note.iter()
+                .map(|sample| ((sample * gain).clamp(-1.0, 1.0) * i16::MAX as f32) as i16),
+        );
     }
     samples
 }
@@ -159,7 +203,7 @@ mod tests {
         let start = make_cue(true);
         let finish = make_cue(false);
         assert!(start.len() > finish.len());
-        assert!(start.len() < 6_000);
+        assert!(start.len() < 9_000);
         let peak = |cue: &[i16]| {
             cue.iter()
                 .map(|sample| sample.unsigned_abs())
@@ -169,6 +213,24 @@ mod tests {
         assert!(peak(&start) > peak(&finish));
         assert!(peak(&start) > 5_000);
         assert!(peak(&finish) > 3_500);
+    }
+
+    #[test]
+    fn cues_step_in_opposite_directions() {
+        // Zero-crossing rate tracks pitch: the start cue must step up and
+        // the stop cue must step down, with a quiet gap between the notes.
+        let direction = |cue: &[i16]| {
+            let crossings = |half: &[i16]| {
+                half.windows(2)
+                    .filter(|pair| (pair[0] < 0) != (pair[1] < 0))
+                    .count() as f32
+                    / half.len() as f32
+            };
+            let mid = cue.len() / 2;
+            crossings(&cue[mid..]) - crossings(&cue[..mid])
+        };
+        assert!(direction(&make_cue(true)) > 0.0);
+        assert!(direction(&make_cue(false)) < 0.0);
     }
 
     #[test]

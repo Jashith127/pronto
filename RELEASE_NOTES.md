@@ -1,3 +1,37 @@
+# Pronto 0.7.4
+
+Pronto 0.7.4 overhauls meeting detection and the meeting pill, fixes Note Taker recordings not opening, enlarges the meeting notes view, reworks overlay motion and the waveform states, redesigns the dictation cues with Bluetooth-aware timing, and makes pasting follow the most recently selected textbox.
+
+## What's new
+
+- Meeting detection rewritten: presence-edge triggering on vendor identity with expanded coverage (Zoom, Teams, Webex, Skype, Jitsi, Chime, and bare "Meet" titles such as Zen browser tabs). Fixes meetings never being detected and the prompt only appearing the first time.
+- Repeat meetings always re-prompt: per-session generations mean a meeting that leaves and returns asks again, while Esc/X dismissal stays quiet for that session only (new `dismiss_meeting_suggestion` path, 2-minute blip cooldown).
+- Dedicated meeting pill: detection now shows its own pill — red-dot-free capsule with the meeting title, a Start-only button, and an X dismiss — while the normal dictation pill and circle stay hidden. Includes per-app icons (extracted exe icons, bundled service glyphs for browser tabs) on the pill's left.
+- Detection never fights dictation: the detector freezes while Pronto dictates or takes notes, and a new "Suggest meeting notes" Settings toggle (on by default) disables pop-ups entirely.
+- Note Taker recordings open reliably again: rows are real buttons (no more `display:contents` click/focus bugs), the explorer fits the viewport with internal scrolling, the row menu layer can't swallow clicks, and headers align with rows.
+- Meeting notes view fills the detail area: notes and transcript panes share the full height with independent scrolling, and notes text is larger.
+- Overlay motion pass: fast pill enter/exit micro-animations (160/130 ms, zero felt latency), smooth circle fade, slide-down exit that keeps its size, layered pill-over-status, and a fix for the red recording style leaking through fades.
+- Waveform states: refined idle dance while listening; processing now shows a cool low sweep that reads as working instead of a faster dance that felt like listening.
+- Dictation cues redesigned: low discrete A3↔E4 two-tone blips replace the high bubbly glides, with exact normalized loudness (start slightly louder).
+- Bluetooth-aware cue timing: the app detects Bluetooth routes and delays the start cue past the hands-free switch gap (capture still starts instantly, so no speech is lost; quick taps skip the late cue). The stop cue plays after endpoint restore on the settled route. Fixes cues being swallowed on Bluetooth headsets.
+- Pasting follows the most recently selected textbox: every click is tracked (not just during dictation), so alt-tabbing without clicking pastes into the original box, while clicking a new box redirects there. Dead targets fall back to the clipboard with a toast.
+- Meeting UX no longer says "recording": pill, labels, tray ("Stop taking notes"), statuses, and toasts use notes-first wording.
+
+## Validation
+
+- 30 automated tests pass (new coverage: detector generations and vendor keys, icon pixel math, cue direction and loudness, suggestions migration default).
+- 10 hardware or interactive tests remain opt-in because they require a microphone, NVIDIA GPU, Windows audio endpoint, desktop input, audio output, or a live DeepSeek key.
+- Installer fetch-script hash and failure paths verified locally; full installer compile clean.
+
+## Requirements
+
+- Windows 10 or 11, 64-bit.
+- A supported NVIDIA GPU and current NVIDIA driver for local CUDA transcription.
+- Internet connection during installation (one-time ~681 MB model download).
+- DeepSeek API key is optional and is used only for advanced cleanup and meeting-note generation.
+
+---
+
 # Pronto 0.7.3
 
 Pronto 0.7.3 shrinks the installer from ~743 MB to ~101 MB by downloading the speech model during setup, polishes the Note Taker and overlay experience, and makes the tray meeting item follow recording state.
