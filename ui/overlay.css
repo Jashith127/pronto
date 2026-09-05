@@ -15,8 +15,8 @@ button svg { shape-rendering: geometricPrecision; }
 #meeting-pill-start:hover { background: #fff; }
 #meeting-pill-start:active { transform: scale(.97); }
 #meeting-pill-start:disabled { opacity: .55; cursor: default; }
-#meeting-pill-dismiss { display: grid; place-items: center; flex: 0 0 30px; width: 30px; height: 30px; min-height: 30px; padding: 0; border: 1px solid #3a3c37; border-radius: 9px; color: #b8bbb4; background: transparent; cursor: pointer; transition: border-color .12s ease, color .12s ease, background .12s ease; }
-#meeting-pill-dismiss:hover { border-color: #4b4d47; color: #f8f8f4; background: rgba(255,255,255,.06); }
+#meeting-pill-dismiss { display: grid; place-items: center; flex: 0 0 30px; width: 30px; height: 30px; min-height: 30px; padding: 0; border: 0; border-radius: 9px; color: #b8bbb4; background: transparent; cursor: pointer; transition: color .12s ease, background .12s ease; }
+#meeting-pill-dismiss:hover { color: #f8f8f4; background: rgba(255,255,255,.08); }
 #meeting-pill-dismiss svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 @keyframes meeting-pill-in { from { opacity: 0; transform: translate(-50%, 6px); } to { opacity: 1; transform: translate(-50%, 0); } }
 main { display: flex; align-items: center; justify-content: center; gap: 4px; width: 98px; height: 30px; padding: 3px 4px; border: 1px solid #2e2f2b; border-radius: 999px; background: rgb(9, 10, 9); }
