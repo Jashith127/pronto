@@ -1,5 +1,11 @@
 const invoke = window.__TAURI__.core.invoke;
 const listen = window.__TAURI__.event.listen;
+
+const body = document.body;
+const backdrop = document.querySelector('#backdrop');
+const chrome = document.querySelector('#chrome');
+const signal = document.querySelector('#signal');
+const panel = document.querySelector('#panel');
 const toast = document.querySelector('#toast');
 const phaseEl = document.querySelector('#search-phase');
 const messageEl = document.querySelector('#search-message');
@@ -9,7 +15,13 @@ const emptyEl = document.querySelector('#search-empty');
 const nodesEl = document.querySelector('#search-nodes');
 const cancelBtn = document.querySelector('#search-cancel');
 const finishBtn = document.querySelector('#search-finish');
+const panelClose = document.querySelector('#panel-close');
 const plots = [];
+
+let uiMode = 'idle';
+let pendingResult = null;
+let flyInFlight = false;
+const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 function showToast(text, error = false) {
   toast.textContent = text;
@@ -72,8 +84,8 @@ function renderChartFallback(node) {
 
 function renderTable(node) {
   const head = `<tr>${(node.columns || []).map(column => `<th>${escapeHtml(column)}</th>`).join('')}</tr>`;
-  const body = (node.rows || []).map(row => `<tr>${row.map(cell => `<td>${escapeHtml(cell)}</td>`).join('')}</tr>`).join('');
-  return `<div class="search-table-wrap"><table class="search-table"><thead>${head}</thead><tbody>${body}</tbody></table></div>`;
+  const bodyHtml = (node.rows || []).map(row => `<tr>${row.map(cell => `<td>${escapeHtml(cell)}</td>`).join('')}</tr>`).join('');
+  return `<div class="search-table-wrap"><table class="search-table"><thead>${head}</thead><tbody>${bodyHtml}</tbody></table></div>`;
 }
 
 function renderNode(node) {
@@ -122,9 +134,9 @@ function mountCharts(root) {
     try {
       const series = [{ label: 'Label' }, ...node.datasets.map(dataset => ({
         label: dataset.label || 'Series',
-        stroke: dataset.label?.toLowerCase().includes('b') ? '#3f6d60' : '#c65d48',
+        stroke: dataset.label?.toLowerCase().includes('b') ? '#7dff9a' : '#f4337a',
         width: 2,
-        fill: (node.chart_type || node.chartType) === 'bar' ? 'rgba(198, 93, 72, 0.18)' : undefined,
+        fill: (node.chart_type || node.chartType) === 'bar' ? 'rgba(244, 51, 122, 0.18)' : undefined,
       }))];
       const data = [
         node.labels.map((_, index) => index),
@@ -137,9 +149,10 @@ function mountCharts(root) {
         scales: { x: { time: false } },
         axes: [
           {
+            stroke: '#b8bbb4',
             values: (_u, splits) => splits.map(split => node.labels[split] ?? ''),
           },
-          {},
+          { stroke: '#b8bbb4' },
         ],
       }, data, container);
       plots.push(plot);
@@ -149,20 +162,56 @@ function mountCharts(root) {
   });
 }
 
-function renderStatus(status) {
-  const phase = status?.phase || 'idle';
-  phaseEl.textContent = phase;
-  phaseEl.className = `search-phase ${phase}`;
-  messageEl.textContent = status?.message || '';
-  cancelBtn.hidden = !(phase === 'listening' || phase === 'searching');
-  finishBtn.hidden = phase !== 'listening';
-  if (status?.query) {
-    queryWrap.hidden = false;
-    queryText.textContent = status.query;
+function setSignalShape(shape) {
+  signal.classList.toggle('linear', shape === 'linear');
+  signal.classList.toggle('radial', shape === 'radial');
+}
+
+async function setNativeStage(stage) {
+  try {
+    await invoke('set_search_overlay_stage', { stage });
+  } catch (_) { /* backend may already own the stage */ }
+}
+
+function showChrome() {
+  chrome.hidden = false;
+}
+
+function hideChrome() {
+  chrome.hidden = true;
+  chrome.classList.remove('morphing', 'flying', 'expand', 'pill', 'orb');
+}
+
+function showBackdrop(on) {
+  if (on) {
+    backdrop.hidden = false;
+    requestAnimationFrame(() => backdrop.classList.add('visible'));
+  } else {
+    backdrop.classList.remove('visible');
+    backdrop.hidden = true;
   }
 }
 
-function renderResult(payload) {
+function showPanel(on) {
+  if (on) {
+    panel.hidden = false;
+    requestAnimationFrame(() => panel.classList.add('visible'));
+  } else {
+    panel.classList.remove('visible');
+    panel.hidden = true;
+  }
+}
+
+function resetResultSurface() {
+  destroyPlots();
+  emptyEl.hidden = false;
+  nodesEl.hidden = true;
+  nodesEl.innerHTML = '';
+  queryWrap.hidden = true;
+  queryText.textContent = '';
+}
+
+function paintResult(payload) {
   destroyPlots();
   emptyEl.hidden = true;
   nodesEl.hidden = false;
@@ -176,13 +225,139 @@ function renderResult(payload) {
     queryWrap.hidden = false;
     queryText.textContent = payload.query;
   }
-  // Interim source lists keep phase as searching until the final answer arrives.
-  if (payload.warning === 'Fetching a grounded answer…') {
-    renderStatus({
-      phase: 'searching',
-      message: 'Writing grounded answer…',
-      query: payload.query,
-    });
+}
+
+function wait(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function enterListening() {
+  uiMode = 'listening';
+  flyInFlight = false;
+  pendingResult = null;
+  body.className = 'mode-listening';
+  chrome.className = 'search-chrome pill';
+  setSignalShape('linear');
+  showPanel(false);
+  showBackdrop(false);
+  resetResultSurface();
+  showChrome();
+  cancelBtn.hidden = false;
+  finishBtn.hidden = false;
+  await setNativeStage('pill');
+}
+
+async function enterSearching() {
+  if (uiMode === 'searching' || uiMode === 'panel') return;
+  uiMode = 'searching';
+  showPanel(false);
+  showChrome();
+  cancelBtn.hidden = true;
+  finishBtn.hidden = true;
+
+  // Expand the native window first so the orb has room to fly later, while
+  // the chrome still paints as the bottom pill.
+  body.className = 'mode-listening';
+  await setNativeStage('stage');
+  showBackdrop(true);
+
+  // Liquid morph: enable transitions, then switch to orb geometry.
+  chrome.classList.add('morphing');
+  await wait(16);
+  body.className = 'mode-searching';
+  await wait(reduceMotion ? 0 : 180);
+  setSignalShape('radial');
+  chrome.classList.remove('pill');
+  chrome.classList.add('orb');
+  await wait(reduceMotion ? 0 : 280);
+  chrome.classList.remove('morphing');
+}
+
+async function flyToPanel(payload) {
+  if (flyInFlight) {
+    pendingResult = payload;
+    paintResult(payload);
+    return;
+  }
+  flyInFlight = true;
+  pendingResult = payload;
+  paintResult(payload);
+
+  if (uiMode !== 'searching' && uiMode !== 'panel') {
+    await enterSearching();
+  }
+
+  showBackdrop(true);
+
+  if (reduceMotion) {
+    hideChrome();
+    showPanel(true);
+    uiMode = 'panel';
+    flyInFlight = false;
+    return;
+  }
+
+  chrome.classList.add('flying');
+  await wait(40);
+  chrome.classList.add('expand');
+  await wait(420);
+  hideChrome();
+  showPanel(true);
+  uiMode = 'panel';
+  flyInFlight = false;
+  if (pendingResult && pendingResult !== payload) {
+    paintResult(pendingResult);
+  }
+}
+
+async function enterIdle() {
+  uiMode = 'idle';
+  flyInFlight = false;
+  pendingResult = null;
+  body.className = 'mode-idle';
+  hideChrome();
+  showPanel(false);
+  showBackdrop(false);
+  resetResultSurface();
+  setSignalShape('linear');
+}
+
+function renderStatus(status) {
+  const phase = status?.phase || 'idle';
+  phaseEl.textContent = phase;
+  phaseEl.className = `panel-phase ${phase}`;
+  messageEl.textContent = status?.message || '';
+
+  if (status?.query) {
+    queryWrap.hidden = false;
+    queryText.textContent = status.query;
+  }
+
+  if (phase === 'listening') {
+    cancelBtn.hidden = false;
+    finishBtn.hidden = false;
+    enterListening();
+  } else if (phase === 'searching') {
+    cancelBtn.hidden = true;
+    finishBtn.hidden = true;
+    if (uiMode === 'listening' || uiMode === 'idle' || uiMode === 'pill') {
+      enterSearching();
+    }
+  } else if (phase === 'idle') {
+    enterIdle();
+  } else if (phase === 'error') {
+    cancelBtn.hidden = true;
+    finishBtn.hidden = true;
+    // Keep the stage up so the error toast / message is visible; blur still dismisses.
+    showBackdrop(true);
+    showPanel(true);
+    emptyEl.hidden = false;
+    nodesEl.hidden = true;
+    uiMode = 'panel';
+    hideChrome();
+  } else if (phase === 'complete') {
+    cancelBtn.hidden = true;
+    finishBtn.hidden = true;
   }
 }
 
@@ -208,22 +383,40 @@ nodesEl.addEventListener('click', async event => {
   }
 });
 
-finishBtn.addEventListener('click', async () => {
+finishBtn.addEventListener('click', async event => {
+  event.stopPropagation();
   renderStatus(await call('stop_search_recording'));
 });
 
-cancelBtn.addEventListener('click', async () => {
+cancelBtn.addEventListener('click', async event => {
+  event.stopPropagation();
   renderStatus(await call('cancel_search'));
 });
 
-document.querySelector('#search-minimize').addEventListener('click', async () => {
-  const windowApi = window.__TAURI__.window.getCurrentWindow();
-  await windowApi.minimize();
+panelClose.addEventListener('click', async event => {
+  event.stopPropagation();
+  await call('dismiss_search_overlay');
+  await enterIdle();
 });
 
-document.querySelector('#search-close').addEventListener('click', async () => {
-  const windowApi = window.__TAURI__.window.getCurrentWindow();
-  await windowApi.hide();
+backdrop.addEventListener('click', async () => {
+  await call('dismiss_search_overlay');
+  await enterIdle();
+});
+
+panel.addEventListener('click', event => {
+  event.stopPropagation();
+});
+
+chrome.addEventListener('click', event => {
+  event.stopPropagation();
+});
+
+document.addEventListener('keydown', async event => {
+  if (event.key === 'Escape') {
+    await call('dismiss_search_overlay');
+    await enterIdle();
+  }
 });
 
 listen('search-status', event => renderStatus(event.payload));
@@ -240,10 +433,17 @@ listen('search-result', event => {
     message: interim ? 'Writing grounded answer…' : (event.payload.warning || 'Answer ready'),
     query: event.payload.query,
   });
-  renderResult(event.payload);
+  flyToPanel(event.payload);
 });
 listen('search-error', event => {
   showToast(String(event.payload), true);
 });
 
-call('get_search_status').then(renderStatus).catch(() => {});
+call('get_search_status').then(status => {
+  // Overlay should stay hidden while idle — never present at rest.
+  if (!status || status.phase === 'idle' || status.phase === 'complete' || status.phase === 'error') {
+    enterIdle();
+    return;
+  }
+  renderStatus(status);
+}).catch(() => enterIdle());

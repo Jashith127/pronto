@@ -71,6 +71,9 @@ pub(crate) struct AppState {
     meeting_tray_item: Mutex<Option<MenuItem<tauri::Wry>>>,
     detector_control: Arc<meeting_detector::DetectorControl>,
     dictation_active: Arc<AtomicBool>,
+    /// When true, losing focus on the search overlay dismisses it.
+    /// Kept false while listening so Win+Space Hold release stays reliable.
+    search_blur_dismiss: AtomicBool,
 }
 
 fn sync_meeting_tray_item(app: &AppHandle, recording: bool) {
@@ -184,6 +187,7 @@ impl AppState {
             meeting_tray_item: Mutex::new(None),
             detector_control: Arc::new(meeting_detector::DetectorControl::new()),
             dictation_active: Arc::new(AtomicBool::new(false)),
+            search_blur_dismiss: AtomicBool::new(false),
         }
     }
 }
@@ -890,13 +894,119 @@ fn emit_search_status(app: &AppHandle, status: &SearchStatus) {
     let _ = app.emit("search-status", status);
 }
 
-fn show_search_window_with_focus(app: &AppHandle, focus: bool) {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SearchOverlayStage {
+    Pill,
+    Orb,
+    Stage,
+}
+
+impl SearchOverlayStage {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "pill" => Ok(Self::Pill),
+            "orb" => Ok(Self::Orb),
+            "stage" => Ok(Self::Stage),
+            other => Err(format!("Unknown search overlay stage: {other}")),
+        }
+    }
+}
+
+fn monitor_for(window: &tauri::WebviewWindow) -> Option<tauri::Monitor> {
+    window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten())
+}
+
+fn apply_search_overlay_stage(window: &tauri::WebviewWindow, stage: SearchOverlayStage) {
+    let Some(monitor) = monitor_for(window) else {
+        let (w, h) = match stage {
+            SearchOverlayStage::Pill => (120.0, 40.0),
+            SearchOverlayStage::Orb => (64.0, 64.0),
+            SearchOverlayStage::Stage => (920.0, 640.0),
+        };
+        let _ = window.set_size(LogicalSize::new(w, h));
+        return;
+    };
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let area = monitor.size();
+    let origin = monitor.position();
+
+    match stage {
+        SearchOverlayStage::Pill => {
+            let logical_width = 120.0;
+            let logical_height = 40.0;
+            let _ = window.set_size(LogicalSize::new(logical_width, logical_height));
+            let width = (logical_width * scale).round() as u32;
+            let height = (logical_height * scale).round() as u32;
+            let x = origin.x + (area.width.saturating_sub(width) / 2) as i32;
+            let y = origin.y + area.height.saturating_sub(height + 74) as i32;
+            let _ = window.set_position(PhysicalPosition::new(x, y));
+        }
+        SearchOverlayStage::Orb => {
+            let logical_width = 64.0;
+            let logical_height = 64.0;
+            let _ = window.set_size(LogicalSize::new(logical_width, logical_height));
+            let width = (logical_width * scale).round() as u32;
+            let height = (logical_height * scale).round() as u32;
+            let x = origin.x + (area.width.saturating_sub(width) / 2) as i32;
+            let y = origin.y + area.height.saturating_sub(height + 74) as i32;
+            let _ = window.set_position(PhysicalPosition::new(x, y));
+        }
+        SearchOverlayStage::Stage => {
+            // Cover the monitor so the orb can fly to center and the dimmed
+            // backdrop can catch outside clicks.
+            let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize::new(
+                area.width,
+                area.height,
+            )));
+            let _ = window.set_position(PhysicalPosition::new(origin.x, origin.y));
+        }
+    }
+}
+
+fn hide_search_overlay(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    state.search_blur_dismiss.store(false, Ordering::Release);
     if let Some(window) = app.get_webview_window("search") {
+        let _ = window.hide();
+        apply_search_overlay_stage(&window, SearchOverlayStage::Pill);
+    }
+}
+
+fn show_search_overlay(app: &AppHandle, stage: SearchOverlayStage, focus: bool) {
+    let state = app.state::<AppState>();
+    // Disable blur-dismiss around show/resize so transient focus churn from
+    // set_size / set_position cannot cancel an in-flight search.
+    state.search_blur_dismiss.store(false, Ordering::Release);
+    if let Some(window) = app.get_webview_window("search") {
+        apply_search_overlay_stage(&window, stage);
         let _ = window.show();
         if focus {
             let _ = window.set_focus();
+            state.search_blur_dismiss.store(true, Ordering::Release);
         }
     }
+}
+
+fn dismiss_search_overlay_inner(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    state.search_blur_dismiss.store(false, Ordering::Release);
+    let phase = state.search.status().map(|status| status.phase).ok();
+    if matches!(
+        phase,
+        Some(SearchPhase::Listening | SearchPhase::Searching)
+    ) {
+        let _ = state.audio.stop();
+        if let Ok(status) = state.search.reset() {
+            let mut cancelled = status;
+            cancelled.message = "Search dismissed".into();
+            emit_search_status(app, &cancelled);
+        }
+    }
+    hide_search_overlay(app);
 }
 
 fn search_blocked_reason(state: &AppState) -> Option<String> {
@@ -988,7 +1098,7 @@ fn begin_search_recording_inner(app: &AppHandle) -> Result<SearchStatus, String>
             }
             // Show without stealing focus — focusing mid-chord desyncs the
             // WH_KEYBOARD_LL pressed-set for Win+Space and breaks Hold release.
-            show_search_window_with_focus(app, false);
+            show_search_overlay(app, SearchOverlayStage::Pill, false);
             emit_search_status(app, &status);
             arm_search_listen_watchdog(app, generation);
             Ok(status)
@@ -1035,7 +1145,9 @@ fn finish_search_recording_inner(app: &AppHandle, force: bool) -> Result<SearchS
         return Ok(status);
     }
     emit_search_status(app, &status);
-    show_search_window_with_focus(app, true);
+    // Expand to a full-monitor transparent stage so the pill can morph into
+    // an orb and later fly to center without a separate Pronto window.
+    show_search_overlay(app, SearchOverlayStage::Stage, true);
     let engine = state.engine.lock().map_err(|_| "engine lock poisoned")?;
     if let Some(engine) = engine.as_ref() {
         if let Err(error) = engine.transcribe_search(SearchAsrJob {
@@ -1067,6 +1179,7 @@ fn cancel_search_inner(app: &AppHandle) -> Result<SearchStatus, String> {
     let mut cancelled = status;
     cancelled.message = "Search cancelled".into();
     emit_search_status(app, &cancelled);
+    hide_search_overlay(app);
     Ok(cancelled)
 }
 
@@ -1098,7 +1211,7 @@ pub(crate) fn complete_search_asr(app: &AppHandle, result: Result<CompletedSearc
                 emit_search_status(app, &status);
             }
             let _ = app.emit("search-error", error);
-            show_search_window_with_focus(app, true);
+            show_search_overlay(app, SearchOverlayStage::Stage, true);
         }
     }
 }
@@ -1117,7 +1230,7 @@ fn run_web_search_and_synthesize(
                 emit_search_status(app, &status);
             }
             let _ = app.emit("search-error", error);
-            show_search_window_with_focus(app, true);
+            show_search_overlay(app, SearchOverlayStage::Stage, true);
             return;
         }
     };
@@ -1149,7 +1262,7 @@ fn run_web_search_and_synthesize(
             warning: Some("Fetching a grounded answer…".into()),
         },
     );
-    show_search_window_with_focus(app, true);
+    show_search_overlay(app, SearchOverlayStage::Stage, true);
 
     if let Ok(status) = state.search.mark_synthesizing(completed.query.clone()) {
         emit_search_status(app, &status);
@@ -1185,7 +1298,7 @@ fn run_web_search_and_synthesize(
         emit_search_status(app, &status);
     }
     let _ = app.emit("search-result", payload);
-    show_search_window_with_focus(app, true);
+    show_search_overlay(app, SearchOverlayStage::Stage, true);
 }
 
 fn handle_search_hotkey(app: &AppHandle, event: HotkeyEvent) {
@@ -1689,11 +1802,27 @@ fn cancel_search(app: AppHandle) -> Result<SearchStatus, String> {
 }
 
 #[tauri::command]
+fn dismiss_search_overlay(app: AppHandle) -> Result<(), String> {
+    dismiss_search_overlay_inner(&app);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_search_overlay_stage(app: AppHandle, stage: String) -> Result<(), String> {
+    let parsed = SearchOverlayStage::parse(&stage)?;
+    let focus = parsed == SearchOverlayStage::Stage;
+    show_search_overlay(&app, parsed, focus);
+    Ok(())
+}
+
+#[tauri::command]
 fn open_search_result(app: AppHandle, url: String) -> Result<(), String> {
     let state = app.state::<AppState>();
     if !state.search.is_allowed_url(&url) {
         return Err("That URL is not part of the current search results".into());
     }
+    // Opening the system browser steals focus; don't treat that as click-away.
+    state.search_blur_dismiss.store(false, Ordering::Release);
     search::open_url_in_default_browser(&url)
 }
 
@@ -2018,10 +2147,36 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if window.label() == "main" || window.label() == "search" {
+            if window.label() == "main" {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
                     let _ = window.hide();
+                }
+            } else if window.label() == "search" {
+                match event {
+                    tauri::WindowEvent::CloseRequested { api, .. } => {
+                        api.prevent_close();
+                        dismiss_search_overlay_inner(window.app_handle());
+                    }
+                    tauri::WindowEvent::Focused(true) => {
+                        let app = window.app_handle();
+                        let state = app.state::<AppState>();
+                        let phase = state.search.status().map(|status| status.phase).ok();
+                        if matches!(
+                            phase,
+                            Some(SearchPhase::Searching | SearchPhase::Complete | SearchPhase::Error)
+                        ) {
+                            state.search_blur_dismiss.store(true, Ordering::Release);
+                        }
+                    }
+                    tauri::WindowEvent::Focused(false) => {
+                        let app = window.app_handle();
+                        let state = app.state::<AppState>();
+                        if state.search_blur_dismiss.swap(false, Ordering::AcqRel) {
+                            dismiss_search_overlay_inner(app);
+                        }
+                    }
+                    _ => {}
                 }
             }
         })
@@ -2063,6 +2218,8 @@ pub fn run() {
             start_search_recording,
             stop_search_recording,
             cancel_search,
+            dismiss_search_overlay,
+            set_search_overlay_stage,
             open_search_result,
             get_search_status,
             save_api_key,

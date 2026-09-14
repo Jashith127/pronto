@@ -11,7 +11,7 @@ Pronto is a Windows push-to-talk dictation application. Hold a global shortcut, 
 * **Push-to-talk, globally.** A configurable shortcut (including modifier-only chords such as Win + Ctrl) starts and stops dictation from any application. Hold-to-talk or press-to-toggle, your choice.
 * **Compact recording pill.** A small always-on-top overlay shows cancel, a live waveform, and finish controls without stealing focus from your work.
 * **Paste last transcript.** A second global shortcut (default Win + Shift + V) pastes your most recent transcript wherever you are typing.
-* **Voice search.** A third global shortcut (default Win + Space) opens a dedicated search window: speak a query, Pronto retrieves DuckDuckGo HTML results, and DeepSeek synthesizes a grounded on-the-fly UI with citations. Audio stays local; query text and snippets go to DuckDuckGo and DeepSeek. Win + Space may also switch Windows keyboard layouts because the low-level hook calls `CallNextHookEx`.
+* **Voice search.** A third global shortcut (default Win + Space) opens a transparent search overlay (not a Pronto app window): speak a query, Pronto retrieves DuckDuckGo HTML results, and DeepSeek synthesizes a grounded on-the-fly UI with citations. The overlay follows the dictation pill, uses a green waveform, morphs into a searching orb, then flies to center for results. Click away or press Escape to dismiss. Audio stays local; query text and snippets go to DuckDuckGo and DeepSeek. Win + Space may also switch Windows keyboard layouts because the low-level hook calls `CallNextHookEx`.
 
 ### Transcription that stays on your computer
 

@@ -4,48 +4,55 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Pronto Search</title>
-  <link rel="stylesheet" href="styles.css" />
   <link rel="stylesheet" href="vendor/uPlot.min.css" />
   <link rel="stylesheet" href="search.css" />
 </head>
-<body class="search-body">
-  <div class="search-shell">
-    <header class="search-titlebar" data-tauri-drag-region>
-      <div class="search-brand" data-tauri-drag-region>
-        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
-        <strong>Pronto Search</strong>
+<body class="mode-idle">
+  <div id="backdrop" class="search-backdrop" hidden></div>
+
+  <div id="chrome" class="search-chrome pill" aria-label="Pronto voice search" hidden>
+    <button type="button" id="search-cancel" class="chrome-btn" aria-label="Cancel search" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+    </button>
+    <div id="signal" class="signal linear" aria-hidden="true">
+      <i style="--i:0"></i><i style="--i:1"></i><i style="--i:2"></i><i style="--i:3"></i>
+      <i style="--i:4"></i><i style="--i:5"></i><i style="--i:6"></i><i style="--i:7"></i>
+    </div>
+    <button type="button" id="search-finish" class="chrome-btn finish" aria-label="Search now" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 12.5 10 18 19.5 6.5"/></svg>
+    </button>
+  </div>
+
+  <section id="panel" class="search-panel" hidden>
+    <header class="panel-header">
+      <div class="panel-brand">
+        <span class="brand-wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
+        <strong>Pronto</strong>
       </div>
-      <div class="window-actions">
-        <button type="button" id="search-minimize" aria-label="Minimize">−</button>
-        <button type="button" id="search-close" aria-label="Close">×</button>
+      <div class="panel-meta">
+        <span id="search-phase" class="panel-phase">Idle</span>
+        <button type="button" id="panel-close" class="panel-close" aria-label="Close search">×</button>
       </div>
     </header>
 
-    <div class="search-toolbar">
-      <div class="search-phase" id="search-phase">Idle</div>
-      <p class="search-message" id="search-message">Press Win + Space and speak your query.</p>
-      <div class="search-actions">
-        <button type="button" id="search-finish" hidden>Search now</button>
-        <button type="button" class="change-button" id="search-cancel" hidden>Cancel</button>
-      </div>
-    </div>
+    <p class="panel-message" id="search-message"></p>
 
-    <div class="search-query" id="search-query" hidden>
+    <div class="panel-query" id="search-query" hidden>
       <span>Query</span>
       <strong id="search-query-text"></strong>
     </div>
 
-    <main class="search-content" id="search-content" tabindex="0">
+    <main class="panel-content" id="search-content" tabindex="0">
       <div class="search-empty" id="search-empty">
         <h1>Ask out loud</h1>
-        <p id="search-empty-hint">Uses the same Hold / Toggle behavior as dictation. Default shortcut is <kbd>Win</kbd> + <kbd>Space</kbd>.</p>
-        <p class="search-privacy">Your spoken query and result snippets are sent to DuckDuckGo and DeepSeek. Audio stays on this PC.</p>
+        <p id="search-empty-hint">Hold or toggle your search shortcut, then speak. Results open here as an overlay — click outside to dismiss.</p>
+        <p class="search-privacy">Spoken audio stays on this PC. Query text and snippets go to DuckDuckGo and DeepSeek.</p>
       </div>
       <div class="search-nodes" id="search-nodes" hidden></div>
     </main>
 
     <div class="toast" id="toast" role="status"></div>
-  </div>
+  </section>
 
   <script src="vendor/uPlot.iife.min.js"></script>
   <script src="search.js"></script>
