@@ -12,7 +12,9 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 pub const DEFAULT_PROVIDER_URL: &str = "https://html.duckduckgo.com/html/";
-const MAX_RESULTS: usize = 8;
+const MAX_RESULTS: usize = 5;
+const MAX_SNIPPET_CHARS: usize = 140;
+const SEARCH_MAX_TOKENS: u32 = 700;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -467,7 +469,7 @@ pub fn synthesize_search_ui(
     client: &Client,
     query: &str,
     hits: &[SearchHit],
-    resource_dir: Option<&std::path::Path>,
+    _resource_dir: Option<&std::path::Path>,
 ) -> Result<(SearchUiDocument, Option<String>), String> {
     let allowed: HashSet<String> = hits.iter().map(|hit| hit.url.clone()).collect();
     let sources: Vec<(u32, String, String, String)> = hits
@@ -497,32 +499,15 @@ pub fn synthesize_search_ui(
         ));
     };
 
-    let catalog = mcp::design_system_catalog_text(resource_dir)
-        .unwrap_or_else(|_| mcp::DESIGN_SYSTEM_URI.to_string());
-    match deepseek_search_ui(client, &api_key, query, hits, &catalog) {
+    match deepseek_search_ui(client, &api_key, query, hits) {
         Ok(raw) => match parse_and_validate_ui(&raw, &allowed) {
             Ok(document) => Ok((document, None)),
-            Err(first_error) => match deepseek_search_ui_repair(
-                client,
-                &api_key,
-                query,
-                hits,
-                &catalog,
-                &raw,
-                &first_error,
-            ) {
-                Ok(repaired) => match parse_and_validate_ui(&repaired, &allowed) {
-                    Ok(document) => Ok((document, Some(format!("Repaired UI JSON: {first_error}")))),
-                    Err(_) => Ok((
-                        fallback_document(query, &sources),
-                        Some(format!("UI synthesis failed validation: {first_error}")),
-                    )),
-                },
-                Err(error) => Ok((
-                    fallback_document(query, &sources),
-                    Some(format!("UI synthesis failed: {error}")),
-                )),
-            },
+            // Do not spend a second LLM call repairing JSON — sources are
+            // already on screen from the interim fallback document.
+            Err(first_error) => Ok((
+                fallback_document(query, &sources),
+                Some(format!("UI synthesis failed validation: {first_error}")),
+            )),
         },
         Err(error) => Ok((
             fallback_document(query, &sources),
@@ -536,7 +521,6 @@ pub fn deepseek_search_ui(
     api_key: &str,
     query: &str,
     hits: &[SearchHit],
-    catalog: &str,
 ) -> Result<String, String> {
     deepseek_search_ui_at(
         client,
@@ -544,29 +528,58 @@ pub fn deepseek_search_ui(
         api_key,
         query,
         hits,
-        catalog,
-        None,
     )
 }
 
-fn deepseek_search_ui_repair(
-    client: &Client,
-    api_key: &str,
-    query: &str,
-    hits: &[SearchHit],
-    catalog: &str,
-    previous: &str,
-    error: &str,
-) -> Result<String, String> {
-    deepseek_search_ui_at(
-        client,
-        "https://api.deepseek.com/chat/completions",
-        api_key,
-        query,
-        hits,
-        catalog,
-        Some((previous, error)),
+fn compact_system_prompt() -> String {
+    format!(
+        r#"Pronto voice-search. Return ONLY JSON {{"nodes":[...]}} using {uri}.
+Types: heading{{text}}, text{{text}}, divider, image_frame{{src,alt,caption?}}, youtube{{url,title?}}, button{{label,action,value}}, source_list{{items:[{{index,title,url,snippet?}}]}}, table{{columns,rows}}, chart{{chart_type:bar|line,labels,datasets:[{{label,data}}]}}.
+Rules: use only provided sources; cite [n]; copy URLs exactly; no HTML/JS; ≤12 nodes; short text plus at most one visual."#,
+        uri = mcp::DESIGN_SYSTEM_URI
     )
+}
+
+fn compact_sources_json(hits: &[SearchHit]) -> String {
+    let rows: Vec<serde_json::Value> = hits
+        .iter()
+        .take(MAX_RESULTS)
+        .enumerate()
+        .map(|(index, hit)| {
+            json!({
+                "n": index + 1,
+                "title": truncate_chars(&hit.title, 80),
+                "url": hit.url,
+                "snippet": truncate_chars(&hit.snippet, MAX_SNIPPET_CHARS),
+            })
+        })
+        .collect();
+    serde_json::to_string(&rows).unwrap_or_else(|_| "[]".into())
+}
+
+fn truncate_chars(value: &str, max: usize) -> String {
+    let mut chars = value.chars();
+    let taken: String = chars.by_ref().take(max).collect();
+    if chars.next().is_some() {
+        format!("{taken}…")
+    } else {
+        taken
+    }
+}
+
+fn search_ui_request_body(query: &str, hits: &[SearchHit]) -> serde_json::Value {
+    json!({
+        "model": "deepseek-v4-flash",
+        "thinking": { "type": "disabled" },
+        "messages": [
+            { "role": "system", "content": compact_system_prompt() },
+            { "role": "user", "content": format!("Q:{query}\nS:{}", compact_sources_json(hits)) }
+        ],
+        "temperature": 0.2,
+        "max_tokens": SEARCH_MAX_TOKENS,
+        "stream": false,
+        "response_format": { "type": "json_object" }
+    })
 }
 
 fn deepseek_search_ui_at(
@@ -575,45 +588,8 @@ fn deepseek_search_ui_at(
     api_key: &str,
     query: &str,
     hits: &[SearchHit],
-    catalog: &str,
-    repair: Option<(&str, &str)>,
 ) -> Result<String, String> {
-    let sources = serde_json::to_string_pretty(hits).unwrap_or_else(|_| "[]".into());
-    let system = format!(
-        r#"You are Pronto's grounded voice-search synthesizer. Return ONLY a JSON object with a "nodes" array using the local design system {uri}.
-
-DESIGN SYSTEM CATALOG:
-{catalog}
-
-RULES:
-1. Answer using only the provided search results. Cite claims with [1][2] markers that match source_list indexes.
-2. Prefer 1 visual (chart, table, image_frame, or youtube) plus short text over a text-only layout when the evidence supports it.
-3. If evidence is insufficient, say "No evidence" clearly and still include a source_list of what was retrieved.
-4. URLs in image_frame, youtube, button(open_url), and source_list MUST be copied EXACTLY from the provided results. Never invent URLs.
-5. Allowed node types only: heading, text, divider, image_frame, youtube, button, source_list, table, chart.
-6. No raw HTML, JavaScript, Markdown images, or unknown fields.
-7. Keep the document under 24 nodes."#,
-        uri = mcp::DESIGN_SYSTEM_URI
-    );
-    let user = if let Some((previous, error)) = repair {
-        format!(
-            "QUERY:\n{query}\n\nSEARCH RESULTS JSON:\n{sources}\n\nPREVIOUS INVALID JSON:\n{previous}\n\nVALIDATION ERROR:\n{error}\n\nReturn corrected JSON only."
-        )
-    } else {
-        format!("QUERY:\n{query}\n\nSEARCH RESULTS JSON:\n{sources}\n\nReturn JSON only.")
-    };
-    let body = json!({
-        "model": "deepseek-v4-flash",
-        "thinking": { "type": "disabled" },
-        "messages": [
-            { "role": "system", "content": system },
-            { "role": "user", "content": user }
-        ],
-        "temperature": 0.2,
-        "max_tokens": 1600,
-        "stream": false,
-        "response_format": { "type": "json_object" }
-    });
+    let body = search_ui_request_body(query, hits);
     let response = client
         .post(endpoint)
         .timeout(std::time::Duration::from_secs(18))
@@ -807,17 +783,39 @@ mod tests {
             "test-key",
             "what is alpha",
             &hits,
-            r#"{"uri":"design://system/v1","components":[]}"#,
-            None,
         )
         .unwrap();
         let request = rx.recv_timeout(Duration::from_secs(2)).unwrap();
         assert!(request.contains("deepseek-v4-flash"));
         assert!(request.contains("json_object"));
         assert!(request.contains("\"temperature\":0.2"));
+        assert!(
+            !request.contains("DESIGN SYSTEM CATALOG"),
+            "full design-system.json must not be sent on every search"
+        );
+        assert!(request.contains("\"max_tokens\":700"));
         let allowed = hits.iter().map(|hit| hit.url.clone()).collect();
         let document = parse_and_validate_ui(&content, &allowed).unwrap();
         assert_eq!(document.nodes.len(), 3);
+    }
+
+    #[test]
+    fn search_ui_prompt_stays_compact() {
+        let hits: Vec<SearchHit> = (0..8)
+            .map(|i| SearchHit {
+                title: format!("Title {i} {}", "word ".repeat(40)),
+                url: format!("https://example.com/{i}"),
+                snippet: "x".repeat(800),
+            })
+            .collect();
+        let body = search_ui_request_body("weather in austin texas this weekend", &hits);
+        let system = body["messages"][0]["content"].as_str().unwrap();
+        let user = body["messages"][1]["content"].as_str().unwrap();
+        assert!(system.len() < 900, "system prompt was {} chars", system.len());
+        assert!(user.len() < 1800, "user prompt was {} chars", user.len());
+        assert_eq!(body["max_tokens"], 700);
+        assert!(!user.contains(&"x".repeat(200)));
+        assert_eq!(user.matches("https://example.com/").count(), 5);
     }
 
     #[test]

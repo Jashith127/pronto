@@ -29,7 +29,7 @@ Rust/Tauri coordinator ---------------------> overlay + dashboard + search overl
       +--> voice search path (no intent router; search hotkey only):
              local cleanup only (no DeepSeek rewrite, no history insert)
              DuckDuckGo HTML retrieval via SearchProvider trait
-             DeepSeek V4 Flash JSON UI synthesis (design://system/v1)
+             DeepSeek V4 Flash JSON UI synthesis (compact prompt, one call, no repair retry)
              search overlay (pill → green orb → centered results) renders
              allowlisted nodes (uPlot charts locally); blur/click-away dismisses
 ```
@@ -47,6 +47,12 @@ Rust/Tauri coordinator ---------------------> overlay + dashboard + search overl
   stays unfocused so Hold release on Win+Space remains reliable).
 - Search is ignored while dictation is listening/processing or a meeting is
   recording; a tray toast explains why.
+- The keyboard hook reconciles modifiers with `GetAsyncKeyState` so a swallowed
+  Win key-up (common after Win+Space layout switching) cannot leave Win “stuck”
+  and fire search on Space or a Win+Ctrl dictation chord on Ctrl alone.
+- Search synthesis sends a compact schema + 5 truncated hits and one DeepSeek
+  call (`max_tokens` 700). Invalid JSON falls back to the source list instead of
+  a second repair request.
 - Spoken queries and retrieved snippets are sent to the configured search
   provider (DuckDuckGo HTML by default) and to DeepSeek for UI synthesis.
   Microphone audio stays on-device.

@@ -4,8 +4,8 @@ use std::sync::{mpsc, Mutex, OnceLock};
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU, VK_RCONTROL, VK_RMENU,
-    VK_RSHIFT, VK_RWIN, VK_SHIFT,
+    GetAsyncKeyState, VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU, VK_RCONTROL,
+    VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetMessageW, PostThreadMessageW, SetWindowsHookExW,
@@ -97,6 +97,45 @@ impl Hotkey {
 
 fn modifier_down(pressed: &HashSet<u32>, generic: u32, left: u32, right: u32) -> bool {
     pressed.contains(&generic) || pressed.contains(&left) || pressed.contains(&right)
+}
+
+const MODIFIER_VKS: [u32; 11] = [
+    VK_CONTROL.0 as u32,
+    VK_LCONTROL.0 as u32,
+    VK_RCONTROL.0 as u32,
+    VK_MENU.0 as u32,
+    VK_LMENU.0 as u32,
+    VK_RMENU.0 as u32,
+    VK_SHIFT.0 as u32,
+    VK_LSHIFT.0 as u32,
+    VK_RSHIFT.0 as u32,
+    VK_LWIN.0 as u32,
+    VK_RWIN.0 as u32,
+];
+
+fn os_key_down(vk: u32) -> bool {
+    unsafe { GetAsyncKeyState(vk as i32) as u16 & 0x8000 != 0 }
+}
+
+/// Drop modifiers the OS no longer reports as down.
+///
+/// WH_KEYBOARD_LL misses Win/Ctrl key-ups when Windows swallows a chord
+/// (layout switch on Win+Space, Start menu, UAC). The hook's HashSet then
+/// thinks Win is still held, so Space fires search and Ctrl fires a Win+Ctrl
+/// dictation shortcut. GetAsyncKeyState is the physical source of truth.
+fn drop_physically_up_modifiers(
+    pressed: &mut HashSet<u32>,
+    is_down: impl Fn(u32) -> bool,
+    keep: Option<u32>,
+) {
+    for vk in MODIFIER_VKS {
+        if Some(vk) == keep {
+            continue;
+        }
+        if pressed.contains(&vk) && !is_down(vk) {
+            pressed.remove(&vk);
+        }
+    }
 }
 
 pub fn parse(value: &str) -> Result<Hotkey, String> {
@@ -237,8 +276,16 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
                 if let Some(state) = guard.as_mut() {
                     if matches!(message, WM_KEYDOWN | WM_SYSKEYDOWN) {
                         state.pressed.insert(data.vkCode);
+                        // Skip the key we just observed: GetAsyncKeyState can
+                        // still report UP inside WH_KEYBOARD_LL for that event.
+                        drop_physically_up_modifiers(
+                            &mut state.pressed,
+                            os_key_down,
+                            Some(data.vkCode),
+                        );
                     } else {
                         state.pressed.remove(&data.vkCode);
+                        drop_physically_up_modifiers(&mut state.pressed, os_key_down, None);
                     }
                     for watched in state.watched.iter_mut() {
                         let active = watched.config.matches(&state.pressed);
@@ -412,6 +459,36 @@ mod tests {
         assert!(shortcuts_conflict(&first, &second));
         let other = parse(DEFAULT_PASTE_HOTKEY).unwrap();
         assert!(!shortcuts_conflict(&first, &other));
+    }
+
+    #[test]
+    fn sticky_win_is_dropped_when_os_says_it_is_up() {
+        let search = parse("super+Space").unwrap();
+        let dictation = parse("control+super").unwrap();
+        let mut pressed = HashSet::from([VK_LWIN.0 as u32, 0x20]);
+        drop_physically_up_modifiers(&mut pressed, |_| false, None);
+        assert!(!search.matches(&pressed), "Space alone must not fire search");
+        assert!(!pressed.contains(&(VK_LWIN.0 as u32)));
+        assert!(pressed.contains(&0x20));
+
+        let mut pressed = HashSet::from([VK_LWIN.0 as u32, VK_LCONTROL.0 as u32]);
+        drop_physically_up_modifiers(&mut pressed, |vk| vk == VK_LCONTROL.0 as u32, None);
+        assert!(
+            !dictation.matches(&pressed),
+            "Ctrl alone must not fire a Win+Ctrl shortcut"
+        );
+        assert!(pressed.contains(&(VK_LCONTROL.0 as u32)));
+        assert!(!pressed.contains(&(VK_LWIN.0 as u32)));
+    }
+
+    #[test]
+    fn real_win_space_still_matches_after_os_sync() {
+        let search = parse("super+Space").unwrap();
+        let mut pressed = HashSet::from([VK_LWIN.0 as u32, 0x20]);
+        drop_physically_up_modifiers(&mut pressed, |vk| {
+            vk == VK_LWIN.0 as u32 || vk == 0x20
+        }, None);
+        assert!(search.matches(&pressed));
     }
 
     #[test]

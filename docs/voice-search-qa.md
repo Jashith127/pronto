@@ -24,11 +24,14 @@ Search UI is a **transparent always-on-top overlay** (same class as the dictatio
 2. If a key-up is missed, listening auto-finishes within **8 seconds**.
 3. After stop: status should move Transcribing → Searching web → Writing answer. The query appears as soon as ASR completes; sources appear before the final LLM UI (after the orb-to-center transition).
 
-### Win + Space layout-switch warning
-1. With the default `super+Space` shortcut, press the chord.
-2. Confirm Pronto starts voice search **and** that Windows may still switch keyboard layouts (WH_KEYBOARD_LL calls `CallNextHookEx`).
-3. Immediate synthetic key-ups from layout switching should not strand Pronto in Listening.
-4. Remap voice search in Settings if layout switching is disruptive. The Fn key cannot be bound (no VK code).
+### Sticky Win / accidental activation
+1. Press and release Win+Space (search). Wait a beat, then tap **Space** alone — search must **not** start.
+2. If dictation is Win+Ctrl (or any Win+… chord), tap **Ctrl** alone after using a Win shortcut — dictation must **not** start.
+3. A real Win+Space (Win physically held) should still start search.
+
+### Cost
+1. One completed search should make **one** DeepSeek call (no JSON-repair retry). DuckDuckGo is unmetered HTML.
+2. Accidental empty/cancelled listens should not call DeepSeek.
 
 ### Mutual exclusion
 1. Start dictation; press the search hotkey — expect a toast and no search recording.

@@ -7,7 +7,7 @@ Voice search: Win+Space opens a transparent search overlay (pill â†’ green orb â
 - Global voice search hotkey (default Win + Space / `super+Space`), remappable, with three-way conflict checks against dictation and paste.
 - Search overlay (always-on-top, skip-taskbar, not a Pronto app window): dark pill with green waveform, liquid morph into a circular searching orb, fly-to-center result panel; click-away / Escape dismisses. Hidden when idle.
 - Allowlisted UI nodes (heading/text/source_list/table/chart/youtube/buttons) rendered from local design://system/v1 catalog.
-- DuckDuckGo HTML `SearchProvider` (swappable later for Brave/Tavily/Exa or Playwright/MCP) plus DeepSeek V4 Flash JSON synthesis with citations.
+- DuckDuckGo HTML `SearchProvider` plus one compact DeepSeek V4 Flash JSON synthesis call (no catalog dump, no repair retry). Accidental Win-sticky chords are ignored.
 - Vendored uPlot charts (no CDN/npm). Query text and snippets go to DDG + DeepSeek; audio stays local.
 - Settings warning: Win + Space may also switch Windows keyboard layouts because the low-level hook calls CallNextHookEx. Fn key cannot be bound.
 
