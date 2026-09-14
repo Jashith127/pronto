@@ -1,80 +1,37 @@
 # Pronto 0.8.0
 
-Pronto 0.8.0 adds global voice search: speak a question, get a grounded markdown answer in a centered results panel. Dictation and search share polished dark listening pills, the main app and search panel gain light/dark themes, and DeepSeek picks the best answer layout for each query.
+Pronto 0.8.0 is built around two headline features: **voice search** and **light/dark mode**. Ask a question out loud and get a readable answer in a centered panel — or run the main app and search results in the theme that suits you. Your microphone audio stays on this PC; only the question text and web snippets leave the device for search.
 
-## What's new
+<img width="850" height="529" alt="Pronto 0.8 voice search and themed UI" src="https://github.com/user-attachments/assets/8bdfc3c7-7bdf-4286-bc9b-76267a5ba093" />
 
-### Voice search
+## Voice search
 
-- Global voice search hotkey (default **Win + Space** / `super+Space`), remappable in Settings, with three-way conflict checks against dictation and paste shortcuts.
-- Dedicated always-on-top search window (skip-taskbar, transparent): compact listening pill with green waveform and in-pill search submit (white finish button); expands into a centered results panel. Click-away, Escape, or the panel close button dismisses. Hidden when idle.
-- DuckDuckGo HTML search provider (default `html.duckduckgo.com/html/`; URL configurable in Settings). Query text and snippets go to DuckDuckGo and DeepSeek; **audio stays on this PC**.
-- DeepSeek V4 Flash synthesizes markdown answers grounded in retrieved snippets. Without an API key, Pronto still shows a source list from DuckDuckGo.
-- DuckDuckGo wordmark in the results footer links to the same query on duckduckgo.com. Privacy note in the footer clarifies what leaves the device.
+Press **Win + Space** (remappable in Settings), speak your question, and Pronto listens from a compact pill at the bottom of the screen. When you finish, a results panel opens in the center with a direct answer, supporting detail, and links back to the web.
 
-### Answer layouts (AI-picked)
+<img width="850" height="531" alt="Pronto voice search listening pill and results" src="https://github.com/user-attachments/assets/87585b1a-5156-428a-8a77-9f899858533b" />
 
-DeepSeek must tag every answer with `@layout:` and Pronto renders the matching template. Each layout includes multiple “when to use” examples in the synthesis prompt so the model can choose the best fit:
+- **Answers that fit the question** — profiles, definitions, comparisons, step-by-step guides, timelines, ranked lists, yes/no calls, locations, recipes, and stat-heavy answers each get a layout chosen for that kind of query. Comparisons and data-heavy topics can include tables when they help.
+- **Quick facts and follow-ups** — key details appear as scannable chips above the answer; suggested “ask next” prompts help you keep going by voice.
+- **Images and sources** — relevant photos when available; a collapsible source list with site icons, titles, and snippets. Tap a source to open it in your browser. The DuckDuckGo footer opens the same query on duckduckgo.com.
+- **Grounded when it matters** — answers are synthesized from retrieved web results (DeepSeek). Without an API key, you still get the source list from DuckDuckGo.
+- **From dictation** — while dictating, tap the search button on the left of the pill to send what you just said into voice search instead of pasting it.
+- **Same listening chrome** — dictation and search share the same dark pill design (waveform, cancel, white finish button). Listening overlays stay dark even when the rest of the app is in light mode.
+- **Duck other audio** — the existing setting now lowers playback during voice search as well as dictation, and restores volume when the pill closes.
 
-- **bio** — person or organization profile (hero image + intro when available).
-- **definition** — what a term means.
-- **article** — general explanatory answer (default).
-- **comparison** — side-by-side facts; markdown tables encouraged.
-- **steps** — how-to / numbered procedure.
-- **timeline** — chronological events; dated bullets or tables.
-- **list** — ranked or top-N enumerations.
-- **yesno** — yes/no/unclear with a clear lead line.
-- **location** — place, address, geography.
-- **recipe** — ingredients + numbered steps.
-- **stats** — numbers, populations, metrics; table-friendly.
+Dismiss with Escape, click-away, or the panel close button. The overlay hides when idle.
 
-Optional metadata lines (stripped before render):
+## Light and dark mode
 
-- `@facts: Label: value | …` — quick-scan **key fact** chips above the answer.
-- `@followups: question | …` — **Ask next** suggestion chips for natural voice continuations.
+Choose **System**, **Light**, or **Dark** under Settings → **Appearance**. The main Pronto window and the voice search results panel follow your choice; listening pills and dictation overlays keep their original dark look so they stay readable on top of any app.
 
-Layout badge in the panel header (e.g. “Comparison”, “How-to”). Comparison, stats, timeline, and article answers are prompted to use GitHub-flavored markdown tables when the data fits.
+## Also in 0.8.0
 
-### Images and sources
-
-- Banner images from Wikipedia/Wikimedia when relevant; lazy-loaded remote images with skeleton placeholders; inline `dataUrl` support; Commons links on images.
-- Collapsible **Sources** list with DuckDuckGo favicons, titles, snippets, and host labels. Sources open in the default browser.
-
-### Markdown rendering
-
-- Client-side markdown pipeline (`markdown.js`): blockquote lead, headings, lists, tables, links, and images.
-- Bio layout places the image beside the lead; other layouts stack image below the lead when present.
-
-### Dictation ↔ search pill chrome
-
-- Shared `pill-chrome.css` (30px shell, 22px side buttons, 20px waveform) for dictation overlay and search listening pill — matched height and centered waveform.
-- **Dictation row:** `[search reroute] · [pill: cancel | waveform | finish ✓] · [notetaker]`.
-- **Search listening:** pill only — `cancel | waveform | search` (search button uses white finish styling).
-- **Dictation → search:** left search button on the dictation pill reroutes the in-progress recording into voice search (`reroute_dictation_to_search_command`) without re-speaking.
-- Overlay window widened to fit the three-button dictation row; search pill window sized to the compact listening chrome.
-- Dictation overlay and meeting pills stay **original dark** — no theme variants on listening UI.
-
-### Appearance (main app + search panel only)
-
-- Settings → **Appearance**: System / Light / Dark. Applies to the main Pronto window and the search results panel.
-- `theme.css` + `theme.js` shared tokens; `theme-changed` event on save. Listening pills and dictation overlay ignore theme.
-- `app-polish.css` and refreshed `styles.css` for the themed main shell.
-- Search panel: sticky header (query + layout badge + close) and sticky footer (DuckDuckGo brand + privacy note); scrollable content between.
-
-### Settings
-
-- Voice search shortcut editor and configurable search provider URL.
-- **Duck other audio** now applies during voice search listening as well as dictation (same setting).
-- Reminder: Win + Space may also switch Windows keyboard layouts because the low-level hook calls `CallNextHookEx`. Fn key cannot be bound.
-
-### API cost / polish (0.8.0 refresh)
-
-- Search layout prompt trimmed to a compact tag list plus a local layout hint — same AI layout picking, fewer input tokens per query.
-- Dictation pill finish (✓) button uses a white background to match the search pill.
+- Voice search shortcut editor and configurable search provider URL in Settings.
+- Win + Space may also switch Windows keyboard layouts (low-level hotkey behavior). The Fn key cannot be bound.
 
 ## Requirements
 
-- Same as 0.7.5, plus a **DeepSeek API key** for synthesized markdown answers (DuckDuckGo source list still works without one).
+- Same as 0.7.5, plus a **DeepSeek API key** for full synthesized answers (DuckDuckGo sources still work without one).
 
 ---
 
