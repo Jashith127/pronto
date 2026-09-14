@@ -1,11 +1,12 @@
 # Pronto 0.8.0 (unreleased)
 
-Voice search MVP: Win+Space opens a dedicated search window, retrieves DuckDuckGo HTML results, and synthesizes a grounded on-the-fly UI with DeepSeek.
+Voice search: Win+Space opens a transparent search overlay (pill → green orb → centered results), retrieves DuckDuckGo HTML results, and synthesizes a grounded on-the-fly UI with DeepSeek.
 
 ## What's new
 
 - Global voice search hotkey (default Win + Space / `super+Space`), remappable, with three-way conflict checks against dictation and paste.
-- Dedicated ~760×600 search window with allowlisted UI nodes (heading/text/source_list/table/chart/youtube/buttons) rendered from local design://system/v1 catalog.
+- Search overlay (always-on-top, skip-taskbar, not a Pronto app window): dark pill with green waveform, liquid morph into a circular searching orb, fly-to-center result panel; click-away / Escape dismisses. Hidden when idle.
+- Allowlisted UI nodes (heading/text/source_list/table/chart/youtube/buttons) rendered from local design://system/v1 catalog.
 - DuckDuckGo HTML `SearchProvider` (swappable later for Brave/Tavily/Exa or Playwright/MCP) plus DeepSeek V4 Flash JSON synthesis with citations.
 - Vendored uPlot charts (no CDN/npm). Query text and snippets go to DDG + DeepSeek; audio stays local.
 - Settings warning: Win + Space may also switch Windows keyboard layouts because the low-level hook calls CallNextHookEx. Fn key cannot be bound.

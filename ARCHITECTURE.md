@@ -7,7 +7,7 @@ Configurable global shortcuts
   voice search (default Win+Space / super+Space)
       |
       v
-Rust/Tauri coordinator ---------------------> overlay + dashboard + search window
+Rust/Tauri coordinator ---------------------> overlay + dashboard + search overlay
       |
       +--> native WH_KEYBOARD_LL listener
       |      hold/toggle state machine + persisted canonical shortcuts
@@ -30,7 +30,8 @@ Rust/Tauri coordinator ---------------------> overlay + dashboard + search windo
              local cleanup only (no DeepSeek rewrite, no history insert)
              DuckDuckGo HTML retrieval via SearchProvider trait
              DeepSeek V4 Flash JSON UI synthesis (design://system/v1)
-             search window renders allowlisted nodes (uPlot charts locally)
+             search overlay (pill → green orb → centered results) renders
+             allowlisted nodes (uPlot charts locally); blur/click-away dismisses
 ```
 
 ## Voice search notes
@@ -38,6 +39,12 @@ Rust/Tauri coordinator ---------------------> overlay + dashboard + search windo
 - Default search chord is Win + Space. Windows also reserves that chord for
   keyboard layout switching. Pronto’s hook always calls `CallNextHookEx`, so the
   OS may switch layouts in parallel. The Fn key cannot be bound (no VK code).
+- Search uses a dedicated transparent always-on-top overlay (same class as the
+  dictation pill): listening shows a bottom pill with a green waveform and no
+  meeting-notes control; after capture it liquid-morphs into a circular orb,
+  then flies to screen center and expands into the result panel. The overlay is
+  hidden when idle. Click-away / focus loss / Escape dismisses it (listening
+  stays unfocused so Hold release on Win+Space remains reliable).
 - Search is ignored while dictation is listening/processing or a meeting is
   recording; a tray toast explains why.
 - Spoken queries and retrieved snippets are sent to the configured search
@@ -87,12 +94,15 @@ but cannot be guaranteed below one second on every connection.
 
 ## Windows lifecycle
 
-Tauri owns one opaque main WebView and one opaque, non-activating recording
-overlay. Both are undecorated and shadowless, and their web content fills the
-exact native window bounds. The overlay uses a native rounded window region, so
-the compact pill has no larger transparent parent. Application state is registered on the Tauri builder
-before either WebView is created, preventing early IPC or global-hotkey events
-from racing setup.
+Tauri owns one opaque main WebView, one opaque non-activating dictation
+overlay, and one transparent always-on-top search overlay (skip-taskbar). All
+are undecorated and shadowless, and their web content fills the exact native
+window bounds. The dictation overlay uses a native rounded window region, so
+the compact pill has no larger transparent parent. The search overlay starts as
+a bottom pill, expands to a full-monitor transparent stage for orb flight and
+results, and hides when idle. Application state is registered on the Tauri
+builder before either WebView is created, preventing early IPC or global-hotkey
+events from racing setup.
 
 Pronto is compiled as a Windows GUI-subsystem executable in every profile. The
 bundled NeMo Speech console executable is spawned with `CREATE_NO_WINDOW`, so
