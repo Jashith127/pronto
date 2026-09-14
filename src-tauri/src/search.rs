@@ -13,7 +13,8 @@ use std::time::{Duration, Instant};
 
 pub const DEFAULT_PROVIDER_URL: &str = "https://html.duckduckgo.com/html/";
 const MAX_RESULTS: usize = 8;
-const SNIPPET_TRUNCATE_CHARS: usize = 180;
+/// Stored on each hit for the UI — keep full snippets; LLM prompt uses a shorter cap.
+const SNIPPET_TRUNCATE_CHARS: usize = 512;
 const SEARCH_CACHE_TTL: Duration = Duration::from_secs(600);
 const SEARCH_CACHE_CAP: usize = 64;
 
@@ -50,11 +51,49 @@ impl Default for SearchStatus {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SearchBannerImage {
+    pub src: String,
+    pub alt: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caption: Option<String>,
+    /// Inline image bytes so the WebView does not depend on hotlink/CDN fetches.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_url: Option<String>,
+    /// Page opened when the banner image is clicked (e.g. Wikimedia Commons file).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link_url: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SearchResultPayload {
     pub query: String,
-    pub ui: SearchUiDocument,
+    pub markdown: String,
+    /// Layout tag chosen by the LLM (bio, article, comparison, steps, …).
+    pub layout: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub key_facts: Vec<SearchKeyFact>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub followups: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub banner_image: Option<SearchBannerImage>,
     pub sources: Vec<SearchHit>,
     pub warning: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchKeyFact {
+    pub label: String,
+    pub value: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct ParsedSearchAnswer {
+    pub layout: String,
+    pub markdown: String,
+    pub key_facts: Vec<SearchKeyFact>,
+    pub followups: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -213,14 +252,15 @@ fn extract_thumb_from_block(block: &str) -> Option<String> {
                 candidate = unwrap_ddg_redirect(&candidate);
                 let lower = candidate.to_ascii_lowercase();
                 let is_image = (lower.starts_with("https://") || lower.starts_with("http://"))
-                    && (lower.split(['?', '#']).next().is_some_and(|path| {
-                        path.ends_with(".png")
-                            || path.ends_with(".jpg")
-                            || path.ends_with(".jpeg")
-                            || path.ends_with(".webp")
-                            || path.ends_with(".gif")
-                            || path.ends_with(".avif")
-                    }));
+                    && (lower.contains("external-content.duckduckgo.com/iu/")
+                        || lower.split(['?', '#']).next().is_some_and(|path| {
+                            path.ends_with(".png")
+                                || path.ends_with(".jpg")
+                                || path.ends_with(".jpeg")
+                                || path.ends_with(".webp")
+                                || path.ends_with(".gif")
+                                || path.ends_with(".avif")
+                        }));
                 if is_image {
                     return Some(candidate);
                 }
@@ -293,6 +333,14 @@ pub fn truncate_hits(mut hits: Vec<SearchHit>, top_k: usize) -> Vec<SearchHit> {
 }
 
 /// Lowercase, strip voice fillers / command prefixes, collapse spaces.
+pub fn ddg_search_url(query: &str) -> Option<String> {
+    let normalized = normalize_query(query);
+    if normalized.is_empty() {
+        return None;
+    }
+    Some(format!("https://duckduckgo.com/?q={}", urlencoding_lite(&normalized)))
+}
+
 pub fn normalize_query(raw: &str) -> String {
     let mut query = raw.trim().to_lowercase();
     for prefix in [
@@ -371,6 +419,35 @@ pub fn expand_followup(query: &str, recent: &[String]) -> String {
         .join(" ")
 }
 
+/// Skip DuckDuckGo for simple math / conversions — one LLM call is enough.
+pub fn needs_web_retrieval(query: &str) -> bool {
+    let lower = normalize_query(query).to_ascii_lowercase();
+    if lower.is_empty() {
+        return false;
+    }
+    let math_markers = [
+        "calculate ",
+        "what is ",
+        "what's ",
+        "convert ",
+        " plus ",
+        " minus ",
+        " times ",
+        " divided ",
+        " percent of ",
+    ];
+    if math_markers.iter().any(|m| lower.contains(m))
+        && lower.split_whitespace().count() <= 12
+        && !is_time_sensitive(query)
+    {
+        let numeric = lower.chars().filter(|c| c.is_ascii_digit()).count();
+        if numeric >= 2 || lower.contains('+') || lower.contains('%') {
+            return false;
+        }
+    }
+    true
+}
+
 pub fn classify_query(query: &str) -> QueryKind {
     let normalized = normalize_query(query);
     let words = normalized.split_whitespace().count();
@@ -416,7 +493,8 @@ pub fn adaptive_max_tokens(query: &str, kind: QueryKind) -> u32 {
     if needs_visual_repair(query) {
         return 1400;
     }
-    800
+    // Enough for a highlighted lead + detail paragraph without ballooning cost.
+    920
 }
 
 /// True for tiny site icons — crisp at 14px in the source list, but a
@@ -488,6 +566,36 @@ pub fn expanded_allowed_urls_with_images(
     allowed
 }
 
+/// Resolve banner photos: hit thumbs → Wikipedia → og:image → DDG image search.
+pub fn resolve_banner_images(
+    client: &Client,
+    query: &str,
+    hits: &[SearchHit],
+    max: usize,
+) -> Vec<(String, String)> {
+    let mut out = photo_candidates_for_hits(hits);
+    if out.len() < max {
+        if let Some(img) = wikipedia_image_for_query(client, query) {
+            push_unique_image(&mut out, img, max);
+        }
+    }
+    if out.len() < max {
+        if let Some(img) = wikipedia_image_from_hits(client, hits) {
+            push_unique_image(&mut out, img, max);
+        }
+    }
+    if out.len() < max {
+        for img in og_images_from_hits(client, hits, max - out.len()) {
+            push_unique_image(&mut out, img, max);
+        }
+    }
+    if out.len() < max {
+        merge_banner_images(out, fetch_ddg_images(client, query, max), max)
+    } else {
+        out.into_iter().take(max).collect()
+    }
+}
+
 /// Banner photos: result thumbnails first, then DuckDuckGo image search.
 pub fn banner_images_for_search(
     client: &Client,
@@ -495,12 +603,28 @@ pub fn banner_images_for_search(
     hits: &[SearchHit],
     max: usize,
 ) -> Vec<(String, String)> {
-    let mut out = photo_candidates_for_hits(hits);
+    resolve_banner_images(client, query, hits, max)
+}
+
+fn push_unique_image(out: &mut Vec<(String, String)>, img: (String, String), max: usize) {
     if out.len() >= max {
-        return out.into_iter().take(max).collect();
+        return;
     }
+    if out.iter().any(|(src, _)| src == &img.0) {
+        return;
+    }
+    out.push(img);
+}
+
+/// Merge result thumbnails with DDG photos, de-duped, capped.
+pub fn merge_banner_images(
+    thumbs: Vec<(String, String)>,
+    ddg: Vec<(String, String)>,
+    max: usize,
+) -> Vec<(String, String)> {
+    let mut out = thumbs;
     let mut seen: HashSet<String> = out.iter().map(|(src, _)| src.clone()).collect();
-    for (src, alt) in fetch_ddg_images(client, query, max) {
+    for (src, alt) in ddg {
         if seen.insert(src.clone()) {
             out.push((src, alt));
             if out.len() >= max {
@@ -508,7 +632,28 @@ pub fn banner_images_for_search(
             }
         }
     }
-    out
+    out.into_iter().take(max).collect()
+}
+
+/// Compact evidence block for the LLM user message (smaller than JSON hits).
+pub fn compact_sources_for_prompt(hits: &[SearchHit]) -> String {
+    hits.iter()
+        .enumerate()
+        .map(|(index, hit)| {
+            format!(
+                "[{}] {} — {} — {}",
+                index + 1,
+                hit.title.trim(),
+                host_label(&hit.url),
+                truncate_snippet(&hit.snippet, 140)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn host_label(url: &str) -> String {
+    crate::ui_schema::host_of_url(url).unwrap_or_else(|| "source".into())
 }
 
 /// Fetch an allowlisted image for the search WebView (handles referrer / hotlink quirks).
@@ -564,8 +709,13 @@ fn guess_image_mime(url: &str) -> String {
 
 // ---- DDG image search (i.js): real photos for banners ----
 
-const IMAGE_FETCH_TIMEOUT: Duration = Duration::from_secs(3);
-const IMAGE_RESULT_CAP: usize = 3;
+const IMAGE_FETCH_TIMEOUT: Duration = Duration::from_secs(4);
+const IMAGE_RESULT_CAP: usize = 4;
+
+/// Tiny schema for the LLM prompt — avoids shipping the full design-system JSON
+/// on every search call (lower latency + input-token cost).
+const SEARCH_UI_SCHEMA: &str =
+    "Nodes: text{text}, image_frame{src,alt,caption?}, youtube{url}, button{label,action,value}, source_list{items[{index,title,url,snippet?}]}, table{columns,rows}, chart{chart_type,labels,datasets}, divider. URLs must match SEARCH RESULTS or IMAGE CANDIDATES exactly. No HTML.";
 
 type ImageCacheValue = (Instant, Vec<(String, String)>);
 
@@ -645,12 +795,8 @@ fn fetch_ddg_images_network(
     // Step 2: JSON results. `thumbnail` is a fast DDG proxy URL; `image` is
     // the original (often hotlink-protected / slow) — prefer thumbnail.
     let json_url = format!(
-        "https://duckduckgo.com/i.js?l=us-en&o=json&q={encoded}&vqd={vqd}&f=,,,,
-,&p=1"
+        "https://duckduckgo.com/i.js?l=us-en&o=json&q={encoded}&vqd={vqd}&f=,,,,,&p=1"
     );
-    // Note: `f` param must be `,,,,,` — written across lines above only for
-    // readability; rebuild without whitespace.
-    let json_url = json_url.replace([' ', '\n'], "");
     let body = match client
         .get(&json_url)
         .timeout(IMAGE_FETCH_TIMEOUT)
@@ -1012,6 +1158,28 @@ impl SearchController {
         Ok(status.clone())
     }
 
+    /// Dictation reroute: audio was captured outside the search listener.
+    pub fn begin_transcribing_imported(&self) -> Result<SearchStatus, String> {
+        let mut status = self.status.lock().map_err(|_| "search status lock poisoned")?;
+        if !matches!(
+            status.phase,
+            SearchPhase::Idle | SearchPhase::Complete | SearchPhase::Error
+        ) {
+            return Err("Voice search is already in progress.".into());
+        }
+        *self
+            .started_at
+            .lock()
+            .map_err(|_| "search timer lock poisoned")? = Some(Instant::now());
+        *status = SearchStatus {
+            phase: SearchPhase::Searching,
+            message: "Transcribing your question…".into(),
+            query: None,
+            elapsed_ms: 0,
+        };
+        Ok(status.clone())
+    }
+
     pub fn mark_searching(&self, query_hint: Option<String>) -> Result<SearchStatus, String> {
         let mut status = self.status.lock().map_err(|_| "search status lock poisoned")?;
         if !matches!(status.phase, SearchPhase::Listening | SearchPhase::Searching) {
@@ -1126,6 +1294,696 @@ impl SearchController {
     }
 }
 
+/// Markdown answer synthesis — faster and more reliable than JSON UI validation.
+pub fn synthesize_search_markdown(
+    client: &Client,
+    query: &str,
+    hits: &[SearchHit],
+    grounded: bool,
+) -> Result<(ParsedSearchAnswer, Option<String>), String> {
+    if !grounded && hits.is_empty() {
+        return synthesize_direct_markdown(client, query);
+    }
+    if hits.is_empty() {
+        let parsed =
+            finalize_markdown_answer(&markdown_fallback_from_hits(query, hits), query);
+        return Ok((
+            parsed,
+            Some("No evidence found in the retrieved sources.".into()),
+        ));
+    }
+
+    let Some(api_key) = deepseek_key() else {
+        let parsed =
+            finalize_markdown_answer(&markdown_fallback_from_hits(query, hits), query);
+        return Ok((
+            parsed,
+            Some("Add a DeepSeek API key in Settings to synthesize answers.".into()),
+        ));
+    };
+
+    if classify_query(query) == QueryKind::Fast {
+        let parsed =
+            finalize_markdown_answer(&markdown_fallback_from_hits(query, hits), query);
+        return Ok((parsed, None));
+    }
+
+    match deepseek_search_markdown(client, &api_key, query, hits, grounded) {
+        Ok(markdown) => {
+            let parsed = finalize_markdown_answer(&markdown, query);
+            Ok((parsed, None))
+        }
+        Err(error) => {
+            let parsed = finalize_markdown_answer(
+                &markdown_fallback_from_hits(query, hits),
+                query,
+            );
+            Ok((parsed, Some(format!("Answer synthesis failed: {error}"))))
+        }
+    }
+}
+
+fn synthesize_direct_markdown(
+    client: &Client,
+    query: &str,
+) -> Result<(ParsedSearchAnswer, Option<String>), String> {
+    let Some(api_key) = deepseek_key() else {
+        let parsed = finalize_markdown_answer(
+            "> I need a DeepSeek API key in Settings to answer that.\n\nAdd your key under **Settings**.",
+            query,
+        );
+        return Ok((
+            parsed,
+            Some("Add a DeepSeek API key in Settings to synthesize answers.".into()),
+        ));
+    };
+    match deepseek_direct_markdown(client, &api_key, query) {
+        Ok(markdown) => {
+            let parsed = finalize_markdown_answer(&markdown, query);
+            Ok((parsed, None))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+pub fn markdown_fallback_from_hits(query: &str, hits: &[SearchHit]) -> String {
+    if hits.is_empty() {
+        return format!(
+            "> I couldn't find web evidence for “{query}”.\n\nTry rephrasing, or check that DuckDuckGo is reachable."
+        );
+    }
+    let top = &hits[0];
+    let lead = if top.snippet.trim().len() >= 24 {
+        top.snippet.trim().to_string()
+    } else if !top.title.trim().is_empty() {
+        format!("{} — {}", top.title.trim(), top.snippet.trim())
+    } else {
+        top.snippet.trim().to_string()
+    };
+    let mut out = format!("> {lead} [1]\n\n");
+    for (index, hit) in hits.iter().take(3).enumerate() {
+        if index == 0 {
+            continue;
+        }
+        let snippet = hit.snippet.trim();
+        if snippet.is_empty() {
+            continue;
+        }
+        out.push_str(&format!("{snippet} [{}]\n\n", index + 1));
+    }
+    out.trim_end().to_string()
+}
+
+pub fn normalize_markdown_answer(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let stripped = trimmed
+        .strip_prefix("```markdown")
+        .or_else(|| trimmed.strip_prefix("```md"))
+        .or_else(|| trimmed.strip_prefix("```"))
+        .unwrap_or(trimmed);
+    let stripped = stripped.strip_suffix("```").unwrap_or(stripped).trim();
+    if stripped.is_empty() {
+        "> No answer was returned.".into()
+    } else {
+        stripped.to_string()
+    }
+}
+
+/// Trusted DuckDuckGo image CDN hosts (banner proxy URLs).
+pub fn is_trusted_search_image_url(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    lower.starts_with("https://external-content.duckduckgo.com/")
+        || lower.starts_with("https://duckduckgo.com/i/")
+        || lower.contains("duckduckgo.com/iu/")
+        || lower.starts_with("https://upload.wikimedia.org/")
+        || lower.starts_with("https://thumb.wikimedia.org/")
+        || lower.starts_with("https://icons.duckduckgo.com/ip3/")
+}
+
+/// Build a banner image, embedding bytes inline when the fetch succeeds.
+pub fn build_banner_image(client: &Client, images: &[(String, String)]) -> Option<SearchBannerImage> {
+    let Some((src, alt)) = images.first() else {
+        return None;
+    };
+    let mut banner = SearchBannerImage {
+        src: src.clone(),
+        alt: alt.clone(),
+        caption: None,
+        data_url: None,
+        link_url: image_link_url(src),
+    };
+    if let Ok((mime, bytes)) = fetch_allowlisted_image(client, src) {
+        if !bytes.is_empty() && bytes.len() <= 512 * 1024 {
+            banner.data_url = Some(bytes_to_data_url(&mime, &bytes));
+        }
+    }
+    Some(banner)
+}
+
+pub fn image_link_url(src: &str) -> Option<String> {
+    wikimedia_commons_url_from_image(src)
+}
+
+/// Trusted outbound links from the search overlay (banner image, branding).
+pub fn is_trusted_external_url(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    lower.starts_with("https://commons.wikimedia.org/wiki/")
+        || lower.starts_with("https://en.wikipedia.org/wiki/")
+        || lower.starts_with("https://duckduckgo.com/?")
+}
+
+fn wikimedia_commons_url_from_image(src: &str) -> Option<String> {
+    let filename = wikimedia_filename_from_src(src)?;
+    Some(format!(
+        "https://commons.wikimedia.org/wiki/File:{}",
+        urlencoding_lite(&filename)
+    ))
+}
+
+fn wikimedia_filename_from_src(src: &str) -> Option<String> {
+    let lower = src.to_ascii_lowercase();
+    if !lower.contains("wikimedia.org") {
+        return None;
+    }
+    let raw = if lower.contains("/thumb/") {
+        let after = src.split("/thumb/").nth(1)?;
+        let segments: Vec<&str> = after.split('/').collect();
+        if segments.len() < 3 {
+            return None;
+        }
+        segments[2]
+    } else if let Some(rest) = src.split("/commons/").nth(1) {
+        rest.split('/').last()?
+    } else {
+        return None;
+    };
+    let decoded = percent_decode(raw.split('?').next()?);
+    if decoded.is_empty() {
+        None
+    } else {
+        Some(decoded.replace(' ', "_"))
+    }
+}
+
+fn bytes_to_data_url(mime: &str, bytes: &[u8]) -> String {
+    format!("data:{};base64,{}", mime, base64_encode(bytes))
+}
+
+fn base64_encode(input: &[u8]) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((input.len() + 2) / 3 * 4);
+    for chunk in input.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        out.push(CHARS[((triple >> 18) & 63) as usize] as char);
+        out.push(CHARS[((triple >> 12) & 63) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            CHARS[((triple >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            CHARS[(triple & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+fn wikipedia_subject_from_query(query: &str) -> Option<String> {
+    let q = normalize_query(query);
+    for prefix in [
+        "who is ",
+        "who was ",
+        "who are ",
+        "who's ",
+        "what is ",
+        "what's ",
+    ] {
+        if let Some(rest) = q.strip_prefix(prefix) {
+            let name = rest.trim().trim_end_matches('?').trim();
+            if name.len() >= 2 {
+                return Some(name.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn wikipedia_title_from_url(url: &str) -> Option<String> {
+    let lower = url.to_ascii_lowercase();
+    let marker = "wikipedia.org/wiki/";
+    let idx = lower.find(marker)?;
+    let rest = &url[idx + marker.len()..];
+    let title = rest.split(['#', '?']).next()?.trim();
+    if title.is_empty() {
+        None
+    } else {
+        Some(title.replace('_', " "))
+    }
+}
+
+fn fetch_wikipedia_summary_image(client: &Client, subject: &str) -> Option<(String, String)> {
+    let title = subject.trim().replace(' ', "_");
+    if title.is_empty() {
+        return None;
+    }
+    let encoded = urlencoding_lite(&title);
+    let url = format!("https://en.wikipedia.org/api/rest_v1/page/summary/{encoded}");
+    let response = client
+        .get(&url)
+        .timeout(Duration::from_secs(3))
+        .header("Accept", "application/json")
+        .send();
+    let response = match response {
+        Ok(resp) if resp.status().is_success() => resp,
+        _ => return None,
+    };
+    let body = response.text().ok()?;
+    #[derive(Deserialize)]
+    struct WikiSummary {
+        #[serde(default)]
+        title: String,
+        thumbnail: Option<WikiThumb>,
+    }
+    #[derive(Deserialize)]
+    struct WikiThumb {
+        source: String,
+    }
+    let parsed: WikiSummary = serde_json::from_str(&body).ok()?;
+    let src = parsed.thumbnail?.source;
+    if !src.starts_with("https://") {
+        return None;
+    }
+    let alt = if parsed.title.trim().is_empty() {
+        subject.to_string()
+    } else {
+        parsed.title.trim().to_string()
+    };
+    Some((src, alt))
+}
+
+fn wikipedia_image_for_query(client: &Client, query: &str) -> Option<(String, String)> {
+    let subject = wikipedia_subject_from_query(query)?;
+    fetch_wikipedia_summary_image(client, &subject)
+}
+
+fn wikipedia_image_from_hits(client: &Client, hits: &[SearchHit]) -> Option<(String, String)> {
+    for hit in hits.iter().take(4) {
+        if let Some(title) = wikipedia_title_from_url(&hit.url) {
+            if let Some(img) = fetch_wikipedia_summary_image(client, &title) {
+                return Some(img);
+            }
+        }
+    }
+    None
+}
+
+fn og_images_from_hits(client: &Client, hits: &[SearchHit], max: usize) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for hit in hits.iter().take(3) {
+        if let Some(src) = fetch_og_image(client, &hit.url) {
+            out.push((src, hit.title.clone()));
+            if out.len() >= max {
+                break;
+            }
+        }
+    }
+    out
+}
+
+fn fetch_og_image(client: &Client, page_url: &str) -> Option<String> {
+    if !(page_url.starts_with("http://") || page_url.starts_with("https://")) {
+        return None;
+    }
+    let response = client
+        .get(page_url)
+        .timeout(Duration::from_secs(2))
+        .header("Accept", "text/html,application/xhtml+xml")
+        .send();
+    let response = match response {
+        Ok(resp) if resp.status().is_success() => resp,
+        _ => return None,
+    };
+    let html = response.text().ok()?;
+    parse_og_image_url(&html)
+}
+
+fn parse_og_image_url(html: &str) -> Option<String> {
+    for marker in [
+        "property=\"og:image\" content=\"",
+        "property='og:image' content='",
+        "name=\"og:image\" content=\"",
+        "name='og:image' content='",
+    ] {
+        if let Some(idx) = html.find(marker) {
+            let rest = &html[idx + marker.len()..];
+            let quote = marker.chars().last().unwrap();
+            if let Some(end) = rest.find(quote) {
+                let url = decode_html_entities(&rest[..end]).trim().to_string();
+                if url.starts_with("https://") || url.starts_with("http://") {
+                    return Some(url);
+                }
+            }
+        }
+    }
+    None
+}
+
+pub fn infer_answer_layout(query: &str) -> String {
+    let q = normalize_query(query).to_ascii_lowercase();
+    if q.starts_with("who is ")
+        || q.starts_with("who was ")
+        || q.starts_with("who are ")
+        || q.starts_with("who's ")
+    {
+        "bio".into()
+    } else if q.contains(" vs ")
+        || q.contains(" versus ")
+        || q.starts_with("compare ")
+        || q.starts_with("difference between ")
+        || q.contains("pros and cons")
+        || q.contains("which is better")
+        || q.contains(" side by side")
+    {
+        "comparison".into()
+    } else if q.starts_with("what is ")
+        || q.starts_with("what's ")
+        || q.starts_with("define ")
+        || q.starts_with("meaning of ")
+    {
+        "definition".into()
+    } else if q.contains("timeline")
+        || q.contains("history of")
+        || q.starts_with("when did ")
+        || q.starts_with("when was ")
+    {
+        "timeline".into()
+    } else if q.contains("top ")
+        || q.contains("best ")
+        || q.contains("ranking")
+        || q.contains("list of")
+    {
+        "list".into()
+    } else if q.starts_with("is ")
+        || q.starts_with("does ")
+        || q.starts_with("can ")
+        || q.starts_with("was ")
+    {
+        "yesno".into()
+    } else if q.contains("where is ")
+        || q.contains("address of")
+        || q.contains("located")
+    {
+        "location".into()
+    } else if q.contains("recipe")
+        || q.contains("ingredients")
+    {
+        "recipe".into()
+    } else if q.contains("population")
+        || q.contains("statistics")
+        || q.contains("how many")
+        || q.contains("percent")
+    {
+        "stats".into()
+    } else if q.starts_with("how to ")
+        || q.starts_with("how do ")
+        || q.starts_with("how can ")
+        || q.starts_with("steps to ")
+    {
+        "steps".into()
+    } else {
+        "article".into()
+    }
+}
+
+fn normalize_layout_tag(raw: &str) -> Option<String> {
+    let tag = raw.trim().to_ascii_lowercase();
+    match tag.as_str() {
+        "bio" | "person" | "profile" => Some("bio".into()),
+        "article" | "general" | "explain" | "explainer" => Some("article".into()),
+        "comparison" | "compare" | "versus" | "vs" | "proscons" | "pros-cons" => {
+            Some("comparison".into())
+        }
+        "steps" | "howto" | "how-to" | "procedure" => Some("steps".into()),
+        "definition" | "define" | "term" | "whatis" => Some("definition".into()),
+        "timeline" | "history" | "chronology" => Some("timeline".into()),
+        "list" | "ranking" | "rank" | "top" | "leaderboard" => Some("list".into()),
+        "yesno" | "yes-no" | "binary" | "boolean" => Some("yesno".into()),
+        "location" | "place" | "map" | "address" => Some("location".into()),
+        "recipe" | "cooking" | "cook" => Some("recipe".into()),
+        "stats" | "statistics" | "numbers" | "metrics" => Some("stats".into()),
+        _ => None,
+    }
+}
+
+fn parse_facts_line(value: &str) -> Vec<SearchKeyFact> {
+    value
+        .split('|')
+        .filter_map(|part| {
+            let part = part.trim();
+            let (label, val) = part.split_once(':')?;
+            let label = label.trim();
+            let val = val.trim();
+            if label.is_empty() || val.is_empty() {
+                return None;
+            }
+            Some(SearchKeyFact {
+                label: label.to_string(),
+                value: val.to_string(),
+            })
+        })
+        .collect()
+}
+
+fn parse_followups_line(value: &str) -> Vec<String> {
+    value
+        .split('|')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+const SEARCH_MARKDOWN_LAYOUT_GUIDE: &str = r#"LAYOUT (you MUST pick exactly one — choose the best fit for the query):
+First metadata lines (in order, before the blockquote answer):
+  @layout: <tag>
+  @facts: optional Label: value pairs separated by | (2-5 chips when useful)
+  @followups: optional follow-up questions separated by | (2-3 short voice-friendly questions)
+
+Valid @layout tags (pick the best match — examples are illustrative, not exhaustive):
+
+• bio — person or organization profile
+  Examples: "Who is Marie Curie?", "Who founded Tesla?", "Tell me about NATO", "Who was Ada Lovelace?"
+
+• definition — what something means; term + concise definition
+  Examples: "What is photosynthesis?", "Define entropy", "What does GDP mean?", "Meaning of obfuscate"
+
+• article — general explanatory answer (default when nothing else fits)
+  Examples: "Why is the sky blue?", "How does Wi-Fi work?", "Explain quantum computing simply", "What caused the 2008 crisis?"
+
+• comparison — two or more things side by side; use a markdown table
+  Examples: "iPhone vs Android", "Compare Python and JavaScript", "Pros and cons of remote work", "Which is better: SSD or HDD?"
+
+• steps — how-to / procedure; numbered list
+  Examples: "How to tie a tie", "Steps to reset Windows", "How do I brew pour-over coffee?", "How can I export a PDF?"
+
+• timeline — events in chronological order; use dated bullets or a Date | Event table
+  Examples: "History of the internet", "When did World War 2 happen?", "Timeline of SpaceX launches", "Key dates in the French Revolution"
+
+• list — ranked or enumerated items (top N, best X)
+  Examples: "Top 10 movies of 2024", "Best laptops for students", "List of US presidents", "Ranking social media platforms"
+
+• yesno — factual yes/no/unclear with brief explanation (lead quote states the answer clearly)
+  Examples: "Is Pluto a planet?", "Does vitamin C prevent colds?", "Can you drink seawater?", "Was Shakespeare born in London?"
+
+• location — place, address, geography, where something is
+  Examples: "Where is Machu Picchu?", "Address of the Louvre", "Where is Tesla headquartered?", "Location of Mount Everest"
+
+• recipe — cooking; ingredients list + numbered steps
+  Examples: "Chocolate chip cookie recipe", "How to make dal makhani", "Ingredients for pesto pasta", "Simple pancake recipe"
+
+• stats — numbers, metrics, populations, percentages; stat-friendly table or bold figures
+  Examples: "Population of Tokyo", "How many countries are in Africa?", "Bitcoin price statistics", "What percent of Earth is ocean?"
+
+Use @facts for quick-scan chips (e.g. Founded: 2004 | CEO: Name | HQ: City) when the layout benefits from it.
+Use @followups for natural voice continuations (e.g. How does it compare to X? | What happened next?).
+"#;
+
+/// Strip `@layout:`, `@facts:`, and `@followups:` metadata from the top of the answer.
+pub fn parse_classified_markdown(raw: &str, query: &str) -> ParsedSearchAnswer {
+    let mut lines: Vec<&str> = raw.lines().collect();
+    let mut layout = infer_answer_layout(query);
+    let mut key_facts = Vec::new();
+    let mut followups = Vec::new();
+
+    while let Some(first) = lines.first() {
+        let trimmed = first.trim();
+        if trimmed.is_empty() {
+            lines.remove(0);
+            continue;
+        }
+        if let Some(tag) = trimmed.strip_prefix("@layout:") {
+            if let Some(parsed) = normalize_layout_tag(tag) {
+                layout = parsed;
+            }
+            lines.remove(0);
+            continue;
+        }
+        if let Some(facts) = trimmed.strip_prefix("@facts:") {
+            key_facts = parse_facts_line(facts);
+            lines.remove(0);
+            continue;
+        }
+        if let Some(ups) = trimmed.strip_prefix("@followups:") {
+            followups = parse_followups_line(ups);
+            lines.remove(0);
+            continue;
+        }
+        if trimmed.starts_with("<!--") && trimmed.contains("layout:") {
+            let lower = trimmed.to_ascii_lowercase();
+            if let Some(start) = lower.find("layout:") {
+                let tag = trimmed[start + "layout:".len()..]
+                    .split(['-', ' ', '>'])
+                    .next()
+                    .unwrap_or("")
+                    .trim();
+                if let Some(parsed) = normalize_layout_tag(tag) {
+                    layout = parsed;
+                }
+            }
+            lines.remove(0);
+            continue;
+        }
+        break;
+    }
+
+    while lines.first().map(|line| line.trim().is_empty()).unwrap_or(false) {
+        lines.remove(0);
+    }
+
+    ParsedSearchAnswer {
+        layout,
+        markdown: lines.join("\n").trim().to_string(),
+        key_facts,
+        followups,
+    }
+}
+
+pub fn finalize_markdown_answer(raw: &str, query: &str) -> ParsedSearchAnswer {
+    let normalized = normalize_markdown_answer(raw);
+    parse_classified_markdown(&normalized, query)
+}
+
+pub fn deepseek_search_markdown(
+    client: &Client,
+    api_key: &str,
+    query: &str,
+    hits: &[SearchHit],
+    grounded: bool,
+) -> Result<String, String> {
+    let sources = compact_sources_for_prompt(hits);
+    let system = format!(
+        r#"You are Pronto's voice-search assistant. Return markdown only (no JSON, no code fences).
+
+{SEARCH_MARKDOWN_LAYOUT_GUIDE}
+ANSWER BODY (after metadata lines):
+1. Start with ONE blockquote line (>) containing a complete direct answer in 1-2 sentences. Include [n] citations when using evidence.
+2. Then write 2-4 paragraphs with concrete names, dates, numbers, and context.
+3. Use [1][2] citation markers that match the SEARCH RESULT indexes.
+4. Do NOT include a sources/bibliography section — sources are shown separately in the app.
+5. If evidence is insufficient, say so clearly in the blockquote and explain what is missing.
+6. Never invent URLs. Only state facts supported by SEARCH RESULTS when grounded.
+
+TABLES (use them generously when they improve clarity):
+- Prefer a GitHub-flavored markdown table whenever the answer involves comparing items, specs, prices, stats, pros/cons, rankings, timelines with multiple attributes, or any side-by-side facts.
+- @layout: comparison, stats, and timeline answers should usually include at least one table after the blockquote.
+- @layout: article answers may also include a table when the data is naturally tabular.
+- Keep tables compact: usually 2-6 columns and at most ~8 rows. Use a header row plus a separator line (|---|---|).
+- You may add a short sentence before a table to introduce it; put the table immediately after the blockquote or after one brief setup paragraph."#
+    );
+    let user = if grounded {
+        format!(
+            "QUERY:\n{query}\n\nSEARCH RESULTS:\n{sources}\n\nWrite the markdown answer."
+        )
+    } else {
+        format!(
+            "QUERY:\n{query}\n\nNo web results were retrieved. Answer from general knowledge and note any uncertainty.\n\nWrite the markdown answer."
+        )
+    };
+    deepseek_markdown_at(client, api_key, query, &system, &user, adaptive_max_tokens(query, classify_query(query)))
+}
+
+fn deepseek_direct_markdown(client: &Client, api_key: &str, query: &str) -> Result<String, String> {
+    let system = format!(
+        r#"You are Pronto's voice-search assistant. Return markdown only (no JSON, no code fences).
+
+{SEARCH_MARKDOWN_LAYOUT_GUIDE}
+Start with ONE blockquote line (>) containing the direct answer. Follow with 1-2 short paragraphs if helpful.
+When comparing items, listing specs/stats, or presenting side-by-side facts, include a GitHub-flavored markdown table.
+Do not include a sources section."#
+    );
+    let user = format!("QUERY:\n{query}\n\nWrite the markdown answer.");
+    deepseek_markdown_at(client, api_key, query, &system, &user, 500)
+}
+
+fn deepseek_markdown_at(
+    client: &Client,
+    api_key: &str,
+    _query: &str,
+    system: &str,
+    user: &str,
+    max_tokens: u32,
+) -> Result<String, String> {
+    let body = json!({
+        "model": "deepseek-v4-flash",
+        "thinking": { "type": "disabled" },
+        "messages": [
+            { "role": "system", "content": system },
+            { "role": "user", "content": user }
+        ],
+        "temperature": 0,
+        "max_tokens": max_tokens,
+        "stream": false,
+    });
+    let response = client
+        .post("https://api.deepseek.com/chat/completions")
+        .timeout(Duration::from_secs(8))
+        .bearer_auth(api_key)
+        .json(&body)
+        .send()
+        .map_err(|error| format!("DeepSeek answer failed: {error}"))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let detail = response.text().unwrap_or_default();
+        return Err(format!("DeepSeek answer returned {status}: {detail}"));
+    }
+    #[derive(Deserialize)]
+    struct DeepSeekResponse {
+        choices: Vec<Choice>,
+    }
+    #[derive(Deserialize)]
+    struct Choice {
+        message: Message,
+    }
+    #[derive(Deserialize)]
+    struct Message {
+        content: String,
+    }
+    response
+        .json::<DeepSeekResponse>()
+        .map_err(|error| format!("Invalid DeepSeek answer response: {error}"))?
+        .choices
+        .into_iter()
+        .next()
+        .map(|choice| choice.message.content.trim().to_string())
+        .filter(|content| !content.is_empty())
+        .ok_or_else(|| "DeepSeek returned an empty answer".to_string())
+}
+
 pub fn synthesize_search_ui(
     client: &Client,
     query: &str,
@@ -1170,12 +2028,8 @@ pub fn synthesize_search_ui(
         ));
     }
 
-    // Minified catalog saves ~30-40% system tokens with identical content.
-    let catalog = mcp::design_system_catalog_minified(resource_dir).unwrap_or_else(|_| {
-        mcp::design_system_catalog_text(resource_dir)
-            .unwrap_or_else(|_| mcp::DESIGN_SYSTEM_URI.to_string())
-    });
-    match deepseek_search_ui(client, &api_key, query, hits, &catalog, photos) {
+    let _ = resource_dir;
+    match deepseek_search_ui(client, &api_key, query, hits, photos) {
         Ok(raw) => match parse_and_validate_ui(&raw, &allowed) {
             Ok(mut document) => {
                 ensure_image(&mut document, photos);
@@ -1189,7 +2043,7 @@ pub fn synthesize_search_ui(
                         Some(format!("UI synthesis failed validation: {first_error}")),
                     ));
                 }
-                match deepseek_search_ui_repair(client, &api_key, query, hits, &catalog, photos, &raw, &first_error) {
+                match deepseek_search_ui_repair(client, &api_key, query, hits, photos, &raw, &first_error) {
                     Ok(repaired) => match parse_and_validate_ui(&repaired, &allowed) {
                         Ok(mut document) => {
                             ensure_image(&mut document, photos);
@@ -1216,7 +2070,7 @@ pub fn synthesize_search_ui(
 
 /// Guarantee frequent visuals: if the model returned text-only, inject the
 /// top vetted image after the first answer paragraph. Zero extra LLM cost.
-fn ensure_image(document: &mut SearchUiDocument, images: &[(String, String)]) {
+pub fn ensure_image(document: &mut SearchUiDocument, images: &[(String, String)]) {
     if images.is_empty() {
         return;
     }
@@ -1228,10 +2082,16 @@ fn ensure_image(document: &mut SearchUiDocument, images: &[(String, String)]) {
         return;
     }
     let (src, alt) = &images[0];
-    let insert_at = document
+    let text_positions = document
         .nodes
         .iter()
-        .position(|node| matches!(node, UiNode::Text { .. }))
+        .enumerate()
+        .filter(|(_, node)| matches!(node, UiNode::Text { .. }))
+        .map(|(idx, _)| idx)
+        .collect::<Vec<_>>();
+    let insert_at = text_positions
+        .get(1)
+        .or_else(|| text_positions.first())
         .map(|idx| idx + 1)
         .unwrap_or(0)
         .min(document.nodes.len());
@@ -1250,7 +2110,6 @@ pub fn deepseek_search_ui(
     api_key: &str,
     query: &str,
     hits: &[SearchHit],
-    catalog: &str,
     images: &[(String, String)],
 ) -> Result<String, String> {
     deepseek_search_ui_at(
@@ -1259,7 +2118,6 @@ pub fn deepseek_search_ui(
         api_key,
         query,
         hits,
-        catalog,
         images,
         None,
     )
@@ -1270,7 +2128,6 @@ fn deepseek_search_ui_repair(
     api_key: &str,
     query: &str,
     hits: &[SearchHit],
-    catalog: &str,
     images: &[(String, String)],
     previous: &str,
     error: &str,
@@ -1281,7 +2138,6 @@ fn deepseek_search_ui_repair(
         api_key,
         query,
         hits,
-        catalog,
         images,
         Some((previous, error)),
     )
@@ -1293,12 +2149,10 @@ fn deepseek_search_ui_at(
     api_key: &str,
     query: &str,
     hits: &[SearchHit],
-    catalog: &str,
     images: &[(String, String)],
     repair: Option<(&str, &str)>,
 ) -> Result<String, String> {
-    // Compact JSON (not pretty) + truncated snippets already keep tokens low.
-    let sources = serde_json::to_string(hits).unwrap_or_else(|_| "[]".into());
+    let sources = compact_sources_for_prompt(hits);
     let image_list = if images.is_empty() {
         "(none)".to_string()
     } else {
@@ -1311,27 +2165,29 @@ fn deepseek_search_ui_at(
             .join("\n")
     };
     let system = format!(
-        r#"You are Pronto's grounded voice-search synthesizer. Return ONLY a JSON object with a "nodes" array using the local design system {uri}.
+        r#"You are Pronto's grounded voice-search synthesizer. Return ONLY a JSON object with a "nodes" array.
 
-DESIGN SYSTEM CATALOG:
-{catalog}
+SCHEMA ({uri}):
+{schema}
 
 RULES:
-1. Answer using only the provided search results. Cite claims with [1][2] markers that match source_list indexes.
-2. Do NOT include a heading node — the spoken query is already shown in the overlay. Start with a text answer, then include exactly 1 image_frame using IMAGE CANDIDATES below when available. Always set alt + short caption from evidence. Skip image only if candidates are "(none)".
-3. If evidence is insufficient, say "No evidence" clearly and still include a source_list of what was retrieved.
-4. image_frame.src MUST be copied EXACTLY from IMAGE CANDIDATES. youtube/button(open_url)/source_list URLs MUST be copied EXACTLY from search results. Never invent URLs.
-5. Allowed node types only: heading, text, divider, image_frame, youtube, button, source_list, table, chart.
-6. No raw HTML, JavaScript, Markdown images, or unknown fields.
-7. Keep the document under 24 nodes, answer text concise."#,
-        uri = mcp::DESIGN_SYSTEM_URI
+1. Use only the provided search results. Cite with [1][2] markers matching source_list indexes.
+2. Do NOT include a heading — the query is already shown. Use exactly 2 text nodes when evidence allows:
+   - First text: one crisp direct-answer sentence (the UI highlights this). Add [n] only if needed.
+   - Second text: 3-5 sentences with names, dates, numbers, and useful context. Cite sources.
+3. Then include one image_frame when IMAGE CANDIDATES exist (alt + short caption). Skip only if "(none)".
+4. End with source_list. image_frame.src and URLs must be copied EXACTLY from candidates/results.
+5. If evidence is thin, say so clearly in text nodes but still include source_list.
+6. No raw HTML, Markdown, or unknown fields. Max 24 nodes."#,
+        uri = mcp::DESIGN_SYSTEM_URI,
+        schema = SEARCH_UI_SCHEMA
     );
     let user = if let Some((previous, error)) = repair {
         format!(
-            "QUERY:\n{query}\n\nSEARCH RESULTS JSON:\n{sources}\n\nIMAGE CANDIDATES:\n{image_list}\n\nPREVIOUS INVALID JSON:\n{previous}\n\nVALIDATION ERROR:\n{error}\n\nReturn corrected JSON only."
+            "QUERY:\n{query}\n\nSEARCH RESULTS:\n{sources}\n\nIMAGE CANDIDATES:\n{image_list}\n\nPREVIOUS INVALID JSON:\n{previous}\n\nVALIDATION ERROR:\n{error}\n\nReturn corrected JSON only."
         )
     } else {
-        format!("QUERY:\n{query}\n\nSEARCH RESULTS JSON:\n{sources}\n\nIMAGE CANDIDATES:\n{image_list}\n\nReturn JSON only.")
+        format!("QUERY:\n{query}\n\nSEARCH RESULTS:\n{sources}\n\nIMAGE CANDIDATES:\n{image_list}\n\nReturn JSON only.")
     };
     let max_tokens = adaptive_max_tokens(query, classify_query(query));
     let body = json!({
@@ -1468,6 +2324,24 @@ mod tests {
 "#;
 
     #[test]
+    fn parse_classified_markdown_reads_layout_facts_and_followups() {
+        let raw = "@layout: comparison\n@facts: Founded: 1976 | CEO: Tim Cook\n@followups: How does it compare to Samsung? | What is their latest phone?\n> Apple makes iPhones.\n\nBody text.";
+        let parsed = parse_classified_markdown(raw, "compare apple and samsung");
+        assert_eq!(parsed.layout, "comparison");
+        assert_eq!(parsed.key_facts.len(), 2);
+        assert_eq!(parsed.key_facts[0].label, "Founded");
+        assert_eq!(parsed.followups.len(), 2);
+        assert!(parsed.markdown.starts_with("> Apple"));
+    }
+
+    #[test]
+    fn normalize_layout_tag_accepts_extended_layouts() {
+        assert_eq!(normalize_layout_tag("timeline"), Some("timeline".into()));
+        assert_eq!(normalize_layout_tag("ranking"), Some("list".into()));
+        assert_eq!(normalize_layout_tag("yes-no"), Some("yesno".into()));
+    }
+
+    #[test]
     fn parses_duckduckgo_html_fixture() {
         let hits = parse_duckduckgo_html(FIXTURE);
         assert_eq!(hits.len(), 2);
@@ -1540,7 +2414,6 @@ mod tests {
             "test-key",
             "compare alpha vs beta chart",
             &hits,
-            r#"{"uri":"design://system/v1","components":[]}"#,
             &[],
             None,
         )
@@ -1632,7 +2505,7 @@ mod tests {
         );
         assert_eq!(
             adaptive_max_tokens("capital of france history", QueryKind::Grounded),
-            800
+            920
         );
     }
 
@@ -1667,6 +2540,25 @@ mod tests {
     }
 
     #[test]
+    fn markdown_fallback_uses_meaningful_snippet() {
+        let hits = vec![SearchHit {
+            title: "Confederate States".into(),
+            url: "https://example.com/a".into(),
+            snippet: "The Confederate States of America included 11 states that seceded.".into(),
+            image: None,
+        }];
+        let md = markdown_fallback_from_hits("confederate states", &hits);
+        assert!(md.contains("Confederate States of America"));
+        assert!(!md.contains("> The."));
+    }
+
+    #[test]
+    fn needs_web_skips_simple_math() {
+        assert!(!needs_web_retrieval("what is 25 plus 17"));
+        assert!(needs_web_retrieval("who was the first president of the united states"));
+    }
+
+    #[test]
     fn rerank_prefers_title_matches_and_truncates() {
         let mut hits = vec![
             SearchHit {
@@ -1686,5 +2578,36 @@ mod tests {
         assert_eq!(hits[0].url, "https://example.com/b");
         let truncated = truncate_hits(hits, 1);
         assert_eq!(truncated.len(), 1);
+    }
+
+    #[test]
+    fn wikipedia_subject_extracts_person_name() {
+        assert_eq!(
+            wikipedia_subject_from_query("Who is Lewis Hamilton?"),
+            Some("lewis hamilton".to_string())
+        );
+        assert_eq!(
+            wikipedia_subject_from_query("what is photosynthesis"),
+            Some("photosynthesis".to_string())
+        );
+        assert_eq!(wikipedia_subject_from_query("weather in osaka"), None);
+    }
+
+    #[test]
+    fn parse_og_image_reads_meta_tag() {
+        let html = r#"<meta property="og:image" content="https://cdn.example.com/hero.jpg" />"#;
+        assert_eq!(
+            parse_og_image_url(html),
+            Some("https://cdn.example.com/hero.jpg".into())
+        );
+    }
+
+    #[test]
+    fn wikimedia_commons_url_from_thumb() {
+        let src = "https://thumb.wikimedia.org/wikipedia/commons/thumb/d/d3/Lewis_Hamilton.jpg/330px-Lewis_Hamilton.jpg";
+        assert_eq!(
+            wikimedia_commons_url_from_image(src),
+            Some("https://commons.wikimedia.org/wiki/File:Lewis_Hamilton.jpg".into())
+        );
     }
 }

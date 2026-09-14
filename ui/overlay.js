@@ -14,6 +14,7 @@ const meetingPromptTitle = document.querySelector('#meeting-prompt-title');
 const meetingPromptDesc = document.querySelector('#meeting-prompt-desc');
 const notetakerButton = document.querySelector('#notetaker-open');
 const overlayRow = document.querySelector('#overlay-row');
+const searchReroute = document.querySelector('#search-reroute');
 let lastPhase = 'idle';
 const meetingPill = document.querySelector('#meeting-pill');
 const meetingPillTitle = document.querySelector('#meeting-pill-title');
@@ -216,6 +217,18 @@ meetingDismissButton.addEventListener('click', closeMeetingPrompt);
 
 document.querySelector('#cancel').addEventListener('click', () => invoke('cancel_recording'));
 document.querySelector('#finish').addEventListener('click', () => invoke('stop_recording'));
+searchReroute?.addEventListener('click', async event => {
+  event.stopPropagation();
+  try {
+    await invoke('reroute_dictation_to_search_command');
+  } catch (error) {
+    await showNotice(String(error).replace(/^Error:\s*/, ''));
+    clearTimeout(microphoneTimer);
+    microphoneTimer = setTimeout(async () => {
+      if (!persistentNotice) await hideNotice();
+    }, 3200);
+  }
+});
 notetakerButton.addEventListener('click', () => {
   if (meetingRecording) {
     // Note taking is controlled from the tray; surface the status label again.

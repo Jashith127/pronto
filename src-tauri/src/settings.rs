@@ -57,6 +57,17 @@ pub struct UserSettings {
     pub cleanup_prompt: Option<String>,
     #[serde(default = "default_meeting_suggestions")]
     pub meeting_suggestions: bool,
+    #[serde(default)]
+    pub theme: ThemeMode,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ThemeMode {
+    #[default]
+    System,
+    Light,
+    Dark,
 }
 
 fn default_meeting_suggestions() -> bool {
@@ -100,6 +111,7 @@ impl Default for UserSettings {
             dictation_sounds: true,
             cleanup_prompt: None,
             meeting_suggestions: true,
+            theme: ThemeMode::System,
         }
     }
 }

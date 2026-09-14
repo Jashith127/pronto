@@ -1,55 +1,33 @@
-:root {
-  color: #22231f;
-  background: #f5f4ef;
-  font-family: "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, sans-serif;
+/* Design tokens live in theme.css */
+
+* { box-sizing: border-box; }
+html, body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  color: var(--ink);
+  background: var(--canvas);
+  font-family: var(--font);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  --ink: #22231f;
-  --ink-soft: #3c3d38;
-  --muted: #72736d;
-  --faint: #969791;
-  --line: #e2e0d8;
-  --line-soft: #ebe9e2;
-  --paper: #fbfaf6;
-  --canvas: #f5f4ef;
-  --accent: #c65d48;
-  --accent-dark: #9d4435;
-  --sage: #3f6d60;
-  --sage-strong: #2e4439;
-  --danger: #a44e43;
-  --radius-sm: 8px;
-  --radius-md: 12px;
-  --radius-lg: 14px;
-  --radius-xl: 16px;
-  --space-1: 4px;
-  --space-2: 8px;
-  --space-3: 12px;
-  --space-4: 16px;
-  --space-5: 20px;
-  --space-6: 24px;
-  --shadow-sm: 0 1px 2px rgba(35, 35, 29, .06);
-  --shadow-md: 0 12px 34px rgba(42, 39, 32, .14);
-  --focus-ring: 0 0 0 3px rgba(63, 109, 96, .22);
 }
-
-* { box-sizing: border-box; }
-html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: var(--canvas); }
 body { font-size: 13px; line-height: 1.5; }
 button, input, select, textarea { color: inherit; font: inherit; }
 button { cursor: pointer; -webkit-tap-highlight-color: transparent; }
 svg { shape-rendering: geometricPrecision; flex: 0 0 auto; }
-::selection { background: rgba(63, 109, 96, .22); }
+::selection { background: var(--selection-bg); }
 :focus { outline: none; }
-:focus-visible { outline: 2px solid #6f8f83; outline-offset: 2px; border-radius: 6px; }
+:focus-visible { outline: 2px solid var(--focus-color); outline-offset: 2px; border-radius: 6px; }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-thumb { border: 3px solid transparent; border-radius: 99px; background-clip: content-box; background-color: #c6c3ba; }
-::-webkit-scrollbar-thumb:hover { background-color: #adaba2; }
+::-webkit-scrollbar-thumb { border: 3px solid transparent; border-radius: 99px; background-clip: content-box; background-color: var(--scrollbar-thumb); }
+::-webkit-scrollbar-thumb:hover { background-color: var(--scrollbar-thumb-hover); }
 ::-webkit-scrollbar-track { background: transparent; }
 .app { display: grid; grid-template-columns: 190px minmax(0, 1fr); width: 100vw; height: 100vh; background: var(--canvas); }
 
-.sidebar { display: flex; flex-direction: column; min-width: 0; padding: 22px 14px 18px; border-right: 1px solid var(--line); background: #efeee8; }
+.sidebar { display: flex; flex-direction: column; min-width: 0; padding: 22px 14px 18px; border-right: 1px solid var(--line); background: var(--sidebar-bg); }
 .brand { display: flex; align-items: center; gap: 11px; height: 42px; padding: 0 11px; font-size: 18px; font-weight: 650; letter-spacing: -.02em; }
 .brand-mark { display: flex; align-items: center; gap: 2px; height: 22px; }
 .brand-mark i { width: 3px; border-radius: 4px; background: var(--accent); }
@@ -57,21 +35,21 @@ svg { shape-rendering: geometricPrecision; flex: 0 0 auto; }
 .brand-mark i:nth-child(2), .brand-mark i:nth-child(4) { height: 14px; }
 .brand-mark i:nth-child(3) { height: 21px; }
 nav { display: flex; flex-direction: column; gap: 4px; margin-top: 34px; }
-.nav { display: flex; align-items: center; gap: 12px; width: 100%; height: 42px; padding: 0 12px; border: 0; border-radius: 9px; color: #686a65; background: transparent; text-align: left; font-size: 13px; font-weight: 520; }
+.nav { display: flex; align-items: center; gap: 12px; width: 100%; height: 42px; padding: 0 12px; border: 0; border-radius: 9px; color: var(--nav-color); background: transparent; text-align: left; font-size: 13px; font-weight: 520; }
 .nav svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
-.nav:hover { color: var(--ink); background: rgba(255,255,255,.46); }
-.nav.active { color: var(--ink); background: #fff; box-shadow: 0 1px 2px rgba(35,35,29,.05); }
+.nav:hover { color: var(--ink); background: var(--nav-hover-bg); }
+.nav.active { color: var(--ink); background: var(--nav-active-bg); box-shadow: var(--shadow-sm); }
 .nav.active svg { color: var(--accent); }
 .shell { display: flex; flex-direction: column; min-width: 0; overflow: hidden; background: var(--paper); }
 .titlebar { display: flex; align-items: center; justify-content: flex-end; height: 46px; flex: 0 0 46px; border-bottom: 1px solid var(--line-soft); }
 .window-actions { align-self: stretch; display: flex; -webkit-app-region: no-drag; }
-.window-actions button { display: grid; place-items: center; width: 46px; border: 0; border-radius: 0; background: transparent; color: #686964; font-size: 18px; -webkit-app-region: no-drag; transition: background .12s ease, color .12s ease; }
-.window-actions button:hover { background: #eceae4; color: var(--ink); }
-.window-actions button:active { background: #e2e0d8; }
+.window-actions button { display: grid; place-items: center; width: 46px; border: 0; border-radius: 0; background: transparent; color: var(--nav-color); font-size: 18px; -webkit-app-region: no-drag; transition: background .12s ease, color .12s ease; }
+.window-actions button:hover { background: var(--titlebar-hover); color: var(--ink); }
+.window-actions button:active { background: var(--titlebar-active); }
 .window-actions button svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 #close:hover { background: #c94d42; color: white; }
 
-.view { display: none; flex: 1 1 auto; min-height: 0; height: calc(100vh - 46px); padding: 32px 40px 40px; overflow-y: auto; scrollbar-color: #cbc9c1 transparent; scrollbar-width: thin; }
+.view { display: none; flex: 1 1 auto; min-height: 0; height: calc(100vh - 46px); padding: 32px 40px 40px; overflow-y: auto; scrollbar-color: var(--scrollbar-thumb) transparent; scrollbar-width: thin; }
 .view.active { display: block; }
 .page-title { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin: 0 0 24px; }
 .page-title h1 { margin: 0; color: var(--ink); font-size: 28px; font-weight: 650; letter-spacing: -.03em; line-height: 1.15; }

@@ -1,0 +1,183 @@
+/* Pronto design tokens — shared across main app, search, and dictation overlays */
+
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+
+  /* Typography & text */
+  --ink: #22231f;
+  --ink-soft: #3c3d38;
+  --muted: #72736d;
+  --faint: #969791;
+
+  /* Surfaces */
+  --line: #e2e0d8;
+  --line-soft: #ebe9e2;
+  --paper: #fbfaf6;
+  --canvas: #f5f4ef;
+  --sidebar-bg: #efeee8;
+  --surface: #ffffff;
+  --surface-muted: #f7f6f1;
+  --surface-subtle: #f0eee7;
+  --surface-inset: #ebe8de;
+  --surface-hover: #f4f2ec;
+
+  /* Brand */
+  --accent: #c65d48;
+  --accent-dark: #9d4435;
+  --accent-soft: rgba(198, 93, 72, 0.12);
+  --sage: #3f6d60;
+  --sage-strong: #2e4439;
+  --sage-soft: #e6eee9;
+  --danger: #a44e43;
+  --danger-soft: #f7ece9;
+
+  /* Layout */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 14px;
+  --radius-xl: 16px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+
+  /* Effects */
+  --shadow-sm: 0 1px 2px rgba(35, 35, 29, 0.06);
+  --shadow-md: 0 12px 34px rgba(42, 39, 32, 0.14);
+  --shadow-lg: 0 22px 65px rgba(36, 34, 28, 0.22);
+  --focus-ring: 0 0 0 3px rgba(63, 109, 96, 0.22);
+  --focus-color: #6f8f83;
+  --selection-bg: rgba(63, 109, 96, 0.22);
+
+  /* Controls */
+  --input-bg: #ffffff;
+  --input-border: #d7d4cb;
+  --input-placeholder: #a8a9a3;
+  --btn-primary-bg: #22231f;
+  --btn-primary-hover: #383a34;
+  --btn-secondary-bg: #ffffff;
+  --btn-secondary-border: #d9d6ce;
+  --toggle-track: #cbc8bf;
+  --scrollbar-thumb: #c6c3ba;
+  --scrollbar-thumb-hover: #adaba2;
+
+  /* Chrome */
+  --titlebar-hover: #eceae4;
+  --titlebar-active: #e2e0d8;
+  --nav-color: #686a65;
+  --nav-hover-bg: rgba(255, 255, 255, 0.46);
+  --nav-active-bg: #ffffff;
+  --segmented-bg: #efede7;
+  --segmented-border: #d6d3ca;
+  --segmented-active: #383a34;
+
+  /* Stat / hero */
+  --stat-hero-bg: #252b27;
+  --stat-hero-border: #252b27;
+  --stat-card-bg: #f7f5ef;
+  --stat-card-border: #e2dfd6;
+
+  /* Search panel */
+  --search-bg: #fbfaf6;
+  --search-bg-elevated: #ffffff;
+  --search-backdrop: rgba(40, 40, 35, 0.32);
+  --search-lead: #c76d38;
+  --search-lead-bg: rgba(199, 109, 56, 0.1);
+  --search-green: #3f6d60;
+  --search-green-hi: #5a8f7d;
+  --search-green-lo: #2e5549;
+  --search-panel-shadow: 0 32px 88px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(0, 0, 0, 0.04) inset;
+
+  --font: "DM Sans", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --transition-theme: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --ink: #f0f1ec;
+  --ink-soft: #d4d6cf;
+  --muted: #a0a39b;
+  --faint: #72756d;
+
+  --line: #2e302c;
+  --line-soft: #252724;
+  --paper: #161715;
+  --canvas: #0f100e;
+  --sidebar-bg: #111210;
+  --surface: #1c1d1b;
+  --surface-muted: #171816;
+  --surface-subtle: #222321;
+  --surface-inset: #252724;
+  --surface-hover: #262825;
+
+  --accent: #e07862;
+  --accent-dark: #c65d48;
+  --accent-soft: rgba(224, 120, 98, 0.16);
+  --sage: #6fa383;
+  --sage-strong: #8fb99a;
+  --sage-soft: rgba(111, 163, 131, 0.14);
+  --danger: #e89a90;
+  --danger-soft: rgba(232, 154, 144, 0.12);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 12px 34px rgba(0, 0, 0, 0.42);
+  --shadow-lg: 0 22px 65px rgba(0, 0, 0, 0.55);
+  --focus-ring: 0 0 0 3px rgba(111, 163, 131, 0.28);
+  --focus-color: #8fb99a;
+  --selection-bg: rgba(111, 163, 131, 0.28);
+
+  --input-bg: #1c1d1b;
+  --input-border: #353734;
+  --input-placeholder: #72756d;
+  --btn-primary-bg: #f0f1ec;
+  --btn-primary-hover: #ffffff;
+  --btn-secondary-bg: #222321;
+  --btn-secondary-border: #353734;
+  --toggle-track: #454843;
+  --scrollbar-thumb: #454843;
+  --scrollbar-thumb-hover: #5a5d56;
+
+  --titlebar-hover: #222321;
+  --titlebar-active: #2a2b28;
+  --nav-color: #a0a39b;
+  --nav-hover-bg: rgba(255, 255, 255, 0.06);
+  --nav-active-bg: #1c1d1b;
+  --segmented-bg: #222321;
+  --segmented-border: #353734;
+  --segmented-active: #f0f1ec;
+
+  --stat-hero-bg: #1a211d;
+  --stat-hero-border: #2a3530;
+  --stat-card-bg: #1c1d1b;
+  --stat-card-border: #2e302c;
+
+  --search-bg: #0f100e;
+  --search-bg-elevated: #161715;
+  --search-backdrop: rgba(5, 6, 5, 0.62);
+  --search-lead: #e8873a;
+  --search-lead-bg: rgba(232, 135, 58, 0.11);
+  --search-green: #4f8f68;
+  --search-green-hi: #6fa383;
+  --search-green-lo: #3d6b52;
+  --search-panel-shadow: 0 32px 88px rgba(0, 0, 0, 0.64), 0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+}
+
+html {
+  transition: var(--transition-theme);
+}
+
+html *,
+html *::before,
+html *::after {
+  transition: background-color 0.18s ease, border-color 0.18s ease, color 0.12s ease, box-shadow 0.18s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html, html *, html *::before, html *::after {
+    transition: none !important;
+  }
+}

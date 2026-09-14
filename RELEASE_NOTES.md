@@ -1,19 +1,74 @@
-# Pronto 0.8.0 (unreleased)
+# Pronto 0.8.0
 
-Voice search: Win+Space opens a transparent search overlay (pill → green orb → centered results), retrieves DuckDuckGo HTML results, and synthesizes a grounded on-the-fly UI with DeepSeek.
+Pronto 0.8.0 adds global voice search: speak a question, get a grounded markdown answer in a centered results panel. Dictation and search share polished dark listening pills, the main app and search panel gain light/dark themes, and DeepSeek picks the best answer layout for each query.
 
 ## What's new
 
-- Global voice search hotkey (default Win + Space / `super+Space`), remappable, with three-way conflict checks against dictation and paste.
-- Search overlay (always-on-top, skip-taskbar, not a Pronto app window): dark pill with green waveform, liquid morph into a circular searching orb, fly-to-center result panel; click-away / Escape dismisses. Hidden when idle.
-- Allowlisted UI nodes (heading/text/source_list/table/chart/youtube/buttons) rendered from local design://system/v1 catalog.
-- DuckDuckGo HTML `SearchProvider` (swappable later for Brave/Tavily/Exa or Playwright/MCP) plus DeepSeek V4 Flash JSON synthesis with citations.
-- Vendored uPlot charts (no CDN/npm). Query text and snippets go to DDG + DeepSeek; audio stays local.
-- Settings warning: Win + Space may also switch Windows keyboard layouts because the low-level hook calls CallNextHookEx. Fn key cannot be bound.
+### Voice search
+
+- Global voice search hotkey (default **Win + Space** / `super+Space`), remappable in Settings, with three-way conflict checks against dictation and paste shortcuts.
+- Dedicated always-on-top search window (skip-taskbar, transparent): compact listening pill with green waveform and in-pill search submit (white finish button); expands into a centered results panel. Click-away, Escape, or the panel close button dismisses. Hidden when idle.
+- DuckDuckGo HTML search provider (default `html.duckduckgo.com/html/`; URL configurable in Settings). Query text and snippets go to DuckDuckGo and DeepSeek; **audio stays on this PC**.
+- DeepSeek V4 Flash synthesizes markdown answers grounded in retrieved snippets. Without an API key, Pronto still shows a source list from DuckDuckGo.
+- DuckDuckGo wordmark in the results footer links to the same query on duckduckgo.com. Privacy note in the footer clarifies what leaves the device.
+
+### Answer layouts (AI-picked)
+
+DeepSeek must tag every answer with `@layout:` and Pronto renders the matching template. Each layout includes multiple “when to use” examples in the synthesis prompt so the model can choose the best fit:
+
+- **bio** — person or organization profile (hero image + intro when available).
+- **definition** — what a term means.
+- **article** — general explanatory answer (default).
+- **comparison** — side-by-side facts; markdown tables encouraged.
+- **steps** — how-to / numbered procedure.
+- **timeline** — chronological events; dated bullets or tables.
+- **list** — ranked or top-N enumerations.
+- **yesno** — yes/no/unclear with a clear lead line.
+- **location** — place, address, geography.
+- **recipe** — ingredients + numbered steps.
+- **stats** — numbers, populations, metrics; table-friendly.
+
+Optional metadata lines (stripped before render):
+
+- `@facts: Label: value | …` — quick-scan **key fact** chips above the answer.
+- `@followups: question | …` — **Ask next** suggestion chips for natural voice continuations.
+
+Layout badge in the panel header (e.g. “Comparison”, “How-to”). Comparison, stats, timeline, and article answers are prompted to use GitHub-flavored markdown tables when the data fits.
+
+### Images and sources
+
+- Banner images from Wikipedia/Wikimedia when relevant; lazy-loaded remote images with skeleton placeholders; inline `dataUrl` support; Commons links on images.
+- Collapsible **Sources** list with DuckDuckGo favicons, titles, snippets, and host labels. Sources open in the default browser.
+
+### Markdown rendering
+
+- Client-side markdown pipeline (`markdown.js`): blockquote lead, headings, lists, tables, links, and images.
+- Bio layout places the image beside the lead; other layouts stack image below the lead when present.
+
+### Dictation ↔ search pill chrome
+
+- Shared `pill-chrome.css` (30px shell, 22px side buttons, 20px waveform) for dictation overlay and search listening pill — matched height and centered waveform.
+- **Dictation row:** `[search reroute] · [pill: cancel | waveform | finish ✓] · [notetaker]`.
+- **Search listening:** pill only — `cancel | waveform | search` (search button uses white finish styling).
+- **Dictation → search:** left search button on the dictation pill reroutes the in-progress recording into voice search (`reroute_dictation_to_search_command`) without re-speaking.
+- Overlay window widened to fit the three-button dictation row; search pill window sized to the compact listening chrome.
+- Dictation overlay and meeting pills stay **original dark** — no theme variants on listening UI.
+
+### Appearance (main app + search panel only)
+
+- Settings → **Appearance**: System / Light / Dark. Applies to the main Pronto window and the search results panel.
+- `theme.css` + `theme.js` shared tokens; `theme-changed` event on save. Listening pills and dictation overlay ignore theme.
+- `app-polish.css` and refreshed `styles.css` for the themed main shell.
+- Search panel: sticky header (query + layout badge + close) and sticky footer (DuckDuckGo brand + privacy note); scrollable content between.
+
+### Settings
+
+- Voice search shortcut editor and configurable search provider URL.
+- Reminder: Win + Space may also switch Windows keyboard layouts because the low-level hook calls `CallNextHookEx`. Fn key cannot be bound.
 
 ## Requirements
 
-- Same as 0.7.5, plus a DeepSeek API key for synthesized search answers (fallback source list works without one).
+- Same as 0.7.5, plus a **DeepSeek API key** for synthesized markdown answers (DuckDuckGo source list still works without one).
 
 ---
 

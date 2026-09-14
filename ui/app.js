@@ -128,7 +128,25 @@ function renderMicrophones() {
     : `Using ${microphoneStatus.activeName}`;
 }
 
+function themePreviewLabel(pref) {
+  if (pref === 'light') return 'Light mode';
+  if (pref === 'dark') return 'Dark mode';
+  const resolved = window.ProntoTheme?.resolveTheme('system') || 'light';
+  return resolved === 'dark' ? 'System · dark' : 'System · light';
+}
+
+function applyThemePreference(pref) {
+  const normalized = pref || preferences?.settings?.theme || 'system';
+  window.ProntoTheme?.initTheme(normalized);
+  document.querySelectorAll('[data-theme-pref]').forEach(button => {
+    button.classList.toggle('active', button.dataset.themePref === normalized);
+  });
+  const preview = document.querySelector('#theme-preview');
+  if (preview) preview.textContent = themePreviewLabel(normalized);
+}
+
 function renderPreferences() {
+  applyThemePreference(preferences.settings.theme || 'system');
   document.querySelector('#cleanup-enabled').checked = preferences.settings.cleanupEnabled;
   document.querySelector('#auto-insert').checked = preferences.settings.autoInsert;
   document.querySelector('#duck-audio').checked = preferences.settings.duckAudio;
@@ -443,6 +461,12 @@ document.querySelectorAll('[data-activation]').forEach(button => button.addEvent
   preferences.settings.activationMode = button.dataset.activation;
   await persistSettings();
 }));
+document.querySelectorAll('[data-theme-pref]').forEach(button => button.addEventListener('click', async () => {
+  preferences.settings.theme = button.dataset.themePref;
+  applyThemePreference(button.dataset.themePref);
+  await persistSettings();
+}));
+listen('theme-changed', event => applyThemePreference(event.payload));
 document.querySelector('#microphone').addEventListener('change', async event => {
   const previousId = microphoneStatus?.selectedId || '';
   event.target.disabled = true;

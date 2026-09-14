@@ -1,0 +1,244 @@
+/* Theme-aware polish for main app components */
+
+.secondary-action,
+.change-button {
+  border-color: var(--btn-secondary-border);
+  background: var(--btn-secondary-bg);
+  color: var(--ink-soft);
+}
+.secondary-action:hover,
+.change-button:hover {
+  border-color: var(--line);
+  background: var(--surface-hover);
+}
+
+.shortcut-keys kbd {
+  border-color: var(--btn-secondary-border);
+  color: var(--muted);
+  background: var(--surface);
+}
+
+.stat-card {
+  border-color: var(--stat-card-border);
+  background: var(--stat-card-bg);
+}
+.stat-card strong { color: var(--ink); }
+.stat-card p,
+.stat-label { color: var(--muted); }
+.stat-primary {
+  color: #fff;
+  border-color: var(--stat-hero-border);
+  background: var(--stat-hero-bg);
+}
+.stat-primary strong { color: #fff; }
+.stat-primary .stat-label { color: #bdc9c2; }
+.stat-primary p { color: #8f9e96; }
+.stat-words { background: var(--surface-inset); }
+
+.import-card,
+.history-list,
+.dictionary-table,
+.settings-card,
+.notes-explorer,
+.notes-menu,
+.modal,
+.hotkey-dialog,
+.toast {
+  border-color: var(--line);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.import-card { background: var(--surface); }
+.import-card p,
+.import-formats,
+.section-title p { color: var(--muted); }
+.import-icon {
+  color: var(--muted);
+  background: var(--surface-subtle);
+}
+.import-card button {
+  color: #fff;
+  background: var(--ink);
+}
+[data-theme="dark"] .import-card button {
+  color: var(--canvas);
+  background: var(--btn-primary-bg);
+}
+.import-card button:hover:not(:disabled) {
+  background: var(--btn-primary-hover);
+  box-shadow: var(--shadow-sm);
+}
+
+.history-item { border-bottom-color: var(--line-soft); }
+.history-time,
+.latency,
+.history-copy small { color: var(--muted); }
+.history-copy p { color: var(--ink-soft); }
+.copy-transcript {
+  border-color: var(--line);
+  color: var(--muted);
+  background: var(--surface-muted);
+}
+.copy-transcript:hover,
+.copy-transcript.copied {
+  border-color: var(--sage);
+  background: var(--sage-soft);
+}
+
+.dictionary-form {
+  border-color: var(--line);
+  background: var(--surface-subtle);
+}
+.dictionary-form input,
+.api-form input,
+.modal input,
+.notes-new-folder input,
+.setting-row select,
+.prompt-row textarea {
+  border-color: var(--input-border);
+  background: var(--input-bg);
+  color: var(--ink-soft);
+}
+.dictionary-form input::placeholder,
+.api-form input::placeholder { color: var(--input-placeholder); }
+.dictionary-form input:focus,
+.api-form input:focus,
+.prompt-row textarea:focus,
+.modal input:focus {
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+.dictionary-form button,
+.api-form button,
+#modal-confirm,
+.prompt-actions button:not(.change-button),
+.notes-new-folder button {
+  color: var(--canvas);
+  background: var(--btn-primary-bg);
+}
+[data-theme="light"] .dictionary-form button,
+[data-theme="light"] .api-form button,
+[data-theme="light"] #modal-confirm,
+[data-theme="light"] .prompt-actions button:not(.change-button),
+[data-theme="light"] .notes-new-folder button {
+  color: #fff;
+  background: var(--ink);
+}
+.dictionary-heading {
+  border-bottom-color: var(--line-soft);
+  color: var(--muted);
+  background: var(--surface-muted);
+}
+.dictionary-item { border-bottom-color: var(--line-soft); }
+
+.settings-section h2 { color: var(--muted); }
+.settings-card { background: var(--surface-muted); }
+.setting-row { border-bottom-color: var(--line-soft); }
+.setting-row strong { color: var(--ink); }
+.setting-row p { color: var(--muted); }
+.segmented {
+  border-color: var(--segmented-border);
+  background: var(--segmented-bg);
+}
+.segmented button { color: var(--muted); }
+.segmented button.active {
+  color: var(--canvas);
+  background: var(--segmented-active);
+}
+[data-theme="light"] .segmented button.active { color: #fff; }
+.toggle span { background: var(--toggle-track); }
+.toggle input:checked + span { background: var(--sage); }
+.private-badge,
+.processing-badge {
+  color: var(--sage);
+  background: var(--sage-soft);
+}
+.text-danger:hover { background: var(--danger-soft); }
+
+.hotkey-dialog,
+.modal-layer {
+  color: var(--ink);
+  background: var(--search-backdrop);
+}
+.hotkey-dialog {
+  border-color: var(--line);
+  background: var(--paper);
+  box-shadow: var(--shadow-lg);
+}
+.capture-box {
+  border-color: var(--line);
+  background: var(--surface-subtle);
+}
+.dialog-close:hover { background: var(--surface-hover); }
+.dialog-actions button {
+  color: var(--canvas);
+  background: var(--segmented-active);
+}
+[data-theme="light"] .dialog-actions button { color: #fff; }
+.dialog-actions .change-button {
+  color: var(--muted);
+  background: var(--surface-subtle);
+}
+
+.toast {
+  border-color: var(--line);
+  color: var(--ink-soft);
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
+}
+.toast.error {
+  border-color: var(--danger);
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+#search-provider-url {
+  min-width: min(360px, 100%);
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius-sm);
+  background: var(--input-bg);
+  color: var(--ink-soft);
+}
+
+.notes-explorer { background: var(--surface); }
+.notes-folders {
+  border-right-color: var(--line-soft);
+  background: var(--surface-muted);
+}
+.notes-sidebar-head,
+.notes-files-head,
+.notes-file-columns,
+.notes-new-folder {
+  border-color: var(--line-soft);
+  color: var(--muted);
+  background: var(--surface-muted);
+}
+.notes-files-head { background: var(--surface); }
+.notes-files-head h2 { color: var(--ink); }
+.notes-folder { color: var(--ink-soft); }
+.notes-folder:hover { background: var(--surface-hover); }
+.notes-folder.active {
+  color: var(--sage-strong);
+  background: var(--sage-soft);
+}
+.notes-file-row { border-bottom-color: var(--line-soft); }
+.notes-file-row:hover { background: var(--surface-hover); }
+.notes-menu {
+  border-color: var(--line);
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
+}
+.notes-menu button { color: var(--ink-soft); }
+.notes-menu button:hover { background: var(--sage-soft); }
+
+.theme-preview {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  color: var(--faint);
+  font-size: 11px;
+}

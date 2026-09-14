@@ -4,7 +4,10 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Pronto</title>
+    <link rel="stylesheet" href="fonts.css" />
+    <link rel="stylesheet" href="theme.css" />
     <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="app-polish.css" />
   </head>
   <body>
     <main class="app">
@@ -140,6 +143,24 @@
           <div class="page-title"><div><h1>Settings</h1><p>Choose how Pronto listens, writes, and behaves on Windows.</p></div></div>
           <div class="settings-stack">
             <section class="settings-section">
+              <h2>Appearance</h2>
+              <div class="settings-card">
+                <div class="setting-row">
+                  <div>
+                    <strong>Theme</strong>
+                    <p>Applies to the main window and search results panel. Listening pills stay dark.</p>
+                    <span class="theme-preview" id="theme-preview">Matching system</span>
+                  </div>
+                  <div class="segmented" role="group" aria-label="Theme">
+                    <button type="button" data-theme-pref="system">System</button>
+                    <button type="button" data-theme-pref="light">Light</button>
+                    <button type="button" data-theme-pref="dark">Dark</button>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section class="settings-section">
               <h2>Dictation</h2>
               <div class="settings-card">
                 <div class="setting-row hotkey-row">
@@ -159,7 +180,7 @@
                 </div>
                 <div class="setting-row">
                   <div><strong>Search provider URL</strong><p>DuckDuckGo HTML endpoint used for retrieval. Query text and snippets are sent to this provider and to DeepSeek.</p></div>
-                  <input type="url" id="search-provider-url" aria-label="Search provider URL" style="min-width:min(360px,100%);height:36px;padding:0 12px;border:1px solid #d9d6ce;border-radius:8px;background:#fff;" />
+                  <input type="url" id="search-provider-url" aria-label="Search provider URL" />
                 </div>
                 <div class="setting-row">
                   <div><strong>Activation behavior</strong><p>Hold to talk, or press once to start and again to stop.</p></div>
@@ -258,6 +279,7 @@
       </div>
     </div>
     <div class="toast" id="toast" role="status"></div>
+    <script src="theme.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

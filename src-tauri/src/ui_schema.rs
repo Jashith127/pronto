@@ -445,18 +445,25 @@ pub fn fallback_document_with_images(
         });
     }
     if let Some((index, title, _, snippet)) = sources.first() {
-        // Extractive preview: title + snippet is usually the direct answer
-        // for who/what queries when the LLM is skipped or unavailable.
-        let preview = if snippet.trim().is_empty() {
+        let lead = if snippet.trim().is_empty() {
             title.trim().to_string()
-        } else if title.trim().is_empty() {
-            snippet.trim().to_string()
         } else {
-            format!("{} — {}", title.trim(), snippet.trim())
+            snippet
+                .split(['.', '!', '?'])
+                .next()
+                .map(|part| part.trim())
+                .filter(|part| !part.is_empty())
+                .map(|part| format!("{part}."))
+                .unwrap_or_else(|| title.trim().to_string())
         };
-        if !preview.is_empty() {
+        if !lead.is_empty() {
             nodes.push(UiNode::Text {
-                text: format!("{preview} [{index}]"),
+                text: format!("{lead} [{index}]"),
+            });
+        }
+        if !snippet.trim().is_empty() && snippet.trim() != lead.trim() {
+            nodes.push(UiNode::Text {
+                text: format!("{snippet} [{index}]"),
             });
         }
     }

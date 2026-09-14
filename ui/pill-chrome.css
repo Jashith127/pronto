@@ -1,0 +1,105 @@
+/* Shared listening-pill chrome — dictation + search must stay pixel-identical */
+
+.pronto-pill,
+#dictation-pill,
+.search-chrome {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 98px;
+  height: 30px;
+  min-height: 30px;
+  max-height: 30px;
+  padding: 3px 4px;
+  border: 1px solid #2e2f2b;
+  border-radius: 999px;
+  background: rgb(9, 10, 9);
+  box-sizing: border-box;
+  line-height: 0;
+  flex-shrink: 0;
+}
+
+.pronto-pill-btn,
+#dictation-pill button,
+.search-chrome .chrome-btn {
+  display: grid;
+  place-items: center;
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  min-height: 22px;
+  max-width: 22px;
+  max-height: 22px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 50%;
+  color: white;
+  background: #4b4c48;
+  font: inherit;
+  line-height: 0;
+  cursor: pointer;
+  transition: background .12s ease, transform .08s ease;
+}
+
+.pronto-pill-btn:hover,
+#dictation-pill button:hover,
+.search-chrome .chrome-btn:hover {
+  background: #62635e;
+}
+
+.pronto-pill-btn:active,
+#dictation-pill button:active,
+.search-chrome .chrome-btn:active {
+  transform: scale(.92);
+}
+
+.pronto-pill-btn svg,
+#dictation-pill button svg,
+.search-chrome .chrome-btn svg {
+  display: block;
+  width: 11px;
+  height: 11px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+#finish,
+.search-chrome .chrome-btn.finish {
+  color: #11120f;
+  background: #f4f4ef;
+}
+
+#finish:hover,
+.search-chrome .chrome-btn.finish:hover {
+  background: #fff;
+}
+
+.pronto-pill-signal,
+#dictation-pill .signal,
+.search-chrome .signal {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1 1 auto;
+  gap: 2.5px;
+  width: auto;
+  min-width: 0;
+  height: 20px;
+  max-height: 20px;
+  overflow: hidden;
+  line-height: 0;
+}
+
+/* Never theme-transition the pill chrome */
+#dictation-pill,
+#dictation-pill *,
+.search-chrome,
+.search-chrome * {
+  transition: background .12s ease, transform .08s ease, border-color .12s ease !important;
+}

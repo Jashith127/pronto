@@ -1,22 +1,48 @@
 const invoke = window.__TAURI__.core.invoke;
 const listen = window.__TAURI__.event.listen;
 
+async function loadTheme() {
+  try {
+    const prefs = await invoke('get_preferences');
+    window.ProntoTheme?.initTheme(prefs?.settings?.theme || 'system');
+  } catch (_) {
+    window.ProntoTheme?.initTheme('system');
+  }
+}
+loadTheme();
+listen('theme-changed', event => window.ProntoTheme?.initTheme(event.payload || 'system'));
+
 const body = document.body;
 const backdrop = document.querySelector('#backdrop');
 const chrome = document.querySelector('#chrome');
+const panelShell = document.querySelector('#panel-shell');
 const panel = document.querySelector('#panel');
+const panelContent = document.querySelector('#search-content');
 const toast = document.querySelector('#toast');
 const statusRow = document.querySelector('#search-status');
 const messageEl = document.querySelector('#search-message');
 const queryLabel = document.querySelector('#search-query-label');
+const layoutBadge = document.querySelector('#search-layout-badge');
+
+const LAYOUT_LABELS = {
+  bio: 'Profile',
+  article: 'Article',
+  comparison: 'Comparison',
+  steps: 'How-to',
+  definition: 'Definition',
+  timeline: 'Timeline',
+  list: 'Ranking',
+  yesno: 'Quick answer',
+  location: 'Location',
+  recipe: 'Recipe',
+  stats: 'Stats'
+};
 const emptyEl = document.querySelector('#search-empty');
 const nodesEl = document.querySelector('#search-nodes');
 const cancelBtn = document.querySelector('#search-cancel');
-const finishBtn = document.querySelector('#search-finish');
+const searchSubmit = document.querySelector('#search-submit');
 const panelClose = document.querySelector('#panel-close');
-const plots = [];
-
-const INTERIM_WARNING = 'Fetching a grounded answer…';
+const ddgBrand = document.querySelector('#ddg-brand');
 
 let uiMode = 'idle';
 let currentQuery = '';
@@ -55,121 +81,9 @@ function hostOf(url) {
   }
 }
 
-function normalizeForCompare(value) {
-  return String(value || '')
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function headingDuplicatesQuery(heading, query) {
-  const h = normalizeForCompare(heading);
-  const q = normalizeForCompare(query);
-  if (!h || !q) return false;
-  if (h === q) return true;
-  if (h.includes(q) || q.includes(h)) return true;
-  if (h.startsWith('results for')) return true;
-  if (h === 'search results' || h === 'answer' || h === 'summary' || h === 'overview') {
-    return true;
-  }
-  return false;
-}
-
-function formatAnswerText(text) {
-  const escaped = escapeHtml(text);
-  return escaped.replace(/\[(\d+)\]/g, '<sup class="cite">$1</sup>');
-}
-
-function destroyPlots() {
-  while (plots.length) {
-    const plot = plots.pop();
-    try { plot.destroy(); } catch (_) { /* ignore */ }
-  }
-}
-
-function youtubeEmbed(url) {
-  try {
-    const parsed = new URL(url);
-    if (parsed.hostname.includes('youtu.be')) {
-      const id = parsed.pathname.replace(/^\//, '').split('/')[0];
-      return id ? `https://www.youtube-nocookie.com/embed/${id}` : null;
-    }
-    if (parsed.hostname.includes('youtube.com')) {
-      const id = parsed.searchParams.get('v')
-        || (parsed.pathname.startsWith('/embed/') ? parsed.pathname.split('/')[2] : null)
-        || (parsed.pathname.startsWith('/shorts/') ? parsed.pathname.split('/')[2] : null);
-      return id ? `https://www.youtube-nocookie.com/embed/${id}` : null;
-    }
-  } catch (_) { /* ignore */ }
-  return null;
-}
-
-function renderChartFallback(node) {
-  const columns = ['Label', ...(node.datasets || []).map(dataset => dataset.label || 'Series')];
-  const rows = (node.labels || []).map((label, index) => [
-    label,
-    ...(node.datasets || []).map(dataset => String((dataset.data || [])[index] ?? '')),
-  ]);
-  return renderTable({ columns, rows });
-}
-
-function renderTable(node) {
-  const head = `<tr>${(node.columns || []).map(column => `<th>${escapeHtml(column)}</th>`).join('')}</tr>`;
-  const bodyHtml = (node.rows || []).map(row => `<tr>${row.map(cell => `<td>${escapeHtml(cell)}</td>`).join('')}</tr>`).join('');
-  return `<div class="search-table-wrap"><table class="search-table"><thead>${head}</thead><tbody>${bodyHtml}</tbody></table></div>`;
-}
-
-function renderSourceList(node, open) {
-  const items = node.items || [];
-  const rows = items.map(item => `
-    <li>
-      <button type="button" class="src-item" data-action="open_url" data-value="${escapeAttr(item.url)}">
-        <span class="src-index">${escapeHtml(item.index)}</span>
-        <span class="src-body">
-          <strong>${escapeHtml(item.title)}</strong>
-          ${item.snippet ? `<em>${escapeHtml(item.snippet)}</em>` : ''}
-          <span class="src-host">${escapeHtml(hostOf(item.url))}</span>
-        </span>
-      </button>
-    </li>`).join('');
-  return `<details class="search-sources"${open ? ' open' : ''}>` +
-    `<summary>Sources <span class="src-count">${items.length}</span></summary>` +
-    `<ol>${rows}</ol></details>`;
-}
-
-function renderNode(node, context) {
-  switch (node.type) {
-    case 'heading':
-      if (headingDuplicatesQuery(node.text, context.query)) return '';
-      return `<h2 class="search-node-heading">${escapeHtml(node.text)}</h2>`;
-    case 'text':
-      return `<p class="search-node-text">${formatAnswerText(node.text)}</p>`;
-    case 'divider':
-      return `<hr class="search-node-divider" />`;
-    case 'image_frame':
-      return `<figure class="search-image-frame loading">
-        <div class="image-skeleton" aria-hidden="true"></div>
-        <img data-src="${escapeAttr(node.src)}" alt="${escapeAttr(node.alt || '')}" decoding="async" />
-        ${node.caption ? `<figcaption>${escapeHtml(node.caption)}</figcaption>` : ''}
-      </figure>`;
-    case 'youtube': {
-      const embed = youtubeEmbed(node.url);
-      if (!embed) return `<p class="search-node-text">${escapeHtml(node.title || node.url)}</p>`;
-      return `<div class="search-youtube"><iframe src="${escapeAttr(embed)}" title="${escapeAttr(node.title || 'YouTube video')}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen loading="lazy"></iframe></div>`;
-    }
-    case 'button':
-      context.buttons.push(node);
-      return '';
-    case 'source_list':
-      return renderSourceList(node, context.openSources);
-    case 'table':
-      return renderTable(node);
-    case 'chart':
-      return `<div class="search-chart" data-chart="${escapeAttr(JSON.stringify(node))}"></div>`;
-    default:
-      return '';
-  }
+function faviconForUrl(url) {
+  const host = hostOf(url);
+  return host ? `https://icons.duckduckgo.com/ip3/${host}.ico` : '';
 }
 
 const imageObjectUrls = new Set();
@@ -181,18 +95,64 @@ function revokeImageObjectUrls() {
   imageObjectUrls.clear();
 }
 
+function renderBannerImage(image, layout = 'article') {
+  const inlineSrc = image?.dataUrl || image?.data_url;
+  const remoteSrc = image?.src;
+  const src = inlineSrc || remoteSrc;
+  if (!src) return '';
+  const link = image.linkUrl || image.link_url;
+  const bioClass = layout === 'bio' ? ' bio-image' : '';
+  const caption = image.caption ? `<figcaption>${escapeHtml(image.caption)}</figcaption>` : '';
+  const loadedClass = inlineSrc ? ' loaded' : ' loading';
+  const linkClass = link ? ' search-image-link' : '';
+  const linkAttrs = link
+    ? ` data-action="open_url" data-value="${escapeAttr(link)}" role="button" tabindex="0" title="Open image source on Wikimedia Commons"`
+    : '';
+  const imgTag = inlineSrc
+    ? `<img src="${escapeAttr(inlineSrc)}" alt="${escapeAttr(image.alt || '')}" decoding="async" />`
+    : `<img data-src="${escapeAttr(remoteSrc)}" alt="${escapeAttr(image.alt || '')}" decoding="async" />`;
+  const skeleton = inlineSrc ? '' : '<div class="image-skeleton" aria-hidden="true"></div>';
+  return `<figure class="search-image-frame${loadedClass}${bioClass}${linkClass}"${linkAttrs}>
+    ${skeleton}
+    ${imgTag}
+    ${caption}
+  </figure>`;
+}
+
+function loadImageSource(img, source) {
+  const frame = img.closest('.search-image-frame');
+  return new Promise((resolve, reject) => {
+    const markLoaded = () => {
+      frame?.classList.remove('loading');
+      frame?.classList.add('loaded');
+    };
+    const onLoad = () => {
+      markLoaded();
+      resolve();
+    };
+    const onError = () => reject(new Error('image load failed'));
+    img.addEventListener('load', onLoad, { once: true });
+    img.addEventListener('error', onError, { once: true });
+    img.referrerPolicy = 'origin';
+    img.decoding = 'async';
+    img.src = source;
+    if (img.complete && img.naturalWidth > 0) onLoad();
+  });
+}
+
 async function loadSearchImage(img, url) {
   const frame = img.closest('.search-image-frame');
   if (!url || !frame) return;
 
-  const markLoaded = () => {
-    frame.classList.remove('loading');
-    frame.classList.add('loaded');
-  };
   const markError = () => {
     frame.classList.remove('loading');
     frame.classList.add('error');
   };
+
+  try {
+    await loadImageSource(img, url);
+    return;
+  } catch (_) { /* try proxy */ }
 
   try {
     const payload = await invoke('fetch_search_image', { url });
@@ -203,16 +163,10 @@ async function loadSearchImage(img, url) {
     const blob = new Blob([bytes], { type: mime });
     const objectUrl = URL.createObjectURL(blob);
     imageObjectUrls.add(objectUrl);
-    img.addEventListener('load', markLoaded, { once: true });
-    img.addEventListener('error', markError, { once: true });
-    img.src = objectUrl;
-    return;
-  } catch (_) { /* fall through to direct load */ }
-
-  img.referrerPolicy = 'origin';
-  img.addEventListener('load', markLoaded, { once: true });
-  img.addEventListener('error', markError, { once: true });
-  img.src = url;
+    await loadImageSource(img, objectUrl);
+  } catch (_) {
+    markError();
+  }
 }
 
 function mountImages(root) {
@@ -220,49 +174,93 @@ function mountImages(root) {
     const url = img.getAttribute('data-src');
     if (url) loadSearchImage(img, url);
   });
-}
-
-function mountCharts(root) {
-  root.querySelectorAll('[data-chart]').forEach(container => {
-    let node;
-    try {
-      node = JSON.parse(container.getAttribute('data-chart') || '{}');
-    } catch (_) {
-      container.outerHTML = renderChartFallback({});
-      return;
-    }
-    if (!window.uPlot || !node.labels?.length || !node.datasets?.length) {
-      container.outerHTML = renderChartFallback(node);
-      return;
-    }
-    try {
-      const series = [{ label: 'Label' }, ...node.datasets.map(dataset => ({
-        label: dataset.label || 'Series',
-        stroke: '#f4f4ef',
-        width: 2,
-      }))];
-      const data = [
-        node.labels.map((_, index) => index),
-        ...node.datasets.map(dataset => dataset.data.map(Number)),
-      ];
-      const plot = new uPlot({
-        width: Math.max(280, container.clientWidth || 560),
-        height: 220,
-        series,
-        scales: { x: { time: false } },
-        axes: [
-          {
-            stroke: '#a8aba3',
-            values: (_u, splits) => splits.map(split => node.labels[split] ?? ''),
-          },
-          { stroke: '#a8aba3' },
-        ],
-      }, data, container);
-      plots.push(plot);
-    } catch (_) {
-      container.outerHTML = renderChartFallback(node);
+  root.querySelectorAll('.search-image-frame.loaded img:not([data-src])').forEach(img => {
+    const frame = img.closest('.search-image-frame');
+    if (frame && img.complete && img.naturalWidth > 0) {
+      frame.classList.remove('loading');
+      frame.classList.add('loaded');
     }
   });
+}
+
+function renderSourceListFromHits(sources, open) {
+  const items = sources || [];
+  const rows = items.map((item, index) => {
+    const favicon = faviconForUrl(item.url);
+    const faviconHtml = favicon
+      ? `<img class="src-favicon" src="${escapeAttr(favicon)}" alt="" width="18" height="18" decoding="async" loading="lazy" />`
+      : '<span class="src-favicon" aria-hidden="true"></span>';
+    return `
+    <li>
+      <button type="button" class="src-item" data-action="open_url" data-value="${escapeAttr(item.url)}">
+        ${faviconHtml}
+        <span class="src-index">${index + 1}</span>
+        <span class="src-body">
+          <strong>${escapeHtml(item.title)}</strong>
+          ${item.snippet ? `<p class="src-snippet">${escapeHtml(item.snippet)}</p>` : ''}
+          <span class="src-host">${escapeHtml(hostOf(item.url))}</span>
+        </span>
+      </button>
+    </li>`;
+  }).join('');
+  if (!rows) return '';
+  return `<details class="search-sources"${open ? ' open' : ''}>` +
+    `<summary>Sources <span class="src-count">${items.length}</span></summary>` +
+    `<ol>${rows}</ol></details>`;
+}
+
+function hasBannerImage(banner) {
+  return Boolean(banner?.src || banner?.dataUrl || banner?.data_url);
+}
+
+function renderAnswerBlock(markdown, layout, banner) {
+  const splitLead = window.splitMarkdownLead || (() => ({ lead: '', rest: markdown }));
+  const renderMd = window.renderMarkdown || (text => `<p class="search-node-text">${escapeHtml(text)}</p>`);
+  const { lead, rest } = splitLead(markdown);
+  const leadHtml = lead ? renderMd(lead) : '';
+  const bodyHtml = renderMd(rest || (!lead ? markdown : rest));
+  const imageHtml = hasBannerImage(banner) ? renderBannerImage(banner, layout) : '';
+  const safeLayout = escapeAttr(layout || 'article');
+
+  if (layout === 'bio' && imageHtml) {
+    const bioBody = leadHtml && rest.trim()
+      ? `<div class="search-markdown bio-body">${bodyHtml}</div>`
+      : '';
+    const intro = leadHtml || bodyHtml;
+    return `<div class="search-layout search-layout-bio">
+      <div class="bio-hero">
+        ${imageHtml}
+        <div class="bio-intro search-markdown">${intro}</div>
+      </div>
+      ${bioBody}
+    </div>`;
+  }
+
+  if (!leadHtml) {
+    return `<div class="search-layout search-layout-${safeLayout}">
+      <div class="search-markdown">
+        ${bodyHtml}
+        ${imageHtml}
+      </div>
+    </div>`;
+  }
+
+  if (!rest.trim()) {
+    return `<div class="search-layout search-layout-${safeLayout}">
+      <div class="search-markdown">
+        ${leadHtml}
+        ${imageHtml}
+      </div>
+    </div>`;
+  }
+
+  return `<div class="search-layout search-layout-${safeLayout}">
+    <div class="search-markdown">
+      ${leadHtml}
+      ${imageHtml}
+      <div class="answer-body">${bodyHtml}</div>
+    </div>
+  </div>`;
 }
 
 async function setNativeStage(stage) {
@@ -291,12 +289,50 @@ function showBackdrop(on) {
 
 function showPanel(on) {
   if (on) {
-    panel.hidden = false;
-    requestAnimationFrame(() => panel.classList.add('visible'));
+    panelShell.hidden = false;
+    requestAnimationFrame(() => panelShell.classList.add('visible'));
   } else {
-    panel.classList.remove('visible');
-    panel.hidden = true;
+    panelShell.classList.remove('visible');
+    panelShell.hidden = true;
   }
+}
+
+function setLayoutBadge(layout) {
+  const key = (layout || 'article').toLowerCase();
+  const label = LAYOUT_LABELS[key] || 'Article';
+  if (layoutBadge) {
+    layoutBadge.hidden = false;
+    layoutBadge.textContent = label;
+    layoutBadge.dataset.layout = key;
+  }
+}
+
+function clearLayoutBadge() {
+  if (layoutBadge) {
+    layoutBadge.hidden = true;
+    layoutBadge.textContent = '';
+    layoutBadge.removeAttribute('data-layout');
+  }
+}
+
+function renderKeyFacts(facts) {
+  const items = facts || [];
+  if (!items.length) return '';
+  const chips = items.map(fact => {
+    const label = escapeHtml(fact.label || fact.key || '');
+    const value = escapeHtml(fact.value || '');
+    return `<span class="key-fact"><strong>${label}</strong><span>${value}</span></span>`;
+  }).join('');
+  return `<div class="search-key-facts" role="list">${chips}</div>`;
+}
+
+function renderFollowups(followups) {
+  const items = (followups || []).filter(Boolean);
+  if (!items.length) return '';
+  const chips = items.map(text =>
+    `<button type="button" class="followup-chip" data-followup="${escapeAttr(text)}">${escapeHtml(text)}</button>`
+  ).join('');
+  return `<div class="search-followups"><span class="search-followups-label">Ask next</span><div class="search-followups-row">${chips}</div></div>`;
 }
 
 function setQueryLabel(query) {
@@ -307,6 +343,12 @@ function setQueryLabel(query) {
   } else {
     queryLabel.hidden = true;
     queryLabel.textContent = '';
+  }
+  if (ddgBrand) {
+    ddgBrand.disabled = !currentQuery;
+    ddgBrand.title = currentQuery
+      ? `Search “${currentQuery}” on DuckDuckGo`
+      : 'Search on DuckDuckGo';
   }
 }
 
@@ -323,51 +365,48 @@ function setStatus(kind, text) {
 }
 
 function resetResultSurface() {
-  destroyPlots();
   revokeImageObjectUrls();
   emptyEl.hidden = false;
   nodesEl.hidden = true;
   nodesEl.innerHTML = '';
   setQueryLabel('');
+  clearLayoutBadge();
 }
 
 function shouldShowWarning(warning) {
-  if (!warning || !warning.trim()) return false;
-  if (warning === INTERIM_WARNING) return false;
-  return true;
+  return Boolean(warning && warning.trim());
 }
 
 function paintResult(payload) {
-  destroyPlots();
-  const nodes = payload.ui?.nodes || [];
   const query = payload.query || '';
-  const hasAnswer = nodes.some(node => node.type === 'heading' || node.type === 'text');
-  const sourceNode = nodes.find(node => node.type === 'source_list');
+  const markdown = payload.markdown || '';
+  const layout = (payload.layout || 'article').toLowerCase();
+  const sources = payload.sources || [];
+  const hasAnswer = markdown.trim().length > 0;
+  const banner = payload.bannerImage || payload.banner_image;
 
-  const context = {
-    buttons: [],
-    openSources: !hasAnswer,
-    query,
-  };
-  const parts = nodes.map(node => renderNode(node, context)).filter(Boolean);
-  if (context.buttons.length) {
-    parts.push(`<div class="node-actions">${context.buttons.map(node =>
-      `<button type="button" class="search-node-button" data-action="${escapeAttr(node.action)}" data-value="${escapeAttr(node.value)}">${escapeHtml(node.label)}</button>`
-    ).join('')}</div>`);
-  }
+  const keyFacts = payload.keyFacts || payload.key_facts || [];
+  const followups = payload.followups || [];
 
-  emptyEl.hidden = true;
-  nodesEl.hidden = false;
   const warning = shouldShowWarning(payload.warning)
     ? `<p class="search-warning">${escapeHtml(payload.warning)}</p>`
     : '';
-  nodesEl.innerHTML = `${warning}${parts.join('')}`;
+  const factsHtml = renderKeyFacts(keyFacts);
+  const answerHtml = renderAnswerBlock(markdown, layout, banner);
+  const followupsHtml = renderFollowups(followups);
+  const sourcesHtml = sources.length
+    ? renderSourceListFromHits(sources, !hasAnswer)
+    : '';
+
+  emptyEl.hidden = true;
+  nodesEl.hidden = false;
+  nodesEl.innerHTML = `${warning}${factsHtml}${answerHtml}${followupsHtml}${sourcesHtml}`;
   mountImages(nodesEl);
-  mountCharts(nodesEl);
 
   setQueryLabel(query);
+  setLayoutBadge(layout);
   setStatus('', '');
-  nodesEl.scrollTop = 0;
+  if (panelContent) panelContent.scrollTop = 0;
 }
 
 async function enterListening() {
@@ -380,7 +419,7 @@ async function enterListening() {
   setStatus('', '');
   showChrome();
   cancelBtn.hidden = false;
-  finishBtn.hidden = false;
+  searchSubmit.hidden = false;
   await setNativeStage('pill');
 }
 
@@ -393,7 +432,7 @@ async function enterSearching() {
   chrome.classList.add('processing');
   showChrome();
   cancelBtn.hidden = true;
-  finishBtn.hidden = true;
+  searchSubmit.hidden = true;
   await setNativeStage('pill');
 }
 
@@ -443,33 +482,42 @@ function renderStatus(status) {
     enterError(status);
   } else if (phase === 'complete') {
     cancelBtn.hidden = true;
-    finishBtn.hidden = true;
+    searchSubmit.hidden = true;
   }
 }
 
 nodesEl.addEventListener('click', async event => {
-  const button = event.target.closest('[data-action]');
-  if (!button) return;
-  const action = button.getAttribute('data-action');
-  const value = button.getAttribute('data-value') || '';
+  const followup = event.target.closest('.followup-chip');
+  if (followup) {
+    const text = followup.getAttribute('data-followup') || '';
+    if (text) showToast(`Say: “${text}”`);
+    return;
+  }
+  const target = event.target.closest('[data-action]');
+  if (!target) return;
+  const action = target.getAttribute('data-action');
+  const value = target.getAttribute('data-value') || '';
   if (action === 'open_url') {
+    event.preventDefault();
     await call('open_search_result', { url: value });
-  } else if (action === 'copy') {
-    try {
-      await navigator.clipboard.writeText(value);
-      showToast('Copied');
-    } catch (error) {
-      showToast(String(error), true);
-    }
-  } else if (action === 'insert') {
-    showToast('Insert is available from dictation; copy instead for search answers.');
-    try {
-      await navigator.clipboard.writeText(value);
-    } catch (_) { /* ignore */ }
   }
 });
 
-finishBtn.addEventListener('click', async event => {
+nodesEl.addEventListener('keydown', async event => {
+  if (event.key !== 'Enter' && event.key !== ' ') return;
+  const target = event.target.closest('[data-action="open_url"]');
+  if (!target?.classList.contains('search-image-link')) return;
+  event.preventDefault();
+  await call('open_search_result', { url: target.getAttribute('data-value') || '' });
+});
+
+ddgBrand?.addEventListener('click', async event => {
+  event.stopPropagation();
+  if (!currentQuery) return;
+  await call('open_ddg_search', { query: currentQuery });
+});
+
+searchSubmit.addEventListener('click', async event => {
   event.stopPropagation();
   renderStatus(await call('stop_search_recording'));
 });
@@ -510,13 +558,7 @@ listen('search-query', event => {
   if (event.payload?.query) currentQuery = event.payload.query;
 });
 listen('search-result', event => {
-  const payload = event.payload || {};
-  if (payload.warning === INTERIM_WARNING) {
-    if (payload.query) currentQuery = payload.query;
-    enterSearching();
-    return;
-  }
-  showResultPanel(payload);
+  showResultPanel(event.payload || {});
 });
 listen('search-error', event => {
   showToast(String(event.payload), true);

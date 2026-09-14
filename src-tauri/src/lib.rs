@@ -27,12 +27,13 @@ use engine::{
 use hotkey::{Hotkey, HotkeyController, HotkeyEvent, HotkeyId, HotkeyStatus};
 use pipeline::{EngineStatus, Phase, Pipeline};
 use search::{
-    DuckDuckGoProvider, SearchController, SearchPhase, SearchProvider, SearchResultPayload,
+    DuckDuckGoProvider, SearchController, SearchPhase, SearchProvider,
+    SearchResultPayload,
     SearchStatus,
 };
 use settings::{ActivationMode, AppPreferences, HistoryEntry, SettingsStore, UserSettings};
 use sound::SoundController;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -424,16 +425,16 @@ fn position_overlay(window: &tauri::WebviewWindow, microphone_width: Option<f64>
         .flatten()
         .or_else(|| window.primary_monitor().ok().flatten());
     let Some(monitor) = monitor else {
-        let logical_width = microphone_width.unwrap_or(136.0).max(136.0);
+        let logical_width = microphone_width.unwrap_or(170.0).max(170.0);
         let _ = window.set_size(LogicalSize::new(logical_width, logical_height));
         return;
     };
     let scale = window.scale_factor().unwrap_or(1.0);
     let max_logical_width = monitor.size().width as f64 / scale - 24.0;
     let logical_width = microphone_width
-        .unwrap_or(136.0)
-        .max(136.0)
-        .min(max_logical_width.max(136.0));
+        .unwrap_or(170.0)
+        .max(170.0)
+        .min(max_logical_width.max(170.0));
     let _ = window.set_size(LogicalSize::new(logical_width, logical_height));
     let width = (logical_width * scale).round() as u32;
     let height = (logical_height * scale).round() as u32;
@@ -927,9 +928,9 @@ fn monitor_for(window: &tauri::WebviewWindow) -> Option<tauri::Monitor> {
 fn apply_search_overlay_stage(window: &tauri::WebviewWindow, stage: SearchOverlayStage) {
     let Some(monitor) = monitor_for(window) else {
         let (w, h) = match stage {
-            SearchOverlayStage::Pill => (120.0, 40.0),
+            SearchOverlayStage::Pill => (120.0, 32.0),
             // Orb is retired: searching reuses the regular pill loading state.
-            SearchOverlayStage::Orb => (120.0, 40.0),
+            SearchOverlayStage::Orb => (120.0, 32.0),
             SearchOverlayStage::Stage => (920.0, 640.0),
         };
         let _ = window.set_size(LogicalSize::new(w, h));
@@ -942,7 +943,7 @@ fn apply_search_overlay_stage(window: &tauri::WebviewWindow, stage: SearchOverla
     match stage {
         SearchOverlayStage::Pill | SearchOverlayStage::Orb => {
             let logical_width = 120.0;
-            let logical_height = 40.0;
+            let logical_height = 32.0;
             let _ = window.set_size(LogicalSize::new(logical_width, logical_height));
             let width = (logical_width * scale).round() as u32;
             let height = (logical_height * scale).round() as u32;
@@ -1167,6 +1168,73 @@ fn finish_search_recording_inner(app: &AppHandle, force: bool) -> Result<SearchS
     Ok(status)
 }
 
+fn reroute_dictation_to_search(app: &AppHandle) -> Result<SearchStatus, String> {
+    let state = app.state::<AppState>();
+    if state.search.is_busy() {
+        return Err("Voice search is already in progress.".into());
+    }
+    let listening = state
+        .pipeline
+        .lock()
+        .map(|pipeline| pipeline.status.phase == Phase::Listening)
+        .unwrap_or(false);
+    if !listening {
+        return Err("Start dictating before routing to search.".into());
+    }
+
+    let settings = state.settings.snapshot()?;
+    let restore_result = state.system_audio.restore();
+    if let Err(error) = restore_result {
+        let _ = app.emit("audio-warning", error);
+    }
+    if settings.dictation_sounds {
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        if let Err(error) = state.sounds.finish_and_wait() {
+            let _ = app.emit("audio-warning", error);
+        }
+    }
+    let recording = state.audio.stop()?;
+    state.insertion_target.cancel();
+    state.dictation_active.store(false, Ordering::Release);
+    {
+        let mut pipeline = state
+            .pipeline
+            .lock()
+            .map_err(|_| "pipeline lock poisoned")?;
+        pipeline.reset();
+        emit_status(app, &pipeline.status);
+    }
+    if let Some(overlay) = app.get_webview_window("overlay") {
+        let _ = overlay.hide();
+    }
+
+    let status = state.search.begin_transcribing_imported()?;
+    emit_search_status(app, &status);
+    show_search_overlay(app, SearchOverlayStage::Pill, false);
+    let engine = state.engine.lock().map_err(|_| "engine lock poisoned")?;
+    if let Some(engine) = engine.as_ref() {
+        if let Err(error) = engine.transcribe_search(SearchAsrJob {
+            recording,
+            language: settings.language.clone(),
+            dictionary: settings.dictionary.clone(),
+            provider_url: settings.search_provider_url.clone(),
+        }) {
+            let failed = state.search.fail(error)?;
+            emit_search_status(app, &failed);
+            let _ = app.emit("search-error", failed.message.clone());
+            return Ok(failed);
+        }
+    } else {
+        let failed = state
+            .search
+            .fail("Transcription engine is still starting")?;
+        emit_search_status(app, &failed);
+        let _ = app.emit("search-error", failed.message.clone());
+        return Ok(failed);
+    }
+    Ok(status)
+}
+
 fn cancel_search_inner(app: &AppHandle) -> Result<SearchStatus, String> {
     let state = app.state::<AppState>();
     let _ = state.audio.stop();
@@ -1221,7 +1289,7 @@ pub(crate) fn complete_search_asr(app: &AppHandle, result: Result<CompletedSearc
 fn run_web_search_and_synthesize(
     app: &AppHandle,
     completed: CompletedSearchAsr,
-    resource_dir: Option<std::path::PathBuf>,
+    _resource_dir: Option<std::path::PathBuf>,
 ) {
     let state = app.state::<AppState>();
     let retrieval_started = std::time::Instant::now();
@@ -1231,98 +1299,91 @@ fn run_web_search_and_synthesize(
     } else {
         normalized.clone()
     };
+    let needs_web = search::needs_web_retrieval(&completed.query);
     let time_sensitive = search::is_time_sensitive(&completed.query);
-    // Cache bypass for time-sensitive queries (weather/scores/prices go stale).
     let mut cache_hit = false;
-    let mut hits: Vec<search::SearchHit> = if !time_sensitive {
-        search::cached_hits_for(&cache_key).map(|cached| {
-            cache_hit = true;
-            cached
-        }).unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    let mut retrieved_from_network = cache_hit && !hits.is_empty();
-    if hits.is_empty() {
-        retrieved_from_network = false;
-        cache_hit = false;
-        let provider = DuckDuckGoProvider::with_client(
-            completed.provider_url,
-            state.search_http.clone(),
-        );
-        hits = match provider.search(&completed.query) {
-            Ok(hits) => hits,
-            Err(error) => {
-                if let Ok(status) = state.search.fail(error.clone()) {
-                    emit_search_status(app, &status);
+    let mut hits: Vec<search::SearchHit> = Vec::new();
+    let mut retrieved_from_network = false;
+    if needs_web {
+        hits = if !time_sensitive {
+            search::cached_hits_for(&cache_key).map(|cached| {
+                cache_hit = true;
+                cached
+            }).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        retrieved_from_network = cache_hit && !hits.is_empty();
+        if hits.is_empty() {
+            retrieved_from_network = false;
+            cache_hit = false;
+            let provider = DuckDuckGoProvider::with_client(
+                completed.provider_url,
+                state.search_http.clone(),
+            );
+            hits = match provider.search(&completed.query) {
+                Ok(hits) => hits,
+                Err(error) => {
+                    if let Ok(status) = state.search.fail(error.clone()) {
+                        emit_search_status(app, &status);
+                    }
+                    let _ = app.emit("search-error", error);
+                    show_search_overlay(app, SearchOverlayStage::Stage, true);
+                    return;
                 }
-                let _ = app.emit("search-error", error);
-                show_search_overlay(app, SearchOverlayStage::Stage, true);
-                return;
+            };
+            search::rerank_hits(&completed.query, &mut hits);
+            let kind = search::classify_query(&completed.query);
+            let top_k = match kind {
+                search::QueryKind::Fast => 3,
+                search::QueryKind::Grounded => 4,
+            };
+            hits = search::truncate_hits(hits, top_k);
+            if !time_sensitive && !hits.is_empty() {
+                search::store_hits_cache(cache_key, hits.clone());
             }
-        };
-        // Relevance first, then adaptive top_k cuts tokens 30-40%.
-        search::rerank_hits(&completed.query, &mut hits);
-        let kind = search::classify_query(&completed.query);
-        let top_k = match kind {
-            search::QueryKind::Fast => 4,
-            search::QueryKind::Grounded => 5,
-        };
-        hits = search::truncate_hits(hits, top_k);
-        if !time_sensitive && !hits.is_empty() {
-            search::store_hits_cache(cache_key, hits.clone());
         }
     }
     let retrieval_ms = retrieval_started.elapsed().as_millis();
-    // Banner: result thumbnails + DDG image search (favicons stay in source list).
-    let images = search::banner_images_for_search(&state.search_http, &completed.query, &hits, 3);
-    let allowed: HashSet<String> = search::expanded_allowed_urls_with_images(&hits, &images);
-    state.search.remember_allowed_urls(allowed.clone());
-
-    // Interim update for the pill (query text) — the panel stays hidden on
-    // the regular pill loading state until the grounded answer is ready.
-    // Includes top image so even the interim feels visual.
-    let interim = ui_schema::fallback_document_with_images(
-        &completed.query,
-        &hits
-            .iter()
-            .enumerate()
-            .map(|(index, hit)| {
-                (
-                    (index + 1) as u32,
-                    hit.title.clone(),
-                    hit.url.clone(),
-                    hit.snippet.clone(),
-                )
-            })
-            .collect::<Vec<_>>(),
-        &images,
+    // Thumbs are instant; DDG photos fetch in parallel with LLM synthesis.
+    let thumbs = search::photo_candidates_for_hits(&hits);
+    state.search.remember_allowed_urls(
+        search::expanded_allowed_urls_with_images(&hits, &thumbs),
     );
-    let _ = app.emit(
-        "search-result",
-        SearchResultPayload {
-            query: completed.query.clone(),
-            ui: interim,
-            sources: hits.clone(),
-            warning: Some("Fetching a grounded answer…".into()),
-        },
-    );
-    show_search_overlay(app, SearchOverlayStage::Pill, false);
 
     if let Ok(status) = state.search.mark_synthesizing(completed.query.clone()) {
         emit_search_status(app, &status);
     }
 
-    // Shared client: keep-alive, 10s synthesis timeout inside search.rs.
+    let http = state.search_http.clone();
+    let query_for_images = completed.query.clone();
+    let hits_for_images = hits.clone();
+    let banner_handle = std::thread::Builder::new()
+        .name("pronto-search-banner-img".into())
+        .spawn(move || {
+            search::resolve_banner_images(&http, &query_for_images, &hits_for_images, 3)
+        })
+        .ok();
+
     let client = state.search_http.clone();
     let synthesis_started = std::time::Instant::now();
-    let (mut ui, mut warning) = match search::synthesize_search_ui(
+    let grounded = needs_web && !hits.is_empty();
+    let synth_result = search::synthesize_search_markdown(
         &client,
         &completed.query,
         &hits,
-        resource_dir.as_deref(),
-        &images,
-    ) {
+        grounded,
+    );
+
+    let images = banner_handle
+        .and_then(|handle| handle.join().ok())
+        .map(|resolved| search::merge_banner_images(thumbs.clone(), resolved, 3))
+        .unwrap_or(thumbs);
+    state.search.remember_allowed_urls(
+        search::expanded_allowed_urls_with_images(&hits, &images),
+    );
+
+    let (parsed, mut warning) = match synth_result {
         Ok(result) => result,
         Err(error) => {
             if let Ok(status) = state.search.fail(error.clone()) {
@@ -1333,6 +1394,7 @@ fn run_web_search_and_synthesize(
         }
     };
     let synthesis_ms = synthesis_started.elapsed().as_millis();
+    let banner_image = search::build_banner_image(&state.search_http, &images);
     // Surface cache + timing in warning when otherwise silent (observability
     // without extra IPC): keeps fast-path transparent.
     if warning.is_none() && (cache_hit || retrieval_ms > 0) {
@@ -1344,12 +1406,13 @@ fn run_web_search_and_synthesize(
             let _ = (retrieval_ms, synthesis_ms, retrieved_from_network);
         }
     }
-    search::ensure_sources(&mut ui, &hits);
-    // Belt-and-braces: ensure_sources covers text-only, ensure_image is
-    // already applied inside synthesize, but fast-path fallback already has it.
     let payload = SearchResultPayload {
         query: completed.query.clone(),
-        ui,
+        markdown: parsed.markdown,
+        layout: parsed.layout,
+        key_facts: parsed.key_facts,
+        followups: parsed.followups,
+        banner_image,
         sources: hits,
         warning: warning.clone(),
     };
@@ -1479,12 +1542,14 @@ fn get_preferences(state: tauri::State<'_, AppState>) -> Result<AppPreferences, 
 
 #[tauri::command]
 fn save_settings(
+    app: AppHandle,
     state: tauri::State<'_, AppState>,
     mut settings: UserSettings,
 ) -> Result<AppPreferences, String> {
     // Shortcut changes are transactional through set_hotkey so a settings
     // write can never persist a shortcut that Windows rejected.
     let previous = state.settings.snapshot()?;
+    let theme_changed = settings.theme != previous.theme;
     let gpu_memory_management_changed =
         settings.gpu_memory_management != previous.gpu_memory_management;
     settings.hotkey = previous.hotkey;
@@ -1498,6 +1563,14 @@ fn save_settings(
     }
     match state.settings.replace(settings) {
         Ok(preferences) => {
+            if theme_changed {
+                let theme = match preferences.settings.theme {
+                    settings::ThemeMode::Light => "light",
+                    settings::ThemeMode::Dark => "dark",
+                    settings::ThemeMode::System => "system",
+                };
+                let _ = app.emit("theme-changed", theme);
+            }
             if gpu_memory_management_changed {
                 if let Ok(engine) = state.engine.lock() {
                     if let Some(engine) = engine.as_ref() {
@@ -1861,6 +1934,11 @@ fn cancel_search(app: AppHandle) -> Result<SearchStatus, String> {
 }
 
 #[tauri::command]
+fn reroute_dictation_to_search_command(app: AppHandle) -> Result<SearchStatus, String> {
+    reroute_dictation_to_search(&app)
+}
+
+#[tauri::command]
 fn dismiss_search_overlay(app: AppHandle) -> Result<(), String> {
     dismiss_search_overlay_inner(&app);
     Ok(())
@@ -1877,7 +1955,7 @@ fn set_search_overlay_stage(app: AppHandle, stage: String) -> Result<(), String>
 #[tauri::command]
 fn open_search_result(app: AppHandle, url: String) -> Result<(), String> {
     let state = app.state::<AppState>();
-    if !state.search.is_allowed_url(&url) {
+    if !state.search.is_allowed_url(&url) && !search::is_trusted_external_url(&url) {
         return Err("That URL is not part of the current search results".into());
     }
     // Opening the system browser steals focus; don't treat that as click-away.
@@ -1895,11 +1973,20 @@ struct SearchImagePayload {
 #[tauri::command]
 fn fetch_search_image(app: AppHandle, url: String) -> Result<SearchImagePayload, String> {
     let state = app.state::<AppState>();
-    if !state.search.is_allowed_url(&url) {
+    if !state.search.is_allowed_url(&url) && !search::is_trusted_search_image_url(&url) {
         return Err("That image is not part of the current search results".into());
     }
     let (mime, data) = search::fetch_allowlisted_image(&state.search_http, &url)?;
     Ok(SearchImagePayload { mime, data })
+}
+
+#[tauri::command]
+fn open_ddg_search(app: AppHandle, query: String) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    state.search_blur_dismiss.store(false, Ordering::Release);
+    let url = search::ddg_search_url(&query)
+        .ok_or_else(|| "No search query to open".to_string())?;
+    search::open_url_in_default_browser(&url)
 }
 
 #[tauri::command]
@@ -2294,9 +2381,11 @@ pub fn run() {
             start_search_recording,
             stop_search_recording,
             cancel_search,
+            reroute_dictation_to_search_command,
             dismiss_search_overlay,
             set_search_overlay_stage,
             open_search_result,
+            open_ddg_search,
             fetch_search_image,
             get_search_status,
             save_api_key,
