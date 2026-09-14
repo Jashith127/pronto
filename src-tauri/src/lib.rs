@@ -890,10 +890,12 @@ fn emit_search_status(app: &AppHandle, status: &SearchStatus) {
     let _ = app.emit("search-status", status);
 }
 
-fn show_search_window(app: &AppHandle) {
+fn show_search_window_with_focus(app: &AppHandle, focus: bool) {
     if let Some(window) = app.get_webview_window("search") {
         let _ = window.show();
-        let _ = window.set_focus();
+        if focus {
+            let _ = window.set_focus();
+        }
     }
 }
 
@@ -918,6 +920,47 @@ fn search_blocked_reason(state: &AppState) -> Option<String> {
     None
 }
 
+/// Minimum listen time before Hold-release / Toggle-stop is accepted.
+/// Win+Space layout switching often synthesizes an immediate key-up; ignoring
+/// that bounce keeps hold-to-talk usable. A deferred finish still runs.
+const SEARCH_MIN_LISTEN_MS: u128 = 280;
+/// Hard cap so a missed key-up cannot leave search listening forever.
+const SEARCH_MAX_LISTEN_SECS: u64 = 8;
+
+fn arm_search_listen_watchdog(app: &AppHandle, generation: u64) {
+    let app = app.clone();
+    std::thread::Builder::new()
+        .name("pronto-search-watchdog".into())
+        .spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(SEARCH_MAX_LISTEN_SECS));
+            if app
+                .state::<AppState>()
+                .search
+                .is_listening_generation(generation)
+            {
+                let _ = finish_search_recording_inner(&app, true);
+            }
+        })
+        .ok();
+}
+
+fn arm_deferred_search_finish(app: &AppHandle, generation: u64, delay_ms: u128) {
+    let app = app.clone();
+    std::thread::Builder::new()
+        .name("pronto-search-defer-finish".into())
+        .spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(delay_ms as u64));
+            if app
+                .state::<AppState>()
+                .search
+                .is_listening_generation(generation)
+            {
+                let _ = finish_search_recording_inner(&app, true);
+            }
+        })
+        .ok();
+}
+
 fn begin_search_recording_inner(app: &AppHandle) -> Result<SearchStatus, String> {
     let state = app.state::<AppState>();
     if let Some(reason) = search_blocked_reason(&state) {
@@ -927,7 +970,12 @@ fn begin_search_recording_inner(app: &AppHandle) -> Result<SearchStatus, String>
         );
         return Err(reason);
     }
-    let status = state.search.begin_listening()?;
+    let hold_mode = state
+        .settings
+        .snapshot()
+        .map(|settings| settings.activation_mode == ActivationMode::Hold)
+        .unwrap_or(true);
+    let (status, generation) = state.search.begin_listening(hold_mode)?;
     if status.phase != SearchPhase::Listening {
         return Ok(status);
     }
@@ -938,8 +986,11 @@ fn begin_search_recording_inner(app: &AppHandle) -> Result<SearchStatus, String>
                     engine.warm();
                 }
             }
-            show_search_window(app);
+            // Show without stealing focus — focusing mid-chord desyncs the
+            // WH_KEYBOARD_LL pressed-set for Win+Space and breaks Hold release.
+            show_search_window_with_focus(app, false);
             emit_search_status(app, &status);
+            arm_search_listen_watchdog(app, generation);
             Ok(status)
         }
         Err(error) => {
@@ -952,29 +1003,58 @@ fn begin_search_recording_inner(app: &AppHandle) -> Result<SearchStatus, String>
     }
 }
 
-fn finish_search_recording_inner(app: &AppHandle) -> Result<SearchStatus, String> {
+fn finish_search_recording_inner(app: &AppHandle, force: bool) -> Result<SearchStatus, String> {
     let state = app.state::<AppState>();
+    let current = state.search.status()?;
+    if current.phase != SearchPhase::Listening {
+        return Ok(current);
+    }
+    let generation = state.search.current_listen_generation();
+    let elapsed = state.search.listen_elapsed_ms();
+    if !force && elapsed < SEARCH_MIN_LISTEN_MS {
+        // Bounce release from Win+Space layout switching — finish shortly if
+        // we are still listening (keys are typically already up).
+        arm_deferred_search_finish(app, generation, SEARCH_MIN_LISTEN_MS.saturating_sub(elapsed));
+        return Ok(current);
+    }
+
     let settings = state.settings.snapshot()?;
-    let recording = state.audio.stop()?;
-    let status = state.search.mark_searching(None)?;
+    let recording = match state.audio.stop() {
+        Ok(recording) => recording,
+        Err(error) => {
+            let failed = state
+                .search
+                .fail(format!("Could not stop microphone: {error}"))?;
+            emit_search_status(app, &failed);
+            let _ = app.emit("search-error", failed.message.clone());
+            return Err(failed.message);
+        }
+    };
+    let status = state.search.mark_transcribing()?;
     if status.phase != SearchPhase::Searching {
         return Ok(status);
     }
     emit_search_status(app, &status);
-    show_search_window(app);
+    show_search_window_with_focus(app, true);
     let engine = state.engine.lock().map_err(|_| "engine lock poisoned")?;
     if let Some(engine) = engine.as_ref() {
-        engine.transcribe_search(SearchAsrJob {
+        if let Err(error) = engine.transcribe_search(SearchAsrJob {
             recording,
             language: settings.language.clone(),
             dictionary: settings.dictionary.clone(),
             provider_url: settings.search_provider_url.clone(),
-        })?;
+        }) {
+            let failed = state.search.fail(error)?;
+            emit_search_status(app, &failed);
+            let _ = app.emit("search-error", failed.message.clone());
+            return Ok(failed);
+        }
     } else {
         let failed = state
             .search
             .fail("Transcription engine is still starting")?;
         emit_search_status(app, &failed);
+        let _ = app.emit("search-error", failed.message.clone());
         return Ok(failed);
     }
     Ok(status)
@@ -999,6 +1079,11 @@ pub(crate) fn complete_search_asr(app: &AppHandle, result: Result<CompletedSearc
                 Err(_) => return,
             };
             emit_search_status(app, &status);
+            // Surface the recognized query immediately so the wait feels shorter.
+            let _ = app.emit(
+                "search-query",
+                serde_json::json!({ "query": completed.query }),
+            );
             let app_handle = app.clone();
             let resource_dir = state.search.resource_dir();
             std::thread::Builder::new()
@@ -1013,6 +1098,7 @@ pub(crate) fn complete_search_asr(app: &AppHandle, result: Result<CompletedSearc
                 emit_search_status(app, &status);
             }
             let _ = app.emit("search-error", error);
+            show_search_window_with_focus(app, true);
         }
     }
 }
@@ -1031,13 +1117,46 @@ fn run_web_search_and_synthesize(
                 emit_search_status(app, &status);
             }
             let _ = app.emit("search-error", error);
+            show_search_window_with_focus(app, true);
             return;
         }
     };
     let allowed: HashSet<String> = hits.iter().map(|hit| hit.url.clone()).collect();
-    state.search.remember_allowed_urls(allowed);
+    state.search.remember_allowed_urls(allowed.clone());
+
+    // Progressive UI: show sources immediately, then refine with the LLM answer.
+    let interim = ui_schema::fallback_document(
+        &completed.query,
+        &hits
+            .iter()
+            .enumerate()
+            .map(|(index, hit)| {
+                (
+                    (index + 1) as u32,
+                    hit.title.clone(),
+                    hit.url.clone(),
+                    hit.snippet.clone(),
+                )
+            })
+            .collect::<Vec<_>>(),
+    );
+    let _ = app.emit(
+        "search-result",
+        SearchResultPayload {
+            query: completed.query.clone(),
+            ui: interim,
+            sources: hits.clone(),
+            warning: Some("Fetching a grounded answer…".into()),
+        },
+    );
+    show_search_window_with_focus(app, true);
+
+    if let Ok(status) = state.search.mark_synthesizing(completed.query.clone()) {
+        emit_search_status(app, &status);
+    }
+
     let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
+        .timeout(std::time::Duration::from_secs(20))
         .build()
         .unwrap_or_else(|_| reqwest::blocking::Client::new());
     let (mut ui, warning) = match search::synthesize_search_ui(
@@ -1066,40 +1185,58 @@ fn run_web_search_and_synthesize(
         emit_search_status(app, &status);
     }
     let _ = app.emit("search-result", payload);
-    show_search_window(app);
+    show_search_window_with_focus(app, true);
 }
 
 fn handle_search_hotkey(app: &AppHandle, event: HotkeyEvent) {
+    // Mirror dictation: Hold uses press/release; Toggle uses press edges only.
     let mode = app
         .state::<AppState>()
         .settings
         .snapshot()
         .map(|settings| settings.activation_mode)
         .unwrap_or_default();
-    let phase = app
-        .state::<AppState>()
-        .search
-        .status()
-        .ok()
-        .map(|status| status.phase);
-    match (mode, event, phase) {
-        (ActivationMode::Hold, HotkeyEvent::Pressed, _) => {
+    match (mode, event) {
+        (ActivationMode::Hold, HotkeyEvent::Pressed) => {
             let _ = begin_search_recording_inner(app);
         }
-        (ActivationMode::Hold, HotkeyEvent::Released, Some(SearchPhase::Listening)) => {
-            let _ = finish_search_recording_inner(app);
+        (ActivationMode::Hold, HotkeyEvent::Released) => {
+            if let Err(error) = finish_search_recording_inner(app, false) {
+                let _ = app.emit(
+                    "tray-message",
+                    serde_json::json!({ "message": error, "error": true }),
+                );
+            }
         }
-        (ActivationMode::Toggle, HotkeyEvent::Pressed, Some(SearchPhase::Listening)) => {
-            let _ = finish_search_recording_inner(app);
+        (ActivationMode::Toggle, HotkeyEvent::Pressed) => {
+            let listening = app.state::<AppState>().search.is_listening();
+            if listening {
+                // Ignore chord bounce right after start (common with Win+Space).
+                if app.state::<AppState>().search.listen_elapsed_ms() < SEARCH_MIN_LISTEN_MS {
+                    return;
+                }
+                if let Err(error) = finish_search_recording_inner(app, false) {
+                    let _ = app.emit(
+                        "tray-message",
+                        serde_json::json!({ "message": error, "error": true }),
+                    );
+                }
+            } else {
+                let phase = app
+                    .state::<AppState>()
+                    .search
+                    .status()
+                    .ok()
+                    .map(|status| status.phase);
+                if matches!(
+                    phase,
+                    Some(SearchPhase::Idle | SearchPhase::Complete | SearchPhase::Error) | None
+                ) {
+                    let _ = begin_search_recording_inner(app);
+                }
+            }
         }
-        (
-            ActivationMode::Toggle,
-            HotkeyEvent::Pressed,
-            Some(SearchPhase::Idle | SearchPhase::Complete | SearchPhase::Error) | None,
-        ) => {
-            let _ = begin_search_recording_inner(app);
-        }
-        _ => {}
+        (ActivationMode::Toggle, HotkeyEvent::Released) => {}
     }
 }
 
@@ -1543,7 +1680,7 @@ fn start_search_recording(app: AppHandle) -> Result<SearchStatus, String> {
 
 #[tauri::command]
 fn stop_search_recording(app: AppHandle) -> Result<SearchStatus, String> {
-    finish_search_recording_inner(&app)
+    finish_search_recording_inner(&app, true)
 }
 
 #[tauri::command]

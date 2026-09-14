@@ -8,6 +8,7 @@ const queryText = document.querySelector('#search-query-text');
 const emptyEl = document.querySelector('#search-empty');
 const nodesEl = document.querySelector('#search-nodes');
 const cancelBtn = document.querySelector('#search-cancel');
+const finishBtn = document.querySelector('#search-finish');
 const plots = [];
 
 function showToast(text, error = false) {
@@ -154,6 +155,7 @@ function renderStatus(status) {
   phaseEl.className = `search-phase ${phase}`;
   messageEl.textContent = status?.message || '';
   cancelBtn.hidden = !(phase === 'listening' || phase === 'searching');
+  finishBtn.hidden = phase !== 'listening';
   if (status?.query) {
     queryWrap.hidden = false;
     queryText.textContent = status.query;
@@ -173,6 +175,14 @@ function renderResult(payload) {
   if (payload.query) {
     queryWrap.hidden = false;
     queryText.textContent = payload.query;
+  }
+  // Interim source lists keep phase as searching until the final answer arrives.
+  if (payload.warning === 'Fetching a grounded answer…') {
+    renderStatus({
+      phase: 'searching',
+      message: 'Writing grounded answer…',
+      query: payload.query,
+    });
   }
 }
 
@@ -198,6 +208,10 @@ nodesEl.addEventListener('click', async event => {
   }
 });
 
+finishBtn.addEventListener('click', async () => {
+  renderStatus(await call('stop_search_recording'));
+});
+
 cancelBtn.addEventListener('click', async () => {
   renderStatus(await call('cancel_search'));
 });
@@ -213,10 +227,17 @@ document.querySelector('#search-close').addEventListener('click', async () => {
 });
 
 listen('search-status', event => renderStatus(event.payload));
+listen('search-query', event => {
+  if (event.payload?.query) {
+    queryWrap.hidden = false;
+    queryText.textContent = event.payload.query;
+  }
+});
 listen('search-result', event => {
+  const interim = event.payload.warning === 'Fetching a grounded answer…';
   renderStatus({
-    phase: 'complete',
-    message: event.payload.warning || 'Answer ready',
+    phase: interim ? 'searching' : 'complete',
+    message: interim ? 'Writing grounded answer…' : (event.payload.warning || 'Answer ready'),
     query: event.payload.query,
   });
   renderResult(event.payload);

@@ -80,7 +80,7 @@ impl DuckDuckGoProvider {
             endpoint: endpoint.into(),
             client: Client::builder()
                 .user_agent("ProntoVoiceSearch/0.1 (+local; DuckDuckGo HTML)")
-                .timeout(std::time::Duration::from_secs(20))
+                .timeout(std::time::Duration::from_secs(8))
                 .build()
                 .expect("reqwest client"),
         }
@@ -89,12 +89,25 @@ impl DuckDuckGoProvider {
 
 impl SearchProvider for DuckDuckGoProvider {
     fn search(&self, query: &str) -> Result<Vec<SearchHit>, String> {
+        let encoded = urlencoding_lite(query);
+        // Prefer a single GET round-trip; fall back to the classic HTML POST form.
+        let get_url = if self.endpoint.contains('?') {
+            format!("{}&q={encoded}", self.endpoint.trim_end_matches('&'))
+        } else {
+            let base = self.endpoint.trim_end_matches('/');
+            format!("{base}/?q={encoded}")
+        };
         let response = self
             .client
-            .post(&self.endpoint)
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .body(format!("q={}", urlencoding_lite(query)))
+            .get(&get_url)
             .send()
+            .or_else(|_| {
+                self.client
+                    .post(&self.endpoint)
+                    .header("Content-Type", "application/x-www-form-urlencoded")
+                    .body(format!("q={encoded}"))
+                    .send()
+            })
             .map_err(|error| format!("DuckDuckGo request failed: {error}"))?;
         if !response.status().is_success() {
             return Err(format!("DuckDuckGo returned {}", response.status()));
@@ -231,6 +244,7 @@ fn percent_decode(value: &str) -> String {
 pub struct SearchController {
     status: Mutex<SearchStatus>,
     started_at: Mutex<Option<Instant>>,
+    listen_generation: Mutex<u64>,
     last_allowed_urls: Mutex<HashSet<String>>,
     resource_dir: Mutex<Option<PathBuf>>,
 }
@@ -246,6 +260,7 @@ impl SearchController {
         Self {
             status: Mutex::new(SearchStatus::default()),
             started_at: Mutex::new(None),
+            listen_generation: Mutex::new(0),
             last_allowed_urls: Mutex::new(HashSet::new()),
             resource_dir: Mutex::new(None),
         }
@@ -264,43 +279,106 @@ impl SearchController {
             .map_err(|_| "search status lock poisoned".into())
     }
 
-    pub fn begin_listening(&self) -> Result<SearchStatus, String> {
+    pub fn listen_elapsed_ms(&self) -> u128 {
+        self.started_at
+            .lock()
+            .ok()
+            .and_then(|guard| guard.map(|time| time.elapsed().as_millis()))
+            .unwrap_or(0)
+    }
+
+    pub fn current_listen_generation(&self) -> u64 {
+        self.listen_generation
+            .lock()
+            .map(|value| *value)
+            .unwrap_or(0)
+    }
+
+    pub fn is_listening_generation(&self, generation: u64) -> bool {
+        self.status
+            .lock()
+            .map(|status| status.phase == SearchPhase::Listening)
+            .unwrap_or(false)
+            && self.current_listen_generation() == generation
+    }
+
+    pub fn begin_listening(&self, hold_mode: bool) -> Result<(SearchStatus, u64), String> {
         let mut status = self.status.lock().map_err(|_| "search status lock poisoned")?;
         if !matches!(
             status.phase,
             SearchPhase::Idle | SearchPhase::Complete | SearchPhase::Error
         ) {
-            return Ok(status.clone());
+            return Ok((status.clone(), self.current_listen_generation()));
         }
         *self
             .started_at
             .lock()
             .map_err(|_| "search timer lock poisoned")? = Some(Instant::now());
+        let generation = {
+            let mut generation = self
+                .listen_generation
+                .lock()
+                .map_err(|_| "search generation lock poisoned")?;
+            *generation = generation.wrapping_add(1);
+            *generation
+        };
         *status = SearchStatus {
             phase: SearchPhase::Listening,
-            message: "Listening for your search…".into(),
+            message: if hold_mode {
+                "Listening… release to search".into()
+            } else {
+                "Listening… press your shortcut again to search".into()
+            },
             query: None,
             elapsed_ms: 0,
+        };
+        Ok((status.clone(), generation))
+    }
+
+    pub fn mark_transcribing(&self) -> Result<SearchStatus, String> {
+        let mut status = self.status.lock().map_err(|_| "search status lock poisoned")?;
+        if status.phase != SearchPhase::Listening {
+            return Ok(status.clone());
+        }
+        let elapsed = self.listen_elapsed_ms();
+        *status = SearchStatus {
+            phase: SearchPhase::Searching,
+            message: "Transcribing your question…".into(),
+            query: None,
+            elapsed_ms: elapsed,
         };
         Ok(status.clone())
     }
 
     pub fn mark_searching(&self, query_hint: Option<String>) -> Result<SearchStatus, String> {
         let mut status = self.status.lock().map_err(|_| "search status lock poisoned")?;
-        if status.phase != SearchPhase::Listening {
+        if !matches!(status.phase, SearchPhase::Listening | SearchPhase::Searching) {
             return Ok(status.clone());
         }
-        let elapsed = self
-            .started_at
-            .lock()
-            .ok()
-            .and_then(|guard| guard.map(|time| time.elapsed().as_millis()))
-            .unwrap_or(0);
+        let elapsed = self.listen_elapsed_ms();
         *status = SearchStatus {
             phase: SearchPhase::Searching,
-            message: "Searching the web…".into(),
+            message: if query_hint.as_ref().is_some_and(|query| !query.is_empty()) {
+                "Searching the web…".into()
+            } else {
+                "Searching…".into()
+            },
             query: query_hint,
             elapsed_ms: elapsed,
+        };
+        Ok(status.clone())
+    }
+
+    pub fn mark_synthesizing(&self, query: String) -> Result<SearchStatus, String> {
+        let mut status = self.status.lock().map_err(|_| "search status lock poisoned")?;
+        if status.phase != SearchPhase::Searching {
+            return Ok(status.clone());
+        }
+        *status = SearchStatus {
+            phase: SearchPhase::Searching,
+            message: "Writing grounded answer…".into(),
+            query: Some(query),
+            elapsed_ms: self.listen_elapsed_ms(),
         };
         Ok(status.clone())
     }
@@ -346,6 +424,10 @@ impl SearchController {
         if let Ok(mut started) = self.started_at.lock() {
             *started = None;
         }
+        // Invalidate any outstanding listen timeout.
+        if let Ok(mut generation) = self.listen_generation.lock() {
+            *generation = generation.wrapping_add(1);
+        }
         Ok(status.clone())
     }
 
@@ -353,6 +435,13 @@ impl SearchController {
         self.status
             .lock()
             .map(|status| matches!(status.phase, SearchPhase::Listening | SearchPhase::Searching))
+            .unwrap_or(false)
+    }
+
+    pub fn is_listening(&self) -> bool {
+        self.status
+            .lock()
+            .map(|status| status.phase == SearchPhase::Listening)
             .unwrap_or(false)
     }
 
@@ -521,12 +610,13 @@ RULES:
             { "role": "user", "content": user }
         ],
         "temperature": 0.2,
-        "max_tokens": 3000,
+        "max_tokens": 1600,
         "stream": false,
         "response_format": { "type": "json_object" }
     });
     let response = client
         .post(endpoint)
+        .timeout(std::time::Duration::from_secs(18))
         .bearer_auth(api_key)
         .json(&body)
         .send()
@@ -735,12 +825,26 @@ mod tests {
         // SearchController has no SettingsStore handle; completing a search
         // only mutates SearchStatus. This guards the architectural boundary.
         let controller = SearchController::new();
-        let _ = controller.begin_listening().unwrap();
+        let _ = controller.begin_listening(true).unwrap();
         let _ = controller.mark_searching(Some("weather".into())).unwrap();
         let status = controller
             .complete("weather".into(), None)
             .unwrap();
         assert_eq!(status.phase, SearchPhase::Complete);
         assert_eq!(status.query.as_deref(), Some("weather"));
+    }
+
+    #[test]
+    fn listen_generation_invalidates_stale_watchdogs() {
+        let controller = SearchController::new();
+        let (_, first) = controller.begin_listening(true).unwrap();
+        assert!(controller.is_listening_generation(first));
+        let _ = controller.reset().unwrap();
+        assert!(!controller.is_listening_generation(first));
+        let (_, second) = controller.begin_listening(false).unwrap();
+        assert_ne!(first, second);
+        assert!(controller.is_listening_generation(second));
+        let _ = controller.mark_transcribing().unwrap();
+        assert!(!controller.is_listening_generation(second));
     }
 }

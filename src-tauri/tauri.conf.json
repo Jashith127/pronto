@@ -54,7 +54,7 @@
         "transparent": false,
         "shadow": false,
         "visible": false,
-        "focus": true
+        "focus": false
       }
     ],
     "security": {
