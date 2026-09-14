@@ -25,6 +25,7 @@
       <div class="search-phase" id="search-phase">Idle</div>
       <p class="search-message" id="search-message">Press Win + Space and speak your query.</p>
       <div class="search-actions">
+        <button type="button" id="search-finish" hidden>Search now</button>
         <button type="button" class="change-button" id="search-cancel" hidden>Cancel</button>
       </div>
     </div>
@@ -37,7 +38,7 @@
     <main class="search-content" id="search-content" tabindex="0">
       <div class="search-empty" id="search-empty">
         <h1>Ask out loud</h1>
-        <p>Hold <kbd>Win</kbd> + <kbd>Space</kbd>, ask a question, and Pronto retrieves web sources then builds a grounded answer.</p>
+        <p id="search-empty-hint">Uses the same Hold / Toggle behavior as dictation. Default shortcut is <kbd>Win</kbd> + <kbd>Space</kbd>.</p>
         <p class="search-privacy">Your spoken query and result snippets are sent to DuckDuckGo and DeepSeek. Audio stays on this PC.</p>
       </div>
       <div class="search-nodes" id="search-nodes" hidden></div>

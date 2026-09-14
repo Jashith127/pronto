@@ -133,6 +133,30 @@
   font-weight: 650;
 }
 
+.search-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+#search-finish {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--sage);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+#search-finish:hover {
+  background: var(--sage-strong);
+}
+
 .search-privacy {
   margin-top: 18px !important;
   color: var(--faint) !important;

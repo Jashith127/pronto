@@ -1,19 +1,24 @@
 # Voice search — manual QA
 
-Dedicated Pronto voice search is triggered only by the global search hotkey (default **Win + Space**, canonical `super+Space`). It does not use the dictation intent path, does not insert text, and does not write dictation history.
+Dedicated Pronto voice search is triggered only by the global search hotkey (default **Win + Space**, canonical `super+Space`). It does not use the dictation intent path, does not insert text, and does not write dictation history. Activation follows Settings Hold / Toggle exactly like dictation.
 
 ## Checklist
 
 ### Hold / toggle
-1. In Settings, set activation to **Hold**. Press and hold the search shortcut, speak a short query, release.
-2. Confirm the Search window opens, status moves Listening → Searching → Complete, and an answer (or fallback source list) appears.
-3. Switch activation to **Toggle**. Press once to start listening, press again to finish. Cancel mid-listen with the Cancel button.
+1. Settings → Activation = **Hold**. Press and hold the search shortcut, speak, release — listening should end on release (not after several seconds).
+2. Settings → Activation = **Toggle**. Press once to start, press again to finish. A second press within ~300ms of start is ignored (Win+Space bounce).
+3. While listening, **Search now** forces finish; **Cancel** aborts.
+
+### Stuck listening / latency
+1. Confirm the search window appears without stealing keyboard focus during listen.
+2. If a key-up is missed, listening auto-finishes within **8 seconds**.
+3. After stop: status should move Transcribing → Searching web → Writing answer. The query appears as soon as ASR completes; sources appear before the final LLM UI.
 
 ### Win + Space layout-switch warning
 1. With the default `super+Space` shortcut, press the chord.
 2. Confirm Pronto starts voice search **and** that Windows may still switch keyboard layouts (WH_KEYBOARD_LL calls `CallNextHookEx`).
-3. Remap voice search to another chord in Settings if layout switching is disruptive.
-4. Confirm the Fn key cannot be captured as a shortcut (no virtual-key code).
+3. Immediate synthetic key-ups from layout switching should not strand Pronto in Listening.
+4. Remap voice search in Settings if layout switching is disruptive. The Fn key cannot be bound (no VK code).
 
 ### Mutual exclusion
 1. Start dictation; press the search hotkey — expect a toast and no search recording.
