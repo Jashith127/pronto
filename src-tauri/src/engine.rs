@@ -71,11 +71,23 @@ pub struct MeetingTranscriptionJob {
     pub settings: UserSettings,
 }
 
+pub struct SearchAsrJob {
+    pub recording: Recording,
+    pub language: String,
+    pub dictionary: Vec<String>,
+    pub provider_url: String,
+}
+
 pub struct CompletedMeetingTranscription {
     pub id: String,
     pub transcript: String,
     pub notes: String,
     pub warning: Option<String>,
+}
+
+pub struct CompletedSearchAsr {
+    pub query: String,
+    pub provider_url: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -112,6 +124,12 @@ impl EngineController {
             .map_err(|_| "transcription engine stopped".into())
     }
 
+    pub fn transcribe_search(&self, job: SearchAsrJob) -> Result<(), String> {
+        self.commands
+            .send(EngineCommand::TranscribeSearch(job))
+            .map_err(|_| "transcription engine stopped".into())
+    }
+
     pub fn warm(&self) {
         let _ = self.commands.send(EngineCommand::Warm);
     }
@@ -126,6 +144,7 @@ impl EngineController {
 enum EngineCommand {
     Transcribe(TranscriptionJob),
     TranscribeMeeting(MeetingTranscriptionJob),
+    TranscribeSearch(SearchAsrJob),
     Warm,
     ConfigureGpuMemory(bool),
 }
@@ -362,6 +381,20 @@ fn engine_worker(
                     Err(error) => crate::fail_meeting_transcription(&app, &meeting_id, error),
                 }
             }
+            EngineCommand::TranscribeSearch(job) => {
+                let started = Instant::now();
+                policy.note_activity(started);
+                if server.is_none() {
+                    server =
+                        warm_server(&app, runtime.as_ref().map_err(String::as_str), &mut policy);
+                    last_start_failure = server.is_none().then(Instant::now);
+                }
+                let result = match server.as_mut() {
+                    Some(server) => process_search_asr(&client, server, job),
+                    None => Err("Parakeet could not start for voice search".into()),
+                };
+                crate::complete_search_asr(&app, result);
+            }
         }
     }
 
@@ -465,6 +498,27 @@ fn process_job(
         cleanup_warning,
         skip_history: job.skip_history,
         upload_id: job.upload_id,
+    })
+}
+
+fn process_search_asr(
+    client: &Client,
+    server: &SpeechServer,
+    job: SearchAsrJob,
+) -> Result<CompletedSearchAsr, String> {
+    // Voice search uses ASR + light local cleanup only — never DeepSeek rewrite
+    // and never the dictation history / insertion path.
+    let raw = transcribe_recording(client, server, &job.recording, &job.language)?;
+    if raw.is_empty() {
+        return Err("No speech was detected".into());
+    }
+    let query = apply_dictionary(&local_cleanup(&raw), &job.dictionary);
+    if query.trim().is_empty() {
+        return Err("No speech was detected".into());
+    }
+    Ok(CompletedSearchAsr {
+        query,
+        provider_url: job.provider_url,
     })
 }
 

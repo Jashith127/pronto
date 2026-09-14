@@ -104,9 +104,12 @@ function renderHotkey(next) {
   hotkeyStatus = next;
   document.querySelector('#settings-hotkey').innerHTML = shortcutMarkup(next.shortcut);
   document.querySelector('#settings-paste-hotkey').innerHTML = shortcutMarkup(next.pasteShortcut);
+  const searchHotkey = document.querySelector('#settings-search-hotkey');
+  if (searchHotkey) searchHotkey.innerHTML = shortcutMarkup(next.searchShortcut);
   if (engineStatus?.phase === 'idle') renderStatus(engineStatus);
   if (next.error) showToast(next.error, true);
   if (next.pasteError) showToast(next.pasteError, true);
+  if (next.searchError) showToast(next.searchError, true);
 }
 
 function renderMicrophones() {
@@ -141,6 +144,10 @@ function renderPreferences() {
   if (document.activeElement !== promptInput) promptInput.value = effectivePrompt;
   document.querySelector('#cleanup-prompt-status').textContent = preferences.settings.cleanupPrompt ? 'Custom prompt' : 'Built-in prompt';
   document.querySelector('#cleanup-prompt-count').textContent = `${promptInput.value.length.toLocaleString()} / 16,000`;
+  const providerInput = document.querySelector('#search-provider-url');
+  if (providerInput && document.activeElement !== providerInput) {
+    providerInput.value = preferences.settings.searchProviderUrl || 'https://html.duckduckgo.com/html/';
+  }
   renderMicrophones();
   renderDictionary();
 }
@@ -155,7 +162,10 @@ async function persistSettings() {
     gpuMemoryManagement: document.querySelector('#gpu-memory-management').checked,
     dictationSounds: document.querySelector('#dictation-sounds').checked,
     meetingSuggestions: document.querySelector('#meeting-suggestions').checked,
-    language: document.querySelector('#language').value
+    language: document.querySelector('#language').value,
+    searchProviderUrl: document.querySelector('#search-provider-url')?.value?.trim()
+      || preferences.settings.searchProviderUrl
+      || 'https://html.duckduckgo.com/html/'
   };
   preferences = await call('save_settings', { settings });
   renderPreferences();
@@ -242,10 +252,18 @@ function capturedShortcut(event) {
 
 function openHotkeyDialog(target = 'dictation') {
   pendingShortcutTarget = target;
-  document.querySelector('#hotkey-dialog-title').textContent = target === 'paste' ? 'Set paste shortcut' : 'Set dictation shortcut';
-  document.querySelector('#hotkey-dialog-desc').textContent = target === 'paste'
-    ? 'Press the combination that pastes your last transcript, then save it.'
-    : 'Press your combination, then save it. Modifier-only chords such as Win + Ctrl are supported.';
+  const titles = {
+    dictation: 'Set dictation shortcut',
+    paste: 'Set paste shortcut',
+    search: 'Set voice search shortcut',
+  };
+  const descriptions = {
+    dictation: 'Press your combination, then save it. Modifier-only chords such as Win + Ctrl are supported.',
+    paste: 'Press the combination that pastes your last transcript, then save it.',
+    search: 'Press the combination for voice search, then save it. Default is Win + Space. Windows may also switch keyboard layouts for that chord. The Fn key cannot be used.',
+  };
+  document.querySelector('#hotkey-dialog-title').textContent = titles[target] || titles.dictation;
+  document.querySelector('#hotkey-dialog-desc').textContent = descriptions[target] || descriptions.dictation;
   document.querySelector('#hotkey-error').textContent = '';
   document.querySelector('#capture-keys').innerHTML = '';
   document.querySelector('.capture-prompt').hidden = false;
@@ -490,6 +508,8 @@ document.querySelector('#history-list').addEventListener('click', copyTranscript
 
 document.querySelector('#change-hotkey').addEventListener('click', () => openHotkeyDialog('dictation'));
 document.querySelector('#change-paste-hotkey').addEventListener('click', () => openHotkeyDialog('paste'));
+document.querySelector('#change-search-hotkey')?.addEventListener('click', () => openHotkeyDialog('search'));
+document.querySelector('#search-provider-url')?.addEventListener('change', () => persistSettings());
 hotkeyCapture.addEventListener('keydown', event => {
   event.preventDefault();
   event.stopPropagation();
@@ -506,7 +526,11 @@ document.querySelector('#cancel-hotkey').addEventListener('click', () => hotkeyD
 document.querySelector('#save-hotkey').addEventListener('click', async () => {
   if (!pendingShortcut) return;
   try {
-    const command = pendingShortcutTarget === 'paste' ? 'set_paste_hotkey' : 'set_hotkey';
+    const command = pendingShortcutTarget === 'paste'
+      ? 'set_paste_hotkey'
+      : pendingShortcutTarget === 'search'
+        ? 'set_search_hotkey'
+        : 'set_hotkey';
     renderHotkey(await call(command, { hotkey: pendingShortcut }));
     hotkeyDialog.close();
     showToast('Shortcut updated');

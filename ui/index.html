@@ -150,6 +150,17 @@
                   <div><strong>Paste last transcript</strong><p>Works globally. Pastes your most recent transcript where you are typing.</p></div>
                   <div class="setting-control"><div class="shortcut-keys" id="settings-paste-hotkey"></div><button class="change-button" id="change-paste-hotkey">Change</button></div>
                 </div>
+                <div class="setting-row hotkey-row">
+                  <div>
+                    <strong>Voice search</strong>
+                    <p>Default Win + Space. Windows also uses this chord for keyboard layout switching; Pronto’s low-level hook calls CallNextHookEx, so the OS may switch layouts as well. The Fn key cannot be bound (no virtual-key code).</p>
+                  </div>
+                  <div class="setting-control"><div class="shortcut-keys" id="settings-search-hotkey"></div><button class="change-button" id="change-search-hotkey">Change</button></div>
+                </div>
+                <div class="setting-row">
+                  <div><strong>Search provider URL</strong><p>DuckDuckGo HTML endpoint used for retrieval. Query text and snippets are sent to this provider and to DeepSeek.</p></div>
+                  <input type="url" id="search-provider-url" aria-label="Search provider URL" style="min-width:min(360px,100%);height:36px;padding:0 12px;border:1px solid #d9d6ce;border-radius:8px;background:#fff;" />
+                </div>
                 <div class="setting-row">
                   <div><strong>Activation behavior</strong><p>Hold to talk, or press once to start and again to stop.</p></div>
                   <div class="segmented" role="group" aria-label="Activation behavior">
