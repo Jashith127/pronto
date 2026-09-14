@@ -3,29 +3,36 @@ mod engine;
 mod gpu_memory;
 mod hotkey;
 mod insert;
+mod mcp;
 mod meeting;
 #[cfg(windows)]
 mod meeting_detector;
 #[cfg(windows)]
 mod meeting_icon;
 mod pipeline;
+mod search;
 mod settings;
 #[cfg(windows)]
 mod single_instance;
 mod sound;
 mod startup;
 mod system_audio;
+mod ui_schema;
 
 use audio::{AudioController, MicrophoneStatus};
 use engine::{
-    CompletedMeetingTranscription, CompletedTranscription, EngineController,
-    MeetingTranscriptionJob, ModelStatus, TranscriptionJob,
+    CompletedMeetingTranscription, CompletedSearchAsr, CompletedTranscription, EngineController,
+    MeetingTranscriptionJob, ModelStatus, SearchAsrJob, TranscriptionJob,
 };
 use hotkey::{Hotkey, HotkeyController, HotkeyEvent, HotkeyId, HotkeyStatus};
 use pipeline::{EngineStatus, Phase, Pipeline};
+use search::{
+    DuckDuckGoProvider, SearchController, SearchPhase, SearchProvider, SearchResultPayload,
+    SearchStatus,
+};
 use settings::{ActivationMode, AppPreferences, HistoryEntry, SettingsStore, UserSettings};
 use sound::SoundController;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -45,6 +52,7 @@ pub(crate) struct AppState {
     audio: AudioController,
     system_audio: SystemAudioController,
     meetings: meeting::MeetingController,
+    search: SearchController,
     insertion_target: insert::InsertionTargetTracker,
     sounds: SoundController,
     engine: Mutex<Option<EngineController>>,
@@ -53,9 +61,11 @@ pub(crate) struct AppState {
     model_status: Mutex<ModelStatus>,
     active_shortcut: Mutex<Hotkey>,
     paste_shortcut: Mutex<Hotkey>,
+    search_shortcut: Mutex<Hotkey>,
     hotkey_controller: Mutex<Option<HotkeyController>>,
     hotkey_error: Mutex<Option<String>>,
     paste_hotkey_error: Mutex<Option<String>>,
+    search_hotkey_error: Mutex<Option<String>>,
     show_microphone_once: Mutex<bool>,
     pending_uploads: Mutex<HashMap<String, PendingUpload>>,
     meeting_tray_item: Mutex<Option<MenuItem<tauri::Wry>>>,
@@ -114,10 +124,35 @@ impl AppState {
                 .expect("the fallback paste shortcut must be valid");
         }
         let paste_canonical = paste_shortcut.canonical().to_string();
-        if canonical != configured || paste_canonical != paste_configured {
+        let search_configured = settings
+            .snapshot()
+            .map(|value| value.search_shortcut)
+            .unwrap_or_else(|_| hotkey::DEFAULT_SEARCH_HOTKEY.into());
+        let mut search_shortcut = hotkey::parse(&search_configured)
+            .or_else(|_| hotkey::parse(hotkey::DEFAULT_SEARCH_HOTKEY))
+            .expect("the built-in search shortcut must be valid");
+        if hotkey::shortcuts_conflict(&search_shortcut, &active_shortcut)
+            || hotkey::shortcuts_conflict(&search_shortcut, &paste_shortcut)
+        {
+            // Prefer keeping dictation/paste; fall back to a non-colliding chord.
+            search_shortcut = hotkey::parse("control+super+Space")
+                .expect("the fallback search shortcut must be valid");
+            if hotkey::shortcuts_conflict(&search_shortcut, &active_shortcut)
+                || hotkey::shortcuts_conflict(&search_shortcut, &paste_shortcut)
+            {
+                search_shortcut = hotkey::parse("alt+super+Space")
+                    .expect("the secondary fallback search shortcut must be valid");
+            }
+        }
+        let search_canonical = search_shortcut.canonical().to_string();
+        if canonical != configured
+            || paste_canonical != paste_configured
+            || search_canonical != search_configured
+        {
             if let Ok(mut repaired) = settings.snapshot() {
                 repaired.hotkey = canonical;
                 repaired.paste_hotkey = paste_canonical;
+                repaired.search_shortcut = search_canonical;
                 let _ = settings.replace(repaired);
             }
         }
@@ -126,6 +161,7 @@ impl AppState {
             audio: AudioController::new(selected_microphone),
             system_audio: SystemAudioController::new(),
             meetings: meeting::MeetingController::new(),
+            search: SearchController::new(),
             insertion_target: insert::InsertionTargetTracker::new(),
             sounds: SoundController::new(),
             engine: Mutex::new(None),
@@ -138,9 +174,11 @@ impl AppState {
             }),
             active_shortcut: Mutex::new(active_shortcut),
             paste_shortcut: Mutex::new(paste_shortcut),
+            search_shortcut: Mutex::new(search_shortcut),
             hotkey_controller: Mutex::new(None),
             hotkey_error: Mutex::new(None),
             paste_hotkey_error: Mutex::new(None),
+            search_hotkey_error: Mutex::new(None),
             show_microphone_once: Mutex::new(true),
             pending_uploads: Mutex::new(HashMap::new()),
             meeting_tray_item: Mutex::new(None),
@@ -203,6 +241,9 @@ pub(crate) fn set_model_status(app: &AppHandle, status: ModelStatus) {
 
 fn begin_recording(app: &AppHandle) -> Result<EngineStatus, String> {
     let state = app.state::<AppState>();
+    if state.search.is_busy() {
+        return Err("Voice search is in progress. Finish or cancel it before dictating.".into());
+    }
     if state.meetings.status()?.recording {
         return Err(
             "Meeting notes are being taken. Stop the meeting before starting dictation.".into(),
@@ -512,6 +553,11 @@ fn start_meeting_recording(
     title: String,
 ) -> Result<meeting::MeetingRecord, String> {
     let state = app.state::<AppState>();
+    if state.search.is_busy() {
+        return Err(
+            "Voice search is in progress. Finish or cancel it before taking meeting notes.".into(),
+        );
+    }
     {
         let pipeline = state
             .pipeline
@@ -840,11 +886,232 @@ fn handle_paste_hotkey(app: &AppHandle) {
     }
 }
 
+fn emit_search_status(app: &AppHandle, status: &SearchStatus) {
+    let _ = app.emit("search-status", status);
+}
+
+fn show_search_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("search") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+fn search_blocked_reason(state: &AppState) -> Option<String> {
+    if state
+        .pipeline
+        .lock()
+        .map(|pipeline| matches!(pipeline.status.phase, Phase::Listening | Phase::Processing))
+        .unwrap_or(false)
+        || state.dictation_active.load(Ordering::Acquire)
+    {
+        return Some("Dictation is in progress. Finish it before starting voice search.".into());
+    }
+    if state
+        .meetings
+        .status()
+        .map(|status| status.recording)
+        .unwrap_or(false)
+    {
+        return Some("Meeting notes are being taken. Stop the meeting before voice search.".into());
+    }
+    None
+}
+
+fn begin_search_recording_inner(app: &AppHandle) -> Result<SearchStatus, String> {
+    let state = app.state::<AppState>();
+    if let Some(reason) = search_blocked_reason(&state) {
+        let _ = app.emit(
+            "tray-message",
+            serde_json::json!({ "message": reason, "error": true }),
+        );
+        return Err(reason);
+    }
+    let status = state.search.begin_listening()?;
+    if status.phase != SearchPhase::Listening {
+        return Ok(status);
+    }
+    match state.audio.start() {
+        Ok(_) => {
+            if let Ok(engine) = state.engine.lock() {
+                if let Some(engine) = engine.as_ref() {
+                    engine.warm();
+                }
+            }
+            show_search_window(app);
+            emit_search_status(app, &status);
+            Ok(status)
+        }
+        Err(error) => {
+            let failed = state
+                .search
+                .fail(format!("Microphone unavailable: {error}"))?;
+            emit_search_status(app, &failed);
+            Err(failed.message)
+        }
+    }
+}
+
+fn finish_search_recording_inner(app: &AppHandle) -> Result<SearchStatus, String> {
+    let state = app.state::<AppState>();
+    let settings = state.settings.snapshot()?;
+    let recording = state.audio.stop()?;
+    let status = state.search.mark_searching(None)?;
+    if status.phase != SearchPhase::Searching {
+        return Ok(status);
+    }
+    emit_search_status(app, &status);
+    show_search_window(app);
+    let engine = state.engine.lock().map_err(|_| "engine lock poisoned")?;
+    if let Some(engine) = engine.as_ref() {
+        engine.transcribe_search(SearchAsrJob {
+            recording,
+            language: settings.language.clone(),
+            dictionary: settings.dictionary.clone(),
+            provider_url: settings.search_provider_url.clone(),
+        })?;
+    } else {
+        let failed = state
+            .search
+            .fail("Transcription engine is still starting")?;
+        emit_search_status(app, &failed);
+        return Ok(failed);
+    }
+    Ok(status)
+}
+
+fn cancel_search_inner(app: &AppHandle) -> Result<SearchStatus, String> {
+    let state = app.state::<AppState>();
+    let _ = state.audio.stop();
+    let status = state.search.reset()?;
+    let mut cancelled = status;
+    cancelled.message = "Search cancelled".into();
+    emit_search_status(app, &cancelled);
+    Ok(cancelled)
+}
+
+pub(crate) fn complete_search_asr(app: &AppHandle, result: Result<CompletedSearchAsr, String>) {
+    let state = app.state::<AppState>();
+    match result {
+        Ok(completed) => {
+            let status = match state.search.mark_searching(Some(completed.query.clone())) {
+                Ok(status) => status,
+                Err(_) => return,
+            };
+            emit_search_status(app, &status);
+            let app_handle = app.clone();
+            let resource_dir = state.search.resource_dir();
+            std::thread::Builder::new()
+                .name("pronto-search-web".into())
+                .spawn(move || {
+                    run_web_search_and_synthesize(&app_handle, completed, resource_dir);
+                })
+                .ok();
+        }
+        Err(error) => {
+            if let Ok(status) = state.search.fail(error.clone()) {
+                emit_search_status(app, &status);
+            }
+            let _ = app.emit("search-error", error);
+        }
+    }
+}
+
+fn run_web_search_and_synthesize(
+    app: &AppHandle,
+    completed: CompletedSearchAsr,
+    resource_dir: Option<std::path::PathBuf>,
+) {
+    let state = app.state::<AppState>();
+    let provider = DuckDuckGoProvider::new(completed.provider_url);
+    let hits = match provider.search(&completed.query) {
+        Ok(hits) => hits,
+        Err(error) => {
+            if let Ok(status) = state.search.fail(error.clone()) {
+                emit_search_status(app, &status);
+            }
+            let _ = app.emit("search-error", error);
+            return;
+        }
+    };
+    let allowed: HashSet<String> = hits.iter().map(|hit| hit.url.clone()).collect();
+    state.search.remember_allowed_urls(allowed);
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .unwrap_or_else(|_| reqwest::blocking::Client::new());
+    let (mut ui, warning) = match search::synthesize_search_ui(
+        &client,
+        &completed.query,
+        &hits,
+        resource_dir.as_deref(),
+    ) {
+        Ok(result) => result,
+        Err(error) => {
+            if let Ok(status) = state.search.fail(error.clone()) {
+                emit_search_status(app, &status);
+            }
+            let _ = app.emit("search-error", error);
+            return;
+        }
+    };
+    search::ensure_sources(&mut ui, &hits);
+    let payload = SearchResultPayload {
+        query: completed.query.clone(),
+        ui,
+        sources: hits,
+        warning: warning.clone(),
+    };
+    if let Ok(status) = state.search.complete(completed.query, warning) {
+        emit_search_status(app, &status);
+    }
+    let _ = app.emit("search-result", payload);
+    show_search_window(app);
+}
+
+fn handle_search_hotkey(app: &AppHandle, event: HotkeyEvent) {
+    let mode = app
+        .state::<AppState>()
+        .settings
+        .snapshot()
+        .map(|settings| settings.activation_mode)
+        .unwrap_or_default();
+    let phase = app
+        .state::<AppState>()
+        .search
+        .status()
+        .ok()
+        .map(|status| status.phase);
+    match (mode, event, phase) {
+        (ActivationMode::Hold, HotkeyEvent::Pressed, _) => {
+            let _ = begin_search_recording_inner(app);
+        }
+        (ActivationMode::Hold, HotkeyEvent::Released, Some(SearchPhase::Listening)) => {
+            let _ = finish_search_recording_inner(app);
+        }
+        (ActivationMode::Toggle, HotkeyEvent::Pressed, Some(SearchPhase::Listening)) => {
+            let _ = finish_search_recording_inner(app);
+        }
+        (
+            ActivationMode::Toggle,
+            HotkeyEvent::Pressed,
+            Some(SearchPhase::Idle | SearchPhase::Complete | SearchPhase::Error) | None,
+        ) => {
+            let _ = begin_search_recording_inner(app);
+        }
+        _ => {}
+    }
+}
+
 fn handle_hotkey_event(app: &AppHandle, id: HotkeyId, event: HotkeyEvent) {
     if id == HotkeyId::Paste {
         if event == HotkeyEvent::Pressed {
             handle_paste_hotkey(app);
         }
+        return;
+    }
+    if id == HotkeyId::Search {
+        handle_search_hotkey(app, event);
         return;
     }
     let mode = app
@@ -913,6 +1180,7 @@ fn save_settings(
         settings.gpu_memory_management != previous.gpu_memory_management;
     settings.hotkey = previous.hotkey;
     settings.paste_hotkey = previous.paste_hotkey;
+    settings.search_shortcut = previous.search_shortcut;
     settings.microphone_id = previous.microphone_id;
     settings.microphone_name = previous.microphone_name;
     settings.gpu_memory_management_configured = true;
@@ -1047,6 +1315,11 @@ fn hotkey_status(state: &AppState) -> Result<HotkeyStatus, String> {
         .lock()
         .map_err(|_| "shortcut lock poisoned")?
         .clone();
+    let search_shortcut = state
+        .search_shortcut
+        .lock()
+        .map_err(|_| "shortcut lock poisoned")?
+        .clone();
     let error = state
         .hotkey_error
         .lock()
@@ -1057,9 +1330,15 @@ fn hotkey_status(state: &AppState) -> Result<HotkeyStatus, String> {
         .lock()
         .map_err(|_| "shortcut status lock poisoned")?
         .clone();
+    let search_error = state
+        .search_hotkey_error
+        .lock()
+        .map_err(|_| "shortcut status lock poisoned")?
+        .clone();
     Ok(HotkeyStatus {
         shortcut: shortcut.canonical().to_string(),
         paste_shortcut: paste_shortcut.canonical().to_string(),
+        search_shortcut: search_shortcut.canonical().to_string(),
         registered: state
             .hotkey_controller
             .lock()
@@ -1067,6 +1346,7 @@ fn hotkey_status(state: &AppState) -> Result<HotkeyStatus, String> {
             .unwrap_or(false),
         error,
         paste_error,
+        search_error,
     })
 }
 
@@ -1089,6 +1369,13 @@ fn set_hotkey(app: AppHandle, hotkey: String) -> Result<HotkeyStatus, String> {
             return Err(
                 "That shortcut is already used for pasting the last transcript".into(),
             );
+        }
+        let search = state
+            .search_shortcut
+            .lock()
+            .map_err(|_| "shortcut lock poisoned")?;
+        if hotkey::shortcuts_conflict(&next, &search) {
+            return Err("That shortcut is already used for voice search".into());
         }
     }
     let previous = state
@@ -1139,6 +1426,13 @@ fn set_paste_hotkey(app: AppHandle, hotkey: String) -> Result<HotkeyStatus, Stri
         if hotkey::shortcuts_conflict(&next, &active) {
             return Err("That shortcut is already used for dictation".into());
         }
+        let search = state
+            .search_shortcut
+            .lock()
+            .map_err(|_| "shortcut lock poisoned")?;
+        if hotkey::shortcuts_conflict(&next, &search) {
+            return Err("That shortcut is already used for voice search".into());
+        }
     }
     let previous = state
         .paste_shortcut
@@ -1173,6 +1467,102 @@ fn set_paste_hotkey(app: AppHandle, hotkey: String) -> Result<HotkeyStatus, Stri
     let status = hotkey_status(&state)?;
     let _ = app.emit("hotkey-status", status.clone());
     Ok(status)
+}
+
+#[tauri::command]
+fn set_search_hotkey(app: AppHandle, hotkey: String) -> Result<HotkeyStatus, String> {
+    let next = hotkey::parse(&hotkey)?;
+    let canonical = next.canonical().to_string();
+    let state = app.state::<AppState>();
+    {
+        let active = state
+            .active_shortcut
+            .lock()
+            .map_err(|_| "shortcut lock poisoned")?;
+        if hotkey::shortcuts_conflict(&next, &active) {
+            return Err("That shortcut is already used for dictation".into());
+        }
+        let paste = state
+            .paste_shortcut
+            .lock()
+            .map_err(|_| "shortcut lock poisoned")?;
+        if hotkey::shortcuts_conflict(&next, &paste) {
+            return Err(
+                "That shortcut is already used for pasting the last transcript".into(),
+            );
+        }
+    }
+    let previous = state
+        .search_shortcut
+        .lock()
+        .map_err(|_| "shortcut lock poisoned")?
+        .clone();
+    let controller = state
+        .hotkey_controller
+        .lock()
+        .map_err(|_| "shortcut controller lock poisoned")?;
+    let controller = controller
+        .as_ref()
+        .ok_or_else(|| "Shortcut listener is still starting".to_string())?;
+    controller.update(HotkeyId::Search, next.clone())?;
+
+    let mut settings = state.settings.snapshot()?;
+    settings.search_shortcut = canonical;
+    if let Err(error) = state.settings.replace(settings) {
+        let _ = controller.update(HotkeyId::Search, previous);
+        return Err(format!(
+            "The shortcut worked but could not be saved: {error}"
+        ));
+    }
+    *state
+        .search_shortcut
+        .lock()
+        .map_err(|_| "shortcut lock poisoned")? = next.clone();
+    *state
+        .search_hotkey_error
+        .lock()
+        .map_err(|_| "shortcut status lock poisoned")? = None;
+    let status = hotkey_status(&state)?;
+    let _ = app.emit("hotkey-status", status.clone());
+    Ok(status)
+}
+
+#[tauri::command]
+fn get_search_hotkey(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    state
+        .search_shortcut
+        .lock()
+        .map(|shortcut| shortcut.canonical().to_string())
+        .map_err(|_| "shortcut lock poisoned".into())
+}
+
+#[tauri::command]
+fn start_search_recording(app: AppHandle) -> Result<SearchStatus, String> {
+    begin_search_recording_inner(&app)
+}
+
+#[tauri::command]
+fn stop_search_recording(app: AppHandle) -> Result<SearchStatus, String> {
+    finish_search_recording_inner(&app)
+}
+
+#[tauri::command]
+fn cancel_search(app: AppHandle) -> Result<SearchStatus, String> {
+    cancel_search_inner(&app)
+}
+
+#[tauri::command]
+fn open_search_result(app: AppHandle, url: String) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    if !state.search.is_allowed_url(&url) {
+        return Err("That URL is not part of the current search results".into());
+    }
+    search::open_url_in_default_browser(&url)
+}
+
+#[tauri::command]
+fn get_search_status(state: tauri::State<'_, AppState>) -> Result<SearchStatus, String> {
+    state.search.status()
 }
 
 #[tauri::command]
@@ -1432,7 +1822,7 @@ pub fn run() {
                 .map(|settings| settings.gpu_memory_management)
                 .unwrap_or(true);
             let engine =
-                EngineController::new(app.handle().clone(), resource_dir, gpu_memory_management);
+                EngineController::new(app.handle().clone(), resource_dir.clone(), gpu_memory_management);
             *app.state::<AppState>()
                 .engine
                 .lock()
@@ -1450,11 +1840,21 @@ pub fn run() {
                 .lock()
                 .expect("shortcut lock poisoned")
                 .clone();
+            let search_shortcut = app
+                .state::<AppState>()
+                .search_shortcut
+                .lock()
+                .expect("shortcut lock poisoned")
+                .clone();
+            app.state::<AppState>()
+                .search
+                .set_resource_dir(resource_dir.clone());
             let handle = app.handle().clone();
             match HotkeyController::new(
                 vec![
                     (HotkeyId::Dictation, shortcut),
                     (HotkeyId::Paste, paste_shortcut),
+                    (HotkeyId::Search, search_shortcut),
                 ],
                 move |id, event| handle_hotkey_event(&handle, id, event),
             ) {
@@ -1481,7 +1881,7 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if window.label() == "main" {
+            if window.label() == "main" || window.label() == "search" {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
                     let _ = window.hide();
@@ -1521,6 +1921,13 @@ pub fn run() {
             get_hotkey_status,
             set_hotkey,
             set_paste_hotkey,
+            set_search_hotkey,
+            get_search_hotkey,
+            start_search_recording,
+            stop_search_recording,
+            cancel_search,
+            open_search_result,
+            get_search_status,
             save_api_key,
             add_dictionary_term,
             remove_dictionary_term,

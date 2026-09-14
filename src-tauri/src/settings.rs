@@ -41,6 +41,10 @@ pub struct UserSettings {
     pub hotkey: String,
     #[serde(default)]
     pub paste_hotkey: String,
+    #[serde(default = "default_search_shortcut")]
+    pub search_shortcut: String,
+    #[serde(default = "default_search_provider_url")]
+    pub search_provider_url: String,
     pub duck_audio: bool,
     pub activation_mode: ActivationMode,
     pub launch_at_startup: bool,
@@ -57,6 +61,14 @@ pub struct UserSettings {
 
 fn default_meeting_suggestions() -> bool {
     true
+}
+
+fn default_search_shortcut() -> String {
+    crate::hotkey::DEFAULT_SEARCH_HOTKEY.into()
+}
+
+fn default_search_provider_url() -> String {
+    crate::search::DEFAULT_PROVIDER_URL.into()
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -76,6 +88,8 @@ impl Default for UserSettings {
             dictionary: Vec::new(),
             hotkey: "control+alt+Space".into(),
             paste_hotkey: crate::hotkey::DEFAULT_PASTE_HOTKEY.into(),
+            search_shortcut: default_search_shortcut(),
+            search_provider_url: default_search_provider_url(),
             duck_audio: false,
             activation_mode: ActivationMode::Hold,
             launch_at_startup: false,
@@ -371,6 +385,16 @@ mod tests {
         let settings: UserSettings =
             serde_json::from_str(r#"{"meetingSuggestions":false}"#).unwrap();
         assert!(!settings.meeting_suggestions);
+    }
+
+    #[test]
+    fn older_settings_migrate_search_defaults() {
+        let settings: UserSettings = serde_json::from_str(r#"{"language":"en"}"#).unwrap();
+        assert_eq!(settings.search_shortcut, crate::hotkey::DEFAULT_SEARCH_HOTKEY);
+        assert_eq!(
+            settings.search_provider_url,
+            "https://html.duckduckgo.com/html/"
+        );
     }
 
     #[test]

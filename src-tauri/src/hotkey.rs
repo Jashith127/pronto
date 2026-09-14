@@ -15,18 +15,27 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 pub const DEFAULT_HOTKEY: &str = "control+alt+Space";
 pub const DEFAULT_PASTE_HOTKEY: &str = "shift+super+KeyV";
+pub const DEFAULT_SEARCH_HOTKEY: &str = "super+Space";
 const STOP_HOOK: u32 = WM_APP + 0x564;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HotkeyId {
     Dictation,
     Paste,
+    Search,
 }
 
 /// Two shortcuts can never share one canonical chord; the hook would
 /// otherwise fire both actions at once.
 pub fn shortcuts_conflict(first: &Hotkey, second: &Hotkey) -> bool {
     first.canonical() == second.canonical()
+}
+
+/// True when any pair among dictation / paste / search shares a chord.
+pub fn shortcuts_conflict_any(dictation: &Hotkey, paste: &Hotkey, search: &Hotkey) -> bool {
+    shortcuts_conflict(dictation, paste)
+        || shortcuts_conflict(dictation, search)
+        || shortcuts_conflict(paste, search)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,9 +59,11 @@ pub enum HotkeyEvent {
 pub struct HotkeyStatus {
     pub shortcut: String,
     pub paste_shortcut: String,
+    pub search_shortcut: String,
     pub registered: bool,
     pub error: Option<String>,
     pub paste_error: Option<String>,
+    pub search_error: Option<String>,
 }
 
 impl Hotkey {
@@ -375,6 +386,24 @@ mod tests {
         assert_eq!(paste.canonical(), "shift+super+KeyV");
         let dictation = parse(DEFAULT_HOTKEY).unwrap();
         assert!(!shortcuts_conflict(&paste, &dictation));
+    }
+    #[test]
+    fn search_default_parses_super_space() {
+        let search = parse(DEFAULT_SEARCH_HOTKEY).unwrap();
+        assert!(search.win && !search.control && !search.alt && !search.shift);
+        assert_eq!(search.key, Some(0x20));
+        assert_eq!(search.canonical(), "super+Space");
+        assert_eq!(parse("super+Space").unwrap().canonical(), "super+Space");
+    }
+    #[test]
+    fn three_way_hotkey_conflict_check() {
+        let dictation = parse(DEFAULT_HOTKEY).unwrap();
+        let paste = parse(DEFAULT_PASTE_HOTKEY).unwrap();
+        let search = parse(DEFAULT_SEARCH_HOTKEY).unwrap();
+        assert!(!shortcuts_conflict_any(&dictation, &paste, &search));
+        let colliding = parse("control+alt+Space").unwrap();
+        assert!(shortcuts_conflict_any(&dictation, &paste, &colliding));
+        assert!(shortcuts_conflict_any(&dictation, &search, &search));
     }
     #[test]
     fn identical_shortcuts_conflict() {

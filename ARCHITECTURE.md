@@ -1,13 +1,17 @@
 # Architecture
 
 ```text
-Configurable global shortcut (including modifier-only Win + Ctrl)
+Configurable global shortcuts
+  dictation (default Ctrl+Alt+Space)
+  paste last (default Win+Shift+V)
+  voice search (default Win+Space / super+Space)
       |
       v
-Rust/Tauri coordinator ---------------------> overlay + dashboard
+Rust/Tauri coordinator ---------------------> overlay + dashboard + search window
       |
       +--> native WH_KEYBOARD_LL listener
-      |      hold/toggle state machine + persisted canonical shortcut
+      |      hold/toggle state machine + persisted canonical shortcuts
+      |      (dictation / paste / search are mutually exclusive chords)
       |
       +--> optional Core Audio endpoint duck / exact restore
       |
@@ -17,15 +21,31 @@ Rust/Tauri coordinator ---------------------> overlay + dashboard
       +--> persistent NeMo-Speech.cpp CUDA server
       |      Parakeet TDT 0.6B v3 Q8 -> punctuated transcript
       |
-      +--> deterministic local cleanup + dictionary correction
+      +--> dictation path:
+      |      deterministic local cleanup + dictionary correction
+      |      optional DeepSeek V4 Flash rewrite (thinking disabled)
+      |      Win32 SendInput Unicode insertion + local history
       |
-      +--> optional DeepSeek V4 Flash rewrite (thinking disabled)
-      |
-      +--> Win32 SendInput Unicode insertion into captured foreground window
-      |
-      +--> local history --> tray Paste Last Transcript
-             CF_UNICODETEXT clipboard + Ctrl+V fallback semantics
+      +--> voice search path (no intent router; search hotkey only):
+             local cleanup only (no DeepSeek rewrite, no history insert)
+             DuckDuckGo HTML retrieval via SearchProvider trait
+             DeepSeek V4 Flash JSON UI synthesis (design://system/v1)
+             search window renders allowlisted nodes (uPlot charts locally)
 ```
+
+## Voice search notes
+
+- Default search chord is Win + Space. Windows also reserves that chord for
+  keyboard layout switching. Pronto’s hook always calls `CallNextHookEx`, so the
+  OS may switch layouts in parallel. The Fn key cannot be bound (no VK code).
+- Search is ignored while dictation is listening/processing or a meeting is
+  recording; a tray toast explains why.
+- Spoken queries and retrieved snippets are sent to the configured search
+  provider (DuckDuckGo HTML by default) and to DeepSeek for UI synthesis.
+  Microphone audio stays on-device.
+- Result URLs open through the backend with ShellExecute into the default
+  browser. The WebView never navigates to search results. YouTube links are
+  rewritten to youtube-nocookie embeds.
 
 ## Why Parakeet
 

@@ -38,6 +38,23 @@
         "skipTaskbar": true,
         "visible": false,
         "focus": false
+      },
+      {
+        "label": "search",
+        "title": "Pronto Search",
+        "url": "search.html",
+        "width": 760,
+        "height": 600,
+        "minWidth": 520,
+        "minHeight": 420,
+        "resizable": true,
+        "fullscreen": false,
+        "center": true,
+        "decorations": false,
+        "transparent": false,
+        "shadow": false,
+        "visible": false,
+        "focus": true
       }
     ],
     "security": {
@@ -51,7 +68,8 @@
     "resources": {
       "../runtime/nemo-speech/bin/": "runtime/nemo-speech/bin/",
       "../runtime/nemo-speech/share/licenses/": "runtime/nemo-speech/share/licenses/",
-      "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md"
+      "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
+      "resources/design-system.json": "resources/design-system.json"
     },
     "windows": {
       "nsis": {

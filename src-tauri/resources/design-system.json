@@ -1,0 +1,67 @@
+{
+  "uri": "design://system/v1",
+  "version": "1",
+  "name": "Pronto Search UI",
+  "description": "Local-only component catalog for voice search answers. Prefer one visual plus short text over text-only layouts.",
+  "components": [
+    {
+      "type": "heading",
+      "props": { "text": "string" },
+      "notes": "Primary answer title."
+    },
+    {
+      "type": "text",
+      "props": { "text": "string" },
+      "notes": "Body copy. Use [1][2] citation markers that map to source_list entries."
+    },
+    {
+      "type": "divider",
+      "props": {},
+      "notes": "Visual separator."
+    },
+    {
+      "type": "image_frame",
+      "props": { "src": "url", "alt": "string", "caption": "string?" },
+      "notes": "src must be an exact URL from the provided search results."
+    },
+    {
+      "type": "youtube",
+      "props": { "url": "youtube.com|youtu.be url", "title": "string?" },
+      "notes": "Only youtube.com / youtu.be URLs from search results. Rendered as youtube-nocookie embed."
+    },
+    {
+      "type": "button",
+      "props": {
+        "label": "string",
+        "action": "open_url|copy|insert",
+        "value": "string"
+      },
+      "notes": "open_url value must be an exact search-result URL."
+    },
+    {
+      "type": "source_list",
+      "props": {
+        "items": [{ "index": "number", "title": "string", "url": "url", "snippet": "string?" }]
+      },
+      "notes": "Citation list. URLs must match search results exactly."
+    },
+    {
+      "type": "table",
+      "props": { "columns": ["string"], "rows": [["string"]] },
+      "notes": "Compact comparison data."
+    },
+    {
+      "type": "chart",
+      "props": {
+        "chart_type": "bar|line",
+        "labels": ["string"],
+        "datasets": [{ "label": "string", "data": ["number"] }]
+      },
+      "notes": "Prefer one chart when numbers compare cleanly. Invalid charts fall back to a table. DSL type=bar|line maps to chart_type."
+    }
+  ],
+  "security": {
+    "urls": "Only exact URLs from the search-result set. Never invent links. No raw HTML or JavaScript.",
+    "open_url": "Opened by the Pronto backend in the default browser — never navigate the WebView."
+  }
+}
