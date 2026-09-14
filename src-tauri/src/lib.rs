@@ -1821,6 +1821,8 @@ fn open_search_result(app: AppHandle, url: String) -> Result<(), String> {
     if !state.search.is_allowed_url(&url) {
         return Err("That URL is not part of the current search results".into());
     }
+    // Opening the system browser steals focus; don't treat that as click-away.
+    state.search_blur_dismiss.store(false, Ordering::Release);
     search::open_url_in_default_browser(&url)
 }
 
@@ -2155,6 +2157,17 @@ pub fn run() {
                     tauri::WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
                         dismiss_search_overlay_inner(window.app_handle());
+                    }
+                    tauri::WindowEvent::Focused(true) => {
+                        let app = window.app_handle();
+                        let state = app.state::<AppState>();
+                        let phase = state.search.status().map(|status| status.phase).ok();
+                        if matches!(
+                            phase,
+                            Some(SearchPhase::Searching | SearchPhase::Complete | SearchPhase::Error)
+                        ) {
+                            state.search_blur_dismiss.store(true, Ordering::Release);
+                        }
                     }
                     tauri::WindowEvent::Focused(false) => {
                         let app = window.app_handle();
