@@ -1768,50 +1768,17 @@ fn parse_followups_line(value: &str) -> Vec<String> {
         .collect()
 }
 
-const SEARCH_MARKDOWN_LAYOUT_GUIDE: &str = r#"LAYOUT (you MUST pick exactly one — choose the best fit for the query):
-First metadata lines (in order, before the blockquote answer):
-  @layout: <tag>
-  @facts: optional Label: value pairs separated by | (2-5 chips when useful)
-  @followups: optional follow-up questions separated by | (2-3 short voice-friendly questions)
-
-Valid @layout tags (pick the best match — examples are illustrative, not exhaustive):
-
-• bio — person or organization profile
-  Examples: "Who is Marie Curie?", "Who founded Tesla?", "Tell me about NATO", "Who was Ada Lovelace?"
-
-• definition — what something means; term + concise definition
-  Examples: "What is photosynthesis?", "Define entropy", "What does GDP mean?", "Meaning of obfuscate"
-
-• article — general explanatory answer (default when nothing else fits)
-  Examples: "Why is the sky blue?", "How does Wi-Fi work?", "Explain quantum computing simply", "What caused the 2008 crisis?"
-
-• comparison — two or more things side by side; use a markdown table
-  Examples: "iPhone vs Android", "Compare Python and JavaScript", "Pros and cons of remote work", "Which is better: SSD or HDD?"
-
-• steps — how-to / procedure; numbered list
-  Examples: "How to tie a tie", "Steps to reset Windows", "How do I brew pour-over coffee?", "How can I export a PDF?"
-
-• timeline — events in chronological order; use dated bullets or a Date | Event table
-  Examples: "History of the internet", "When did World War 2 happen?", "Timeline of SpaceX launches", "Key dates in the French Revolution"
-
-• list — ranked or enumerated items (top N, best X)
-  Examples: "Top 10 movies of 2024", "Best laptops for students", "List of US presidents", "Ranking social media platforms"
-
-• yesno — factual yes/no/unclear with brief explanation (lead quote states the answer clearly)
-  Examples: "Is Pluto a planet?", "Does vitamin C prevent colds?", "Can you drink seawater?", "Was Shakespeare born in London?"
-
-• location — place, address, geography, where something is
-  Examples: "Where is Machu Picchu?", "Address of the Louvre", "Where is Tesla headquartered?", "Location of Mount Everest"
-
-• recipe — cooking; ingredients list + numbered steps
-  Examples: "Chocolate chip cookie recipe", "How to make dal makhani", "Ingredients for pesto pasta", "Simple pancake recipe"
-
-• stats — numbers, metrics, populations, percentages; stat-friendly table or bold figures
-  Examples: "Population of Tokyo", "How many countries are in Africa?", "Bitcoin price statistics", "What percent of Earth is ocean?"
-
-Use @facts for quick-scan chips (e.g. Founded: 2004 | CEO: Name | HQ: City) when the layout benefits from it.
-Use @followups for natural voice continuations (e.g. How does it compare to X? | What happened next?).
-"#;
+/// Compact layout guide — full multi-example catalog lives in `infer_answer_layout`.
+/// The model still picks `@layout:` freely; we only hint the likely tag to cut tokens.
+pub fn search_layout_guide_for_query(query: &str) -> String {
+    let suggested = infer_answer_layout(query);
+    format!(
+        r#"LAYOUT: pick exactly one via `@layout: <tag>` before the blockquote (you may override the hint).
+Metadata lines first (optional): `@facts: Label: value | ...` (2-5 chips), `@followups: question | ...` (2-3 voice-friendly).
+Tags — bio (person/org), definition (term), article (general), comparison (side-by-side + table), steps (how-to), timeline (dates), list (ranked/top-N), yesno (yes/no), location (place), recipe (cooking), stats (numbers).
+Suggested layout for this query: {suggested}."#
+    )
+}
 
 /// Strip `@layout:`, `@facts:`, and `@followups:` metadata from the top of the answer.
 pub fn parse_classified_markdown(raw: &str, query: &str) -> ParsedSearchAnswer {
@@ -1886,10 +1853,11 @@ pub fn deepseek_search_markdown(
     grounded: bool,
 ) -> Result<String, String> {
     let sources = compact_sources_for_prompt(hits);
+    let layout_guide = search_layout_guide_for_query(query);
     let system = format!(
         r#"You are Pronto's voice-search assistant. Return markdown only (no JSON, no code fences).
 
-{SEARCH_MARKDOWN_LAYOUT_GUIDE}
+{layout_guide}
 ANSWER BODY (after metadata lines):
 1. Start with ONE blockquote line (>) containing a complete direct answer in 1-2 sentences. Include [n] citations when using evidence.
 2. Then write 2-4 paragraphs with concrete names, dates, numbers, and context.
@@ -1918,10 +1886,11 @@ TABLES (use them generously when they improve clarity):
 }
 
 fn deepseek_direct_markdown(client: &Client, api_key: &str, query: &str) -> Result<String, String> {
+    let layout_guide = search_layout_guide_for_query(query);
     let system = format!(
         r#"You are Pronto's voice-search assistant. Return markdown only (no JSON, no code fences).
 
-{SEARCH_MARKDOWN_LAYOUT_GUIDE}
+{layout_guide}
 Start with ONE blockquote line (>) containing the direct answer. Follow with 1-2 short paragraphs if helpful.
 When comparing items, listing specs/stats, or presenting side-by-side facts, include a GitHub-flavored markdown table.
 Do not include a sources section."#
@@ -2339,6 +2308,14 @@ mod tests {
         assert_eq!(normalize_layout_tag("timeline"), Some("timeline".into()));
         assert_eq!(normalize_layout_tag("ranking"), Some("list".into()));
         assert_eq!(normalize_layout_tag("yes-no"), Some("yesno".into()));
+    }
+
+    #[test]
+    fn search_layout_guide_is_compact_and_hints_layout() {
+        let guide = search_layout_guide_for_query("compare iphone vs android");
+        assert!(guide.contains("Suggested layout for this query: comparison"));
+        assert!(guide.len() < 600);
+        assert!(!guide.contains("Who is Marie Curie"));
     }
 
     #[test]

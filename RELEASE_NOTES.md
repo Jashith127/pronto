@@ -64,7 +64,13 @@ Layout badge in the panel header (e.g. “Comparison”, “How-to”). Comparis
 ### Settings
 
 - Voice search shortcut editor and configurable search provider URL.
+- **Duck other audio** now applies during voice search listening as well as dictation (same setting).
 - Reminder: Win + Space may also switch Windows keyboard layouts because the low-level hook calls `CallNextHookEx`. Fn key cannot be bound.
+
+### API cost / polish (0.8.0 refresh)
+
+- Search layout prompt trimmed to a compact tag list plus a local layout hint — same AI layout picking, fewer input tokens per query.
+- Dictation pill finish (✓) button uses a white background to match the search pill.
 
 ## Requirements
 

@@ -241,6 +241,27 @@ fn emit_status(app: &AppHandle, status: &EngineStatus) {
     let _ = app.emit("engine-status", status);
 }
 
+fn restore_system_audio(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    if let Err(error) = state.system_audio.restore() {
+        let _ = app.emit("audio-warning", error);
+    }
+}
+
+fn duck_system_audio_if_enabled(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let duck = state
+        .settings
+        .snapshot()
+        .map(|settings| settings.duck_audio)
+        .unwrap_or(false);
+    if duck {
+        if let Err(error) = state.system_audio.duck() {
+            let _ = app.emit("audio-warning", error);
+        }
+    }
+}
+
 pub(crate) fn set_model_status(app: &AppHandle, status: ModelStatus) {
     if let Ok(mut current) = app.state::<AppState>().model_status.lock() {
         *current = status.clone();
@@ -995,6 +1016,7 @@ fn dismiss_search_overlay_inner(app: &AppHandle) {
         phase,
         Some(SearchPhase::Listening | SearchPhase::Searching)
     ) {
+        restore_system_audio(app);
         let _ = state.audio.stop();
         if let Ok(status) = state.search.reset() {
             let mut cancelled = status;
@@ -1087,6 +1109,7 @@ fn begin_search_recording_inner(app: &AppHandle) -> Result<SearchStatus, String>
     }
     match state.audio.start() {
         Ok(_) => {
+            duck_system_audio_if_enabled(app);
             if let Ok(engine) = state.engine.lock() {
                 if let Some(engine) = engine.as_ref() {
                     engine.warm();
@@ -1125,6 +1148,7 @@ fn finish_search_recording_inner(app: &AppHandle, force: bool) -> Result<SearchS
     }
 
     let settings = state.settings.snapshot()?;
+    restore_system_audio(app);
     let recording = match state.audio.stop() {
         Ok(recording) => recording,
         Err(error) => {
@@ -1237,6 +1261,7 @@ fn reroute_dictation_to_search(app: &AppHandle) -> Result<SearchStatus, String> 
 
 fn cancel_search_inner(app: &AppHandle) -> Result<SearchStatus, String> {
     let state = app.state::<AppState>();
+    restore_system_audio(app);
     let _ = state.audio.stop();
     let status = state.search.reset()?;
     let mut cancelled = status;
