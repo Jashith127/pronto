@@ -30,7 +30,7 @@ Rust/Tauri coordinator ---------------------> overlay + dashboard + search overl
              local cleanup only (no DeepSeek rewrite, no history insert)
              DuckDuckGo HTML retrieval via SearchProvider trait
              DeepSeek V4 Flash JSON UI synthesis (design://system/v1)
-             search overlay (pill → green orb → centered results) renders
+             search overlay (pill loading → popped centered result) renders
              allowlisted nodes (uPlot charts locally); blur/click-away dismisses
 ```
 
@@ -40,9 +40,9 @@ Rust/Tauri coordinator ---------------------> overlay + dashboard + search overl
   keyboard layout switching. Pronto’s hook always calls `CallNextHookEx`, so the
   OS may switch layouts in parallel. The Fn key cannot be bound (no VK code).
 - Search uses a dedicated transparent always-on-top overlay (same class as the
-  dictation pill): listening shows a bottom pill with a green waveform and no
-  meeting-notes control; after capture it liquid-morphs into a circular orb,
-  then flies to screen center and expands into the result panel. The overlay is
+  dictation pill): listening and searching share one bottom pill (green bars
+  while listening, settled sweep while working); the result panel then pops
+  in centered. The overlay is
   hidden when idle. Click-away / focus loss / Escape dismisses it (listening
   stays unfocused so Hold release on Win+Space remains reliable).
 - Search is ignored while dictation is listening/processing or a meeting is

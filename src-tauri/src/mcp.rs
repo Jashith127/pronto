@@ -30,6 +30,26 @@ pub fn design_system_catalog_text(resource_dir: Option<&Path>) -> Result<String,
     serde_json::to_string_pretty(value).map_err(|error| error.to_string())
 }
 
+/// Compact single-line catalog for LLM prompts. Same content as
+/// `design_system_catalog_text`, ~30-40% fewer tokens per search call.
+pub fn design_system_catalog_minified(resource_dir: Option<&Path>) -> Result<String, String> {
+    // Minified form is derived from the same cached JSON value, so overrides
+    // and bundling behavior stay identical — only whitespace differs.
+    static MINIFIED: OnceLock<String> = OnceLock::new();
+    // Only cache the default (no resource_dir) variant; custom dirs bypass.
+    if resource_dir.is_none() {
+        if let Some(cached) = MINIFIED.get() {
+            return Ok(cached.clone());
+        }
+    }
+    let value = design_system_json(resource_dir)?;
+    let minified = serde_json::to_string(value).map_err(|error| error.to_string())?;
+    if resource_dir.is_none() {
+        let _ = MINIFIED.set(minified.clone());
+    }
+    Ok(minified)
+}
+
 fn load_design_system(resource_dir: Option<&Path>) -> Result<Value, String> {
     if let Some(override_path) = local_override_path() {
         if override_path.is_file() {

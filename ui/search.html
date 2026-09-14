@@ -10,46 +10,39 @@
 <body class="mode-idle">
   <div id="backdrop" class="search-backdrop" hidden></div>
 
-  <div id="chrome" class="search-chrome pill" aria-label="Pronto voice search" hidden>
+  <div id="chrome" class="search-chrome" aria-label="Pronto voice search" hidden>
     <button type="button" id="search-cancel" class="chrome-btn" aria-label="Cancel search" hidden>
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
     </button>
-    <div id="signal" class="signal linear" aria-hidden="true">
-      <i style="--i:0"></i><i style="--i:1"></i><i style="--i:2"></i><i style="--i:3"></i>
-      <i style="--i:4"></i><i style="--i:5"></i><i style="--i:6"></i><i style="--i:7"></i>
+    <div id="signal" class="signal" aria-hidden="true">
+      <i></i><i></i><i></i><i></i>
+      <i></i><i></i><i></i><i></i>
     </div>
     <button type="button" id="search-finish" class="chrome-btn finish" aria-label="Search now" hidden>
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 12.5 10 18 19.5 6.5"/></svg>
     </button>
   </div>
 
-  <section id="panel" class="search-panel" hidden>
-    <header class="panel-header">
-      <div class="panel-brand">
-        <span class="brand-wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
-        <strong>Pronto</strong>
-      </div>
-      <div class="panel-meta">
-        <span id="search-phase" class="panel-phase">Idle</span>
-        <button type="button" id="panel-close" class="panel-close" aria-label="Close search">×</button>
-      </div>
-    </header>
+  <section id="panel" class="search-panel" aria-label="Search result" hidden>
+    <button type="button" id="panel-close" class="panel-close" aria-label="Close search">×</button>
 
-    <p class="panel-message" id="search-message"></p>
-
-    <div class="panel-query" id="search-query" hidden>
-      <span>Query</span>
-      <strong id="search-query-text"></strong>
+    <div id="search-status" class="panel-status" hidden>
+      <span id="search-message"></span>
     </div>
 
     <main class="panel-content" id="search-content" tabindex="0">
+      <p id="search-query-label" class="search-query-label" hidden></p>
+
       <div class="search-empty" id="search-empty">
         <h1>Ask out loud</h1>
-        <p id="search-empty-hint">Hold or toggle your search shortcut, then speak. Results open here as an overlay — click outside to dismiss.</p>
-        <p class="search-privacy">Spoken audio stays on this PC. Query text and snippets go to DuckDuckGo and DeepSeek.</p>
+        <p>Hold or toggle your search shortcut, then speak.</p>
       </div>
       <div class="search-nodes" id="search-nodes" hidden></div>
     </main>
+
+    <footer class="panel-footer">
+      Audio stays on this PC · Text goes to DuckDuckGo and DeepSeek
+    </footer>
 
     <div class="toast" id="toast" role="status"></div>
   </section>

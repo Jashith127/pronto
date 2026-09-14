@@ -166,7 +166,7 @@ fn validate_node(node: &UiNode, allowed_urls: &HashSet<String>) -> Result<(), St
         }
         UiNode::Divider => Ok(()),
         UiNode::ImageFrame { src, alt, .. } => {
-            require_allowed_url(src, allowed_urls, "image_frame.src")?;
+            require_allowed_image_url(src, allowed_urls, "image_frame.src")?;
             if alt.trim().is_empty() {
                 return Err("image_frame requires alt text".into());
             }
@@ -257,6 +257,109 @@ fn require_allowed_url(
     Ok(())
 }
 
+/// Images use a wider allowlist than links: exact result/thumbnail URLs plus
+/// host-derived favicons. Favicons are derived locally (no backend fetch) so
+/// every answer can include a visual without extra network or LLM cost, while
+/// still never allowing arbitrary invented hosts.
+fn require_allowed_image_url(
+    url: &str,
+    allowed_urls: &HashSet<String>,
+    field: &str,
+) -> Result<(), String> {
+    if allowed_urls.contains(url) {
+        return Ok(());
+    }
+    if is_derived_favicon(url, allowed_urls) {
+        return Ok(());
+    }
+    // Direct image files on an already-allowed host (e.g. extracted og:image
+    // or <img> thumbs that share the article host) stay grounded without
+    // requiring the caller to pre-register every variant.
+    if is_same_host_image(url, allowed_urls) {
+        return Ok(());
+    }
+    Err(format!(
+        "{field} must exactly match a search-result or favicon URL (got {url})"
+    ))
+}
+
+/// `https://icons.duckduckgo.com/ip3/<host>.ico` for any allowed host.
+pub fn favicon_for_host(host: &str) -> Option<String> {
+    let host = host.trim().trim_start_matches("www.").to_lowercase();
+    if host.is_empty() || host.contains([' ', '/', '?', '#']) || !host.contains('.') {
+        return None;
+    }
+    Some(format!("https://icons.duckduckgo.com/ip3/{host}.ico"))
+}
+
+pub fn host_of_url(url: &str) -> Option<String> {
+    url.split_once("://").and_then(|(_, rest)| {
+        let authority = rest.split('/').next().unwrap_or(rest);
+        let hostname = authority.split('@').next_back().unwrap_or(authority);
+        let hostname = hostname.split(':').next().unwrap_or(hostname);
+        let hostname = hostname.trim().trim_end_matches('.').to_lowercase();
+        if hostname.is_empty() || !hostname.contains('.') {
+            return None;
+        }
+        Some(hostname)
+    })
+}
+
+pub fn favicon_for_url(url: &str) -> Option<String> {
+    host_of_url(url).and_then(|host| favicon_for_host(&host))
+}
+
+fn is_derived_favicon(url: &str, allowed_urls: &HashSet<String>) -> bool {
+    if !(url.starts_with("https://icons.duckduckgo.com/ip3/")
+        && url.ends_with(".ico"))
+    {
+        return false;
+    }
+    let host = url
+        .strip_prefix("https://icons.duckduckgo.com/ip3/")
+        .and_then(|rest| rest.strip_suffix(".ico"))
+        .unwrap_or("");
+    if host.is_empty() {
+        return false;
+    }
+    allowed_urls.iter().any(|allowed| {
+        host_of_url(allowed).is_some_and(|allowed_host| {
+            allowed_host == host
+                || allowed_host == format!("www.{host}")
+                || host == format!("www.{allowed_host}")
+                || allowed_host.trim_start_matches("www.") == host.trim_start_matches("www.")
+        })
+    })
+}
+
+fn is_same_host_image(url: &str, allowed_urls: &HashSet<String>) -> bool {
+    let lower = url.to_ascii_lowercase();
+    if !(lower.starts_with("https://") || lower.starts_with("http://")) {
+        return false;
+    }
+    // Only image files — never HTML pages masquerading as images.
+    let is_image = lower.split(['?', '#']).next().is_some_and(|path| {
+        path.ends_with(".png")
+            || path.ends_with(".jpg")
+            || path.ends_with(".jpeg")
+            || path.ends_with(".webp")
+            || path.ends_with(".gif")
+            || path.ends_with(".avif")
+            || path.ends_with(".ico")
+    });
+    if !is_image {
+        return false;
+    }
+    let Some(image_host) = host_of_url(url) else {
+        return false;
+    };
+    allowed_urls.iter().any(|allowed| {
+        host_of_url(allowed).is_some_and(|allowed_host| {
+            allowed_host.eq_ignore_ascii_case(&image_host)
+        })
+    })
+}
+
 pub fn is_youtube_url(url: &str) -> bool {
     let lower = url.to_ascii_lowercase();
     host_is(&lower, "youtube.com")
@@ -318,23 +421,50 @@ fn looks_like_html(value: &str) -> bool {
             || lower.contains("<iframe"))
 }
 
+#[allow(dead_code)]
 pub fn fallback_document(query: &str, sources: &[(u32, String, String, String)]) -> SearchUiDocument {
-    let mut nodes = vec![
-        UiNode::Heading {
-            text: if query.trim().is_empty() {
-                "Search results".into()
-            } else {
-                format!("Results for “{query}”")
-            },
-        },
-        UiNode::Text {
-            text: if sources.is_empty() {
-                "No evidence found in the retrieved sources.".into()
-            } else {
-                "Here are the top sources Pronto retrieved. Open a link for details.".into()
-            },
-        },
-    ];
+    fallback_document_with_images(query, sources, &[])
+}
+
+/// Fast-path / no-key fallback. `images` must be real photos only (never
+/// favicons — a 16px icon blown up to a banner is what produced the blurry
+/// flag). Shows the top snippet as a quoted answer preview with a citation
+/// so the card never says just "check below for sources" with no answer.
+pub fn fallback_document_with_images(
+    _query: &str,
+    sources: &[(u32, String, String, String)],
+    images: &[(String, String)],
+) -> SearchUiDocument {
+    // Query is shown once in the overlay chrome — no duplicate heading here.
+    let mut nodes = Vec::new();
+    if let Some((src, alt)) = images.first() {
+        nodes.push(UiNode::ImageFrame {
+            src: src.clone(),
+            alt: alt.clone(),
+            caption: None,
+        });
+    }
+    if let Some((index, title, _, snippet)) = sources.first() {
+        // Extractive preview: title + snippet is usually the direct answer
+        // for who/what queries when the LLM is skipped or unavailable.
+        let preview = if snippet.trim().is_empty() {
+            title.trim().to_string()
+        } else if title.trim().is_empty() {
+            snippet.trim().to_string()
+        } else {
+            format!("{} — {}", title.trim(), snippet.trim())
+        };
+        if !preview.is_empty() {
+            nodes.push(UiNode::Text {
+                text: format!("{preview} [{index}]"),
+            });
+        }
+    }
+    if sources.is_empty() {
+        nodes.push(UiNode::Text {
+            text: "No evidence found in the retrieved sources.".into(),
+        });
+    }
     if !sources.is_empty() {
         nodes.push(UiNode::SourceList {
             items: sources
@@ -401,5 +531,32 @@ mod tests {
             youtube_nocookie_embed(yt).as_deref(),
             Some("https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ")
         );
+    }
+
+    #[test]
+    fn image_frame_accepts_derived_favicon() {
+        let article = "https://example.com/alpha";
+        let favicon = favicon_for_url(article).unwrap();
+        let raw = format!(
+            r#"{{"nodes":[{{"type":"heading","text":"A"}},{{"type":"image_frame","src":"{favicon}","alt":"Alpha"}}]}}"#
+        );
+        assert!(parse_and_validate_ui(&raw, &allowed(&[article])).is_ok());
+    }
+
+    #[test]
+    fn image_frame_rejects_invented_hosts() {
+        let allowed_urls = allowed(&["https://example.com/a"]);
+        let raw = r#"{"nodes":[{"type":"heading","text":"A"},{"type":"image_frame","src":"https://evil.example/x.jpg","alt":"X"}]}"#;
+        assert!(parse_and_validate_ui(raw, &allowed_urls).is_err());
+    }
+
+    #[test]
+    fn fallback_with_images_includes_visual() {
+        let sources = vec![(1, "A".to_string(), "https://example.com/a".to_string(), "snip".to_string())];
+        let images = vec![("https://icons.duckduckgo.com/ip3/example.com.ico".to_string(), "A".to_string())];
+        let doc = fallback_document_with_images("test", &sources, &images);
+        assert!(doc.nodes.iter().any(|n| matches!(n, UiNode::ImageFrame { .. })));
+        let plain = fallback_document("test", &sources);
+        assert!(!plain.nodes.iter().any(|n| matches!(n, UiNode::ImageFrame { .. })));
     }
 }

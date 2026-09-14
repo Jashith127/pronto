@@ -57,6 +57,9 @@ pub(crate) struct AppState {
     sounds: SoundController,
     engine: Mutex<Option<EngineController>>,
     settings: SettingsStore,
+    /// Shared HTTP client for search retrieval + DeepSeek synthesis.
+    /// Reused across searches for keep-alive (skips TLS+TCP setup).
+    search_http: reqwest::blocking::Client,
     target_window: Mutex<isize>,
     model_status: Mutex<ModelStatus>,
     active_shortcut: Mutex<Hotkey>,
@@ -168,6 +171,7 @@ impl AppState {
             insertion_target: insert::InsertionTargetTracker::new(),
             sounds: SoundController::new(),
             engine: Mutex::new(None),
+            search_http: search::shared_search_client().clone(),
             settings,
             target_window: Mutex::new(0),
             model_status: Mutex::new(ModelStatus {
@@ -924,7 +928,8 @@ fn apply_search_overlay_stage(window: &tauri::WebviewWindow, stage: SearchOverla
     let Some(monitor) = monitor_for(window) else {
         let (w, h) = match stage {
             SearchOverlayStage::Pill => (120.0, 40.0),
-            SearchOverlayStage::Orb => (64.0, 64.0),
+            // Orb is retired: searching reuses the regular pill loading state.
+            SearchOverlayStage::Orb => (120.0, 40.0),
             SearchOverlayStage::Stage => (920.0, 640.0),
         };
         let _ = window.set_size(LogicalSize::new(w, h));
@@ -935,7 +940,7 @@ fn apply_search_overlay_stage(window: &tauri::WebviewWindow, stage: SearchOverla
     let origin = monitor.position();
 
     match stage {
-        SearchOverlayStage::Pill => {
+        SearchOverlayStage::Pill | SearchOverlayStage::Orb => {
             let logical_width = 120.0;
             let logical_height = 40.0;
             let _ = window.set_size(LogicalSize::new(logical_width, logical_height));
@@ -945,19 +950,9 @@ fn apply_search_overlay_stage(window: &tauri::WebviewWindow, stage: SearchOverla
             let y = origin.y + area.height.saturating_sub(height + 74) as i32;
             let _ = window.set_position(PhysicalPosition::new(x, y));
         }
-        SearchOverlayStage::Orb => {
-            let logical_width = 64.0;
-            let logical_height = 64.0;
-            let _ = window.set_size(LogicalSize::new(logical_width, logical_height));
-            let width = (logical_width * scale).round() as u32;
-            let height = (logical_height * scale).round() as u32;
-            let x = origin.x + (area.width.saturating_sub(width) / 2) as i32;
-            let y = origin.y + area.height.saturating_sub(height + 74) as i32;
-            let _ = window.set_position(PhysicalPosition::new(x, y));
-        }
         SearchOverlayStage::Stage => {
-            // Cover the monitor so the orb can fly to center and the dimmed
-            // backdrop can catch outside clicks.
+            // Cover the monitor so the result panel can pop in centered and
+            // the dimmed backdrop can catch outside clicks.
             let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize::new(
                 area.width,
                 area.height,
@@ -1145,9 +1140,9 @@ fn finish_search_recording_inner(app: &AppHandle, force: bool) -> Result<SearchS
         return Ok(status);
     }
     emit_search_status(app, &status);
-    // Expand to a full-monitor transparent stage so the pill can morph into
-    // an orb and later fly to center without a separate Pronto window.
-    show_search_overlay(app, SearchOverlayStage::Stage, true);
+    // Stay on the regular pill loading state while transcribing — the result
+    // panel pops only once grounded content is ready. No focus steal.
+    show_search_overlay(app, SearchOverlayStage::Pill, false);
     let engine = state.engine.lock().map_err(|_| "engine lock poisoned")?;
     if let Some(engine) = engine.as_ref() {
         if let Err(error) = engine.transcribe_search(SearchAsrJob {
@@ -1186,7 +1181,14 @@ fn cancel_search_inner(app: &AppHandle) -> Result<SearchStatus, String> {
 pub(crate) fn complete_search_asr(app: &AppHandle, result: Result<CompletedSearchAsr, String>) {
     let state = app.state::<AppState>();
     match result {
-        Ok(completed) => {
+        Ok(mut completed) => {
+            // Session context: expand "what about tomorrow?" using last queries.
+            // Local rule-based, no extra LLM cost; expanded query is shown in UI.
+            let recent = state.search.recent_queries();
+            let expanded = search::expand_followup(&completed.query, &recent);
+            if expanded != completed.query {
+                completed.query = expanded;
+            }
             let status = match state.search.mark_searching(Some(completed.query.clone())) {
                 Ok(status) => status,
                 Err(_) => return,
@@ -1222,23 +1224,65 @@ fn run_web_search_and_synthesize(
     resource_dir: Option<std::path::PathBuf>,
 ) {
     let state = app.state::<AppState>();
-    let provider = DuckDuckGoProvider::new(completed.provider_url);
-    let hits = match provider.search(&completed.query) {
-        Ok(hits) => hits,
-        Err(error) => {
-            if let Ok(status) = state.search.fail(error.clone()) {
-                emit_search_status(app, &status);
-            }
-            let _ = app.emit("search-error", error);
-            show_search_overlay(app, SearchOverlayStage::Stage, true);
-            return;
-        }
+    let retrieval_started = std::time::Instant::now();
+    let normalized = search::normalize_query(&completed.query);
+    let cache_key = if normalized.is_empty() {
+        completed.query.clone()
+    } else {
+        normalized.clone()
     };
-    let allowed: HashSet<String> = hits.iter().map(|hit| hit.url.clone()).collect();
+    let time_sensitive = search::is_time_sensitive(&completed.query);
+    // Cache bypass for time-sensitive queries (weather/scores/prices go stale).
+    let mut cache_hit = false;
+    let mut hits: Vec<search::SearchHit> = if !time_sensitive {
+        search::cached_hits_for(&cache_key).map(|cached| {
+            cache_hit = true;
+            cached
+        }).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let mut retrieved_from_network = cache_hit && !hits.is_empty();
+    if hits.is_empty() {
+        retrieved_from_network = false;
+        cache_hit = false;
+        let provider = DuckDuckGoProvider::with_client(
+            completed.provider_url,
+            state.search_http.clone(),
+        );
+        hits = match provider.search(&completed.query) {
+            Ok(hits) => hits,
+            Err(error) => {
+                if let Ok(status) = state.search.fail(error.clone()) {
+                    emit_search_status(app, &status);
+                }
+                let _ = app.emit("search-error", error);
+                show_search_overlay(app, SearchOverlayStage::Stage, true);
+                return;
+            }
+        };
+        // Relevance first, then adaptive top_k cuts tokens 30-40%.
+        search::rerank_hits(&completed.query, &mut hits);
+        let kind = search::classify_query(&completed.query);
+        let top_k = match kind {
+            search::QueryKind::Fast => 4,
+            search::QueryKind::Grounded => 5,
+        };
+        hits = search::truncate_hits(hits, top_k);
+        if !time_sensitive && !hits.is_empty() {
+            search::store_hits_cache(cache_key, hits.clone());
+        }
+    }
+    let retrieval_ms = retrieval_started.elapsed().as_millis();
+    // Banner: result thumbnails + DDG image search (favicons stay in source list).
+    let images = search::banner_images_for_search(&state.search_http, &completed.query, &hits, 3);
+    let allowed: HashSet<String> = search::expanded_allowed_urls_with_images(&hits, &images);
     state.search.remember_allowed_urls(allowed.clone());
 
-    // Progressive UI: show sources immediately, then refine with the LLM answer.
-    let interim = ui_schema::fallback_document(
+    // Interim update for the pill (query text) — the panel stays hidden on
+    // the regular pill loading state until the grounded answer is ready.
+    // Includes top image so even the interim feels visual.
+    let interim = ui_schema::fallback_document_with_images(
         &completed.query,
         &hits
             .iter()
@@ -1252,6 +1296,7 @@ fn run_web_search_and_synthesize(
                 )
             })
             .collect::<Vec<_>>(),
+        &images,
     );
     let _ = app.emit(
         "search-result",
@@ -1262,21 +1307,21 @@ fn run_web_search_and_synthesize(
             warning: Some("Fetching a grounded answer…".into()),
         },
     );
-    show_search_overlay(app, SearchOverlayStage::Stage, true);
+    show_search_overlay(app, SearchOverlayStage::Pill, false);
 
     if let Ok(status) = state.search.mark_synthesizing(completed.query.clone()) {
         emit_search_status(app, &status);
     }
 
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(20))
-        .build()
-        .unwrap_or_else(|_| reqwest::blocking::Client::new());
-    let (mut ui, warning) = match search::synthesize_search_ui(
+    // Shared client: keep-alive, 10s synthesis timeout inside search.rs.
+    let client = state.search_http.clone();
+    let synthesis_started = std::time::Instant::now();
+    let (mut ui, mut warning) = match search::synthesize_search_ui(
         &client,
         &completed.query,
         &hits,
         resource_dir.as_deref(),
+        &images,
     ) {
         Ok(result) => result,
         Err(error) => {
@@ -1287,7 +1332,21 @@ fn run_web_search_and_synthesize(
             return;
         }
     };
+    let synthesis_ms = synthesis_started.elapsed().as_millis();
+    // Surface cache + timing in warning when otherwise silent (observability
+    // without extra IPC): keeps fast-path transparent.
+    if warning.is_none() && (cache_hit || retrieval_ms > 0) {
+        let mode = if cache_hit { "cached" } else { "live" };
+        // Only annotate fast cached answers to avoid noise on grounded cards.
+        if cache_hit && search::classify_query(&completed.query) == search::QueryKind::Fast {
+            warning = Some(format!("Instant answer ({mode}, retrieval {retrieval_ms} ms)"));
+        } else {
+            let _ = (retrieval_ms, synthesis_ms, retrieved_from_network);
+        }
+    }
     search::ensure_sources(&mut ui, &hits);
+    // Belt-and-braces: ensure_sources covers text-only, ensure_image is
+    // already applied inside synthesize, but fast-path fallback already has it.
     let payload = SearchResultPayload {
         query: completed.query.clone(),
         ui,
@@ -1826,6 +1885,23 @@ fn open_search_result(app: AppHandle, url: String) -> Result<(), String> {
     search::open_url_in_default_browser(&url)
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchImagePayload {
+    mime: String,
+    data: Vec<u8>,
+}
+
+#[tauri::command]
+fn fetch_search_image(app: AppHandle, url: String) -> Result<SearchImagePayload, String> {
+    let state = app.state::<AppState>();
+    if !state.search.is_allowed_url(&url) {
+        return Err("That image is not part of the current search results".into());
+    }
+    let (mime, data) = search::fetch_allowlisted_image(&state.search_http, &url)?;
+    Ok(SearchImagePayload { mime, data })
+}
+
 #[tauri::command]
 fn get_search_status(state: tauri::State<'_, AppState>) -> Result<SearchStatus, String> {
     state.search.status()
@@ -2221,6 +2297,7 @@ pub fn run() {
             dismiss_search_overlay,
             set_search_overlay_stage,
             open_search_result,
+            fetch_search_image,
             get_search_status,
             save_api_key,
             add_dictionary_term,

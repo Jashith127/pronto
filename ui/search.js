@@ -4,13 +4,11 @@ const listen = window.__TAURI__.event.listen;
 const body = document.body;
 const backdrop = document.querySelector('#backdrop');
 const chrome = document.querySelector('#chrome');
-const signal = document.querySelector('#signal');
 const panel = document.querySelector('#panel');
 const toast = document.querySelector('#toast');
-const phaseEl = document.querySelector('#search-phase');
+const statusRow = document.querySelector('#search-status');
 const messageEl = document.querySelector('#search-message');
-const queryWrap = document.querySelector('#search-query');
-const queryText = document.querySelector('#search-query-text');
+const queryLabel = document.querySelector('#search-query-label');
 const emptyEl = document.querySelector('#search-empty');
 const nodesEl = document.querySelector('#search-nodes');
 const cancelBtn = document.querySelector('#search-cancel');
@@ -18,10 +16,10 @@ const finishBtn = document.querySelector('#search-finish');
 const panelClose = document.querySelector('#panel-close');
 const plots = [];
 
+const INTERIM_WARNING = 'Fetching a grounded answer…';
+
 let uiMode = 'idle';
-let pendingResult = null;
-let flyInFlight = false;
-const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+let currentQuery = '';
 
 function showToast(text, error = false) {
   toast.textContent = text;
@@ -47,6 +45,40 @@ function escapeHtml(value) {
 
 function escapeAttr(value) {
   return escapeHtml(value).replaceAll('"', '&quot;');
+}
+
+function hostOf(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch (_) {
+    return '';
+  }
+}
+
+function normalizeForCompare(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function headingDuplicatesQuery(heading, query) {
+  const h = normalizeForCompare(heading);
+  const q = normalizeForCompare(query);
+  if (!h || !q) return false;
+  if (h === q) return true;
+  if (h.includes(q) || q.includes(h)) return true;
+  if (h.startsWith('results for')) return true;
+  if (h === 'search results' || h === 'answer' || h === 'summary' || h === 'overview') {
+    return true;
+  }
+  return false;
+}
+
+function formatAnswerText(text) {
+  const escaped = escapeHtml(text);
+  return escaped.replace(/\[(\d+)\]/g, '<sup class="cite">$1</sup>');
 }
 
 function destroyPlots() {
@@ -88,27 +120,49 @@ function renderTable(node) {
   return `<div class="search-table-wrap"><table class="search-table"><thead>${head}</thead><tbody>${bodyHtml}</tbody></table></div>`;
 }
 
-function renderNode(node) {
+function renderSourceList(node, open) {
+  const items = node.items || [];
+  const rows = items.map(item => `
+    <li>
+      <button type="button" class="src-item" data-action="open_url" data-value="${escapeAttr(item.url)}">
+        <span class="src-index">${escapeHtml(item.index)}</span>
+        <span class="src-body">
+          <strong>${escapeHtml(item.title)}</strong>
+          ${item.snippet ? `<em>${escapeHtml(item.snippet)}</em>` : ''}
+          <span class="src-host">${escapeHtml(hostOf(item.url))}</span>
+        </span>
+      </button>
+    </li>`).join('');
+  return `<details class="search-sources"${open ? ' open' : ''}>` +
+    `<summary>Sources <span class="src-count">${items.length}</span></summary>` +
+    `<ol>${rows}</ol></details>`;
+}
+
+function renderNode(node, context) {
   switch (node.type) {
     case 'heading':
+      if (headingDuplicatesQuery(node.text, context.query)) return '';
       return `<h2 class="search-node-heading">${escapeHtml(node.text)}</h2>`;
     case 'text':
-      return `<p class="search-node-text">${escapeHtml(node.text)}</p>`;
+      return `<p class="search-node-text">${formatAnswerText(node.text)}</p>`;
     case 'divider':
       return `<hr class="search-node-divider" />`;
     case 'image_frame':
-      return `<figure class="search-image-frame"><img src="${escapeAttr(node.src)}" alt="${escapeAttr(node.alt || '')}" loading="lazy" referrerpolicy="no-referrer" />${node.caption ? `<figcaption>${escapeHtml(node.caption)}</figcaption>` : ''}</figure>`;
+      return `<figure class="search-image-frame loading">
+        <div class="image-skeleton" aria-hidden="true"></div>
+        <img data-src="${escapeAttr(node.src)}" alt="${escapeAttr(node.alt || '')}" decoding="async" />
+        ${node.caption ? `<figcaption>${escapeHtml(node.caption)}</figcaption>` : ''}
+      </figure>`;
     case 'youtube': {
       const embed = youtubeEmbed(node.url);
       if (!embed) return `<p class="search-node-text">${escapeHtml(node.title || node.url)}</p>`;
       return `<div class="search-youtube"><iframe src="${escapeAttr(embed)}" title="${escapeAttr(node.title || 'YouTube video')}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen loading="lazy"></iframe></div>`;
     }
     case 'button':
-      return `<button type="button" class="search-node-button" data-action="${escapeAttr(node.action)}" data-value="${escapeAttr(node.value)}">${escapeHtml(node.label)}</button>`;
-    case 'source_list': {
-      const items = (node.items || []).map(item => `<li><span class="index">${escapeHtml(item.index)}</span><button type="button" data-action="open_url" data-value="${escapeAttr(item.url)}"><strong>${escapeHtml(item.title)}</strong>${item.snippet ? `<em>${escapeHtml(item.snippet)}</em>` : ''}</button></li>`).join('');
-      return `<ol class="search-sources">${items}</ol>`;
-    }
+      context.buttons.push(node);
+      return '';
+    case 'source_list':
+      return renderSourceList(node, context.openSources);
     case 'table':
       return renderTable(node);
     case 'chart':
@@ -116,6 +170,56 @@ function renderNode(node) {
     default:
       return '';
   }
+}
+
+const imageObjectUrls = new Set();
+
+function revokeImageObjectUrls() {
+  imageObjectUrls.forEach(url => {
+    try { URL.revokeObjectURL(url); } catch (_) { /* ignore */ }
+  });
+  imageObjectUrls.clear();
+}
+
+async function loadSearchImage(img, url) {
+  const frame = img.closest('.search-image-frame');
+  if (!url || !frame) return;
+
+  const markLoaded = () => {
+    frame.classList.remove('loading');
+    frame.classList.add('loaded');
+  };
+  const markError = () => {
+    frame.classList.remove('loading');
+    frame.classList.add('error');
+  };
+
+  try {
+    const payload = await invoke('fetch_search_image', { url });
+    const bytes = payload?.data instanceof Uint8Array
+      ? payload.data
+      : new Uint8Array(payload?.data || []);
+    const mime = payload?.mime || 'image/jpeg';
+    const blob = new Blob([bytes], { type: mime });
+    const objectUrl = URL.createObjectURL(blob);
+    imageObjectUrls.add(objectUrl);
+    img.addEventListener('load', markLoaded, { once: true });
+    img.addEventListener('error', markError, { once: true });
+    img.src = objectUrl;
+    return;
+  } catch (_) { /* fall through to direct load */ }
+
+  img.referrerPolicy = 'origin';
+  img.addEventListener('load', markLoaded, { once: true });
+  img.addEventListener('error', markError, { once: true });
+  img.src = url;
+}
+
+function mountImages(root) {
+  root.querySelectorAll('.search-image-frame img[data-src]').forEach(img => {
+    const url = img.getAttribute('data-src');
+    if (url) loadSearchImage(img, url);
+  });
 }
 
 function mountCharts(root) {
@@ -134,25 +238,24 @@ function mountCharts(root) {
     try {
       const series = [{ label: 'Label' }, ...node.datasets.map(dataset => ({
         label: dataset.label || 'Series',
-        stroke: dataset.label?.toLowerCase().includes('b') ? '#7dff9a' : '#f4337a',
+        stroke: '#f4f4ef',
         width: 2,
-        fill: (node.chart_type || node.chartType) === 'bar' ? 'rgba(244, 51, 122, 0.18)' : undefined,
       }))];
       const data = [
         node.labels.map((_, index) => index),
         ...node.datasets.map(dataset => dataset.data.map(Number)),
       ];
       const plot = new uPlot({
-        width: Math.max(280, container.clientWidth || 640),
+        width: Math.max(280, container.clientWidth || 560),
         height: 220,
         series,
         scales: { x: { time: false } },
         axes: [
           {
-            stroke: '#b8bbb4',
+            stroke: '#a8aba3',
             values: (_u, splits) => splits.map(split => node.labels[split] ?? ''),
           },
-          { stroke: '#b8bbb4' },
+          { stroke: '#a8aba3' },
         ],
       }, data, container);
       plots.push(plot);
@@ -160,11 +263,6 @@ function mountCharts(root) {
       container.outerHTML = renderChartFallback(node);
     }
   });
-}
-
-function setSignalShape(shape) {
-  signal.classList.toggle('linear', shape === 'linear');
-  signal.classList.toggle('radial', shape === 'radial');
 }
 
 async function setNativeStage(stage) {
@@ -179,7 +277,6 @@ function showChrome() {
 
 function hideChrome() {
   chrome.hidden = true;
-  chrome.classList.remove('morphing', 'flying', 'expand', 'pill', 'orb');
 }
 
 function showBackdrop(on) {
@@ -202,45 +299,85 @@ function showPanel(on) {
   }
 }
 
+function setQueryLabel(query) {
+  currentQuery = query && query.trim() ? query.trim() : '';
+  if (currentQuery) {
+    queryLabel.hidden = false;
+    queryLabel.textContent = currentQuery;
+  } else {
+    queryLabel.hidden = true;
+    queryLabel.textContent = '';
+  }
+}
+
+function setStatus(kind, text) {
+  if (!text) {
+    statusRow.hidden = true;
+    messageEl.textContent = '';
+    statusRow.classList.remove('error');
+    return;
+  }
+  statusRow.hidden = false;
+  statusRow.classList.toggle('error', kind === 'error');
+  messageEl.textContent = text;
+}
+
 function resetResultSurface() {
   destroyPlots();
+  revokeImageObjectUrls();
   emptyEl.hidden = false;
   nodesEl.hidden = true;
   nodesEl.innerHTML = '';
-  queryWrap.hidden = true;
-  queryText.textContent = '';
+  setQueryLabel('');
+}
+
+function shouldShowWarning(warning) {
+  if (!warning || !warning.trim()) return false;
+  if (warning === INTERIM_WARNING) return false;
+  return true;
 }
 
 function paintResult(payload) {
   destroyPlots();
+  const nodes = payload.ui?.nodes || [];
+  const query = payload.query || '';
+  const hasAnswer = nodes.some(node => node.type === 'heading' || node.type === 'text');
+  const sourceNode = nodes.find(node => node.type === 'source_list');
+
+  const context = {
+    buttons: [],
+    openSources: !hasAnswer,
+    query,
+  };
+  const parts = nodes.map(node => renderNode(node, context)).filter(Boolean);
+  if (context.buttons.length) {
+    parts.push(`<div class="node-actions">${context.buttons.map(node =>
+      `<button type="button" class="search-node-button" data-action="${escapeAttr(node.action)}" data-value="${escapeAttr(node.value)}">${escapeHtml(node.label)}</button>`
+    ).join('')}</div>`);
+  }
+
   emptyEl.hidden = true;
   nodesEl.hidden = false;
-  const warning = payload.warning
+  const warning = shouldShowWarning(payload.warning)
     ? `<p class="search-warning">${escapeHtml(payload.warning)}</p>`
     : '';
-  const nodes = (payload.ui?.nodes || []).map(renderNode).join('');
-  nodesEl.innerHTML = `${warning}${nodes}`;
+  nodesEl.innerHTML = `${warning}${parts.join('')}`;
+  mountImages(nodesEl);
   mountCharts(nodesEl);
-  if (payload.query) {
-    queryWrap.hidden = false;
-    queryText.textContent = payload.query;
-  }
-}
 
-function wait(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  setQueryLabel(query);
+  setStatus('', '');
+  nodesEl.scrollTop = 0;
 }
 
 async function enterListening() {
   uiMode = 'listening';
-  flyInFlight = false;
-  pendingResult = null;
   body.className = 'mode-listening';
-  chrome.className = 'search-chrome pill';
-  setSignalShape('linear');
+  chrome.classList.remove('processing');
   showPanel(false);
   showBackdrop(false);
   resetResultSurface();
+  setStatus('', '');
   showChrome();
   cancelBtn.hidden = false;
   finishBtn.hidden = false;
@@ -250,111 +387,60 @@ async function enterListening() {
 async function enterSearching() {
   if (uiMode === 'searching' || uiMode === 'panel') return;
   uiMode = 'searching';
+  body.className = 'mode-searching';
   showPanel(false);
+  showBackdrop(false);
+  chrome.classList.add('processing');
   showChrome();
   cancelBtn.hidden = true;
   finishBtn.hidden = true;
-
-  // Expand the native window first so the orb has room to fly later, while
-  // the chrome still paints as the bottom pill.
-  body.className = 'mode-listening';
-  await setNativeStage('stage');
-  showBackdrop(true);
-
-  // Liquid morph: enable transitions, then switch to orb geometry.
-  chrome.classList.add('morphing');
-  await wait(16);
-  body.className = 'mode-searching';
-  await wait(reduceMotion ? 0 : 180);
-  setSignalShape('radial');
-  chrome.classList.remove('pill');
-  chrome.classList.add('orb');
-  await wait(reduceMotion ? 0 : 280);
-  chrome.classList.remove('morphing');
+  await setNativeStage('pill');
 }
 
-async function flyToPanel(payload) {
-  if (flyInFlight) {
-    pendingResult = payload;
-    paintResult(payload);
-    return;
-  }
-  flyInFlight = true;
-  pendingResult = payload;
+async function showResultPanel(payload) {
   paintResult(payload);
-
-  if (uiMode !== 'searching' && uiMode !== 'panel') {
-    await enterSearching();
-  }
-
-  showBackdrop(true);
-
-  if (reduceMotion) {
-    hideChrome();
-    showPanel(true);
-    uiMode = 'panel';
-    flyInFlight = false;
-    return;
-  }
-
-  chrome.classList.add('flying');
-  await wait(40);
-  chrome.classList.add('expand');
-  await wait(420);
-  hideChrome();
-  showPanel(true);
   uiMode = 'panel';
-  flyInFlight = false;
-  if (pendingResult && pendingResult !== payload) {
-    paintResult(pendingResult);
-  }
+  body.className = 'mode-panel';
+  hideChrome();
+  await setNativeStage('stage');
+  showBackdrop(true);
+  showPanel(true);
 }
 
 async function enterIdle() {
   uiMode = 'idle';
-  flyInFlight = false;
-  pendingResult = null;
   body.className = 'mode-idle';
   hideChrome();
+  chrome.classList.remove('processing');
   showPanel(false);
   showBackdrop(false);
   resetResultSurface();
-  setSignalShape('linear');
+  setStatus('', '');
+}
+
+async function enterError(status) {
+  uiMode = 'panel';
+  body.className = 'mode-panel';
+  hideChrome();
+  resetResultSurface();
+  setQueryLabel(status?.query || '');
+  setStatus('error', status?.message || 'Search failed');
+  await setNativeStage('stage');
+  showBackdrop(true);
+  showPanel(true);
 }
 
 function renderStatus(status) {
   const phase = status?.phase || 'idle';
-  phaseEl.textContent = phase;
-  phaseEl.className = `panel-phase ${phase}`;
-  messageEl.textContent = status?.message || '';
-
-  if (status?.query) {
-    queryWrap.hidden = false;
-    queryText.textContent = status.query;
-  }
 
   if (phase === 'listening') {
-    cancelBtn.hidden = false;
-    finishBtn.hidden = false;
     enterListening();
   } else if (phase === 'searching') {
-    cancelBtn.hidden = true;
-    finishBtn.hidden = true;
-    if (uiMode === 'listening' || uiMode === 'idle' || uiMode === 'pill') {
-      enterSearching();
-    }
+    enterSearching();
   } else if (phase === 'idle') {
     enterIdle();
   } else if (phase === 'error') {
-    cancelBtn.hidden = true;
-    finishBtn.hidden = true;
-    // Keep the stage up so the error toast / message is visible; blur still dismisses.
-    showBackdrop(true);
-    showPanel(true);
-    emptyEl.hidden = false;
-    nodesEl.hidden = true;
-    uiMode = 'panel';
-    hideChrome();
+    enterError(status);
   } else if (phase === 'complete') {
     cancelBtn.hidden = true;
     finishBtn.hidden = true;
@@ -421,26 +507,22 @@ document.addEventListener('keydown', async event => {
 
 listen('search-status', event => renderStatus(event.payload));
 listen('search-query', event => {
-  if (event.payload?.query) {
-    queryWrap.hidden = false;
-    queryText.textContent = event.payload.query;
-  }
+  if (event.payload?.query) currentQuery = event.payload.query;
 });
 listen('search-result', event => {
-  const interim = event.payload.warning === 'Fetching a grounded answer…';
-  renderStatus({
-    phase: interim ? 'searching' : 'complete',
-    message: interim ? 'Writing grounded answer…' : (event.payload.warning || 'Answer ready'),
-    query: event.payload.query,
-  });
-  flyToPanel(event.payload);
+  const payload = event.payload || {};
+  if (payload.warning === INTERIM_WARNING) {
+    if (payload.query) currentQuery = payload.query;
+    enterSearching();
+    return;
+  }
+  showResultPanel(payload);
 });
 listen('search-error', event => {
   showToast(String(event.payload), true);
 });
 
 call('get_search_status').then(status => {
-  // Overlay should stay hidden while idle — never present at rest.
   if (!status || status.phase === 'idle' || status.phase === 'complete' || status.phase === 'error') {
     enterIdle();
     return;
