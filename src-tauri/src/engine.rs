@@ -14,7 +14,9 @@ use std::net::TcpListener;
 use std::os::windows::{io::AsRawHandle, process::CommandExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::AppHandle;
 
@@ -373,7 +375,7 @@ fn engine_worker(
                     last_start_failure = server.is_none().then(Instant::now);
                 }
                 let result = match server.as_mut() {
-                    Some(server) => process_meeting_job(&client, server, job),
+                    Some(server) => process_meeting_job(&client, server, job, &app),
                     None => Err("Parakeet could not start to process the meeting".into()),
                 };
                 match result {
@@ -528,6 +530,15 @@ fn transcribe_recording(
     recording: &Recording,
     language: &str,
 ) -> Result<String, String> {
+    transcribe_recording_url(client, &server.base_url, recording, language)
+}
+
+fn transcribe_recording_url(
+    client: &Client,
+    base_url: &str,
+    recording: &Recording,
+    language: &str,
+) -> Result<String, String> {
     let audio_ms = recording.samples.len() as u128 * 1_000
         / (recording.sample_rate as u128 * recording.channels.max(1) as u128);
     let wav = recording_to_wav(recording)?;
@@ -545,7 +556,7 @@ fn transcribe_recording(
         form = form.text("language", language.to_string());
     }
     let response = client
-        .post(format!("{}/v1/audio/transcriptions", server.base_url))
+        .post(format!("{base_url}/v1/audio/transcriptions"))
         .timeout(Duration::from_secs(
             ((audio_ms / 10_000) + 30).clamp(30, 600) as u64,
         ))
@@ -569,33 +580,103 @@ fn process_meeting_job(
     client: &Client,
     server: &SpeechServer,
     job: MeetingTranscriptionJob,
+    app: &AppHandle,
 ) -> Result<CompletedMeetingTranscription, String> {
     const CHUNK_SAMPLES: usize = 16_000 * 120;
-    let mut file = BufReader::new(
-        fs::File::open(&job.audio_path)
-            .map_err(|e| format!("Could not open meeting audio: {e}"))?,
-    );
-    file.seek(SeekFrom::Start(44)).map_err(|e| e.to_string())?;
-    let mut transcript_parts = Vec::new();
-    loop {
-        let mut bytes = vec![0u8; CHUNK_SAMPLES * 2];
-        let read = file.read(&mut bytes).map_err(|e| e.to_string())?;
-        if read == 0 {
-            break;
+    const CHUNK_BYTES: usize = CHUNK_SAMPLES * 2;
+    // Stream raw chunk bytes up front (fast disk read); transcription fans
+    // out over a few workers below instead of one chunk at a time, which is
+    // what made hour-long meetings take so long.
+    let mut raw_chunks: Vec<Vec<u8>> = Vec::new();
+    {
+        let mut file = BufReader::new(
+            fs::File::open(&job.audio_path)
+                .map_err(|e| format!("Could not open meeting audio: {e}"))?,
+        );
+        file.seek(SeekFrom::Start(44)).map_err(|e| e.to_string())?;
+        loop {
+            let mut bytes = vec![0u8; CHUNK_BYTES];
+            let mut filled = 0;
+            while filled < CHUNK_BYTES {
+                match file.read(&mut bytes[filled..]) {
+                    Ok(0) => break,
+                    Ok(read) => filled += read,
+                    Err(error) => return Err(error.to_string()),
+                }
+            }
+            if filled == 0 {
+                break;
+            }
+            bytes.truncate(filled - (filled % 2));
+            if !bytes.is_empty() {
+                raw_chunks.push(bytes);
+            }
         }
-        bytes.truncate(read - (read % 2));
-        let samples = bytes
-            .chunks_exact(2)
-            .map(|v| i16::from_le_bytes([v[0], v[1]]) as f32 / 32768.0)
-            .collect();
-        let recording = Recording {
-            samples,
-            sample_rate: 16_000,
-            channels: 1,
-        };
-        let text = transcribe_recording(client, server, &recording, &job.settings.language)?;
-        if !text.is_empty() {
-            transcript_parts.push(text);
+    }
+    let total = raw_chunks.len();
+    // Bounded parallel transcription, order preserved. Any chunk failure
+    // fails the whole job, exactly like the old serial loop.
+    const WORKERS: usize = 3;
+    let slots: Vec<Mutex<Option<Result<String, String>>>> =
+        (0..total).map(|_| Mutex::new(None)).collect();
+    let done = AtomicUsize::new(0);
+    let base_url = server.base_url.clone();
+    std::thread::scope(|scope| {
+        for worker in 0..WORKERS.min(total.max(1)) {
+            // Fresh shared references per worker: the `move` closure takes
+            // copies of these while the owned values stay put for later use.
+            let start = worker;
+            let raw = &raw_chunks;
+            let slot_list = &slots;
+            let counter = &done;
+            let http = client;
+            let url = base_url.as_str();
+            let language = job.settings.language.as_str();
+            let job_id = job.id.as_str();
+            let progress_app = app;
+            scope.spawn(move || {
+                let mut index = start;
+                while index < total {
+                    let samples = raw[index]
+                        .chunks_exact(2)
+                        .map(|v| i16::from_le_bytes([v[0], v[1]]) as f32 / 32768.0)
+                        .collect();
+                    let recording = Recording {
+                        samples,
+                        sample_rate: 16_000,
+                        channels: 1,
+                    };
+                    let result =
+                        transcribe_recording_url(http, url, &recording, language);
+                    if let Ok(mut slot) = slot_list[index].lock() {
+                        *slot = Some(result);
+                    }
+                    let finished = counter.fetch_add(1, Ordering::Relaxed) + 1;
+                    let _ = tauri::Emitter::emit(
+                        progress_app,
+                        "meeting-transcription-progress",
+                        serde_json::json!({
+                            "id": job_id,
+                            "done": finished,
+                            "total": total,
+                        }),
+                    );
+                    index += WORKERS;
+                }
+            });
+        }
+    });
+    let mut transcript_parts = Vec::with_capacity(total);
+    for slot in &slots {
+        match slot
+            .lock()
+            .map_err(|_| "meeting progress lock poisoned")?
+            .take()
+        {
+            Some(Ok(text)) if !text.is_empty() => transcript_parts.push(text),
+            Some(Ok(_)) => {}
+            Some(Err(error)) => return Err(error),
+            None => return Err("Meeting transcription was interrupted".into()),
         }
     }
     let transcript = apply_dictionary(
@@ -630,18 +711,37 @@ fn generate_meeting_notes(
     transcript: &str,
 ) -> Result<String, String> {
     const PROMPT: &str = "Create concise Markdown meeting notes grounded only in the transcript. Use sections: Summary, Decisions, Action items, Open questions, and Key points. Never invent an owner, deadline, decision, or fact. Write 'None captured' when a section has no evidence.";
-    let mut partials = Vec::new();
-    for chunk in split_utf8_chunks(transcript, 36_000) {
-        partials.push(deepseek_cleanup_at(
-            client,
-            "https://api.deepseek.com/chat/completions",
-            key,
-            chunk,
-            &[],
-            PROMPT,
-            3000,
-        )?);
-    }
+    // Partial notes resolve concurrently and assemble in order, so long
+    // transcripts don't pay one network round-trip per chunk in series.
+    // Any failure still fails the whole step, as before.
+    let text_chunks = split_utf8_chunks(transcript, 36_000);
+    let mut ordered: Vec<(usize, String)> = std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for (index, chunk) in text_chunks.iter().enumerate() {
+            handles.push(scope.spawn(move || {
+                deepseek_cleanup_at(
+                    client,
+                    "https://api.deepseek.com/chat/completions",
+                    key,
+                    chunk,
+                    &[],
+                    PROMPT,
+                    3000,
+                )
+                .map(|text| (index, text))
+            }));
+        }
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle
+                    .join()
+                    .map_err(|_| "Meeting notes worker stopped".to_string())?
+            })
+            .collect::<Result<Vec<(usize, String)>, String>>()
+    })?;
+    ordered.sort_by_key(|(index, _)| *index);
+    let mut partials: Vec<String> = ordered.into_iter().map(|(_, text)| text).collect();
     if partials.len() == 1 {
         return Ok(partials.remove(0));
     }

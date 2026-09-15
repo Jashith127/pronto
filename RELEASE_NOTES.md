@@ -19,6 +19,7 @@ Pronto 0.8.1 polishes the 0.8.0 voice search experience end to end: results that
 ## Fixed + faster under the hood
 
 - **Shortcut editor no longer hangs** — saving a dictation, paste, or search shortcut froze the app on a locking bug; fixed in all three editors.
+- **Long meetings no longer freeze the app** — stopping a 1–2 hour recording mixed the microphone and computer captures on the spot, wedging every meeting request behind minutes of disk IO. Stopping now returns in about a second with the meeting marked processing; mixing and transcription continue in the background with live chunk progress, and transcription itself runs on parallel workers.
 - **Snappier dictation** — the pipeline lock is held only for the state flip (insertion, history writes, and overlay hide run outside it), and cancel returns immediately.
 - **Less waiting on credentials** — the DeepSeek key is cached for 60 seconds instead of hitting Credential Manager on every search and cleanup.
 - **Lighter overlay** — no global per-element theme transitions, no fullscreen backdrop blur, cheaper loading shimmer, deferred scripts, and one less blocking stylesheet, so the pill and panel paint sooner.

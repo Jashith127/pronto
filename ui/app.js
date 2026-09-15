@@ -589,6 +589,12 @@ listen('meeting-updated', event => {
   showToast('Meeting notes are ready');
 });
 listen('meeting-processing-error', event => showToast(event.payload, true));
+listen('meeting-transcription-progress', event => {
+  const payload = event.payload || {};
+  if (payload.done == null || payload.total == null) return;
+  const el = document.querySelector('#notetaker-background-status');
+  if (el) el.textContent = `Transcribing meeting audio ${payload.done}/${payload.total}…`;
+});
 listen('meeting-status', event => {
   meetingRecording = Boolean(event.payload.recording);
   if (meetingRecording) meetingStartedAt = Date.now() - Number(event.payload.elapsedSeconds || 0) * 1000;

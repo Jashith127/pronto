@@ -45,7 +45,6 @@ pub struct MeetingStatus {
 
 pub struct StoppedMeeting {
     pub record: MeetingRecord,
-    pub audio_path: PathBuf,
 }
 
 enum Command {
@@ -232,22 +231,41 @@ fn stop_capture(mut active: ActiveMeeting) -> Result<StoppedMeeting, String> {
         .take()
         .and_then(|writer| writer.join().ok())
         .and_then(Result::err);
-    let mixed = active.directory.join("meeting.wav");
-    mix_sources(
-        &active.directory.join("microphone.wav"),
-        &active.directory.join("computer.wav"),
-        &mixed,
-    )?;
+    // Stop returns fast: mixing two hour-long files takes minutes and used
+    // to wedge every meeting IPC (status, list) behind it, freezing the app
+    // until the mix finished. Mixing happens in finalize_meeting instead.
     active.record.duration_seconds = active.started.elapsed().as_secs();
     active.record.status = "processing".into();
-    active.record.audio_path = Some(mixed.to_string_lossy().to_string());
+    active.record.audio_path = None;
     active.record.error =
         system_error.map(|error| format!("Computer audio was unavailable: {error}"));
     save_record(&active.directory, &active.record)?;
     Ok(StoppedMeeting {
         record: active.record,
-        audio_path: mixed,
     })
+}
+
+/// Mix the stopped microphone + computer captures into meeting.wav.
+/// Runs on a background thread (never the meeting worker or a Tauri
+/// command), so status/list stay instant while it works.
+pub fn finalize_meeting(id: &str) -> Result<MeetingRecord, String> {
+    if id.trim().is_empty() || id.contains(['/', '\\', '.']) {
+        return Err("Invalid recording identifier.".into());
+    }
+    let directory = meetings_root().join(id);
+    let mixed = directory.join("meeting.wav");
+    mix_sources(
+        &directory.join("microphone.wav"),
+        &directory.join("computer.wav"),
+        &mixed,
+    )?;
+    let path = directory.join("meeting.json");
+    let mut record: MeetingRecord =
+        serde_json::from_slice(&fs::read(&path).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    record.audio_path = Some(mixed.to_string_lossy().to_string());
+    save_record(&directory, &record)?;
+    Ok(record)
 }
 
 fn start_microphone_capture(
@@ -537,22 +555,36 @@ fn wav_header(samples: u32) -> [u8; 44] {
 }
 
 fn mix_sources(microphone: &Path, computer: &Path, output: &Path) -> Result<(), String> {
+    const BLOCK_SAMPLES: usize = 65536;
     let mut mic = open_wav_data(microphone)?;
     let mut system = open_wav_data(computer).ok();
     let mut writer = WavWriter::create(output)?;
+    let mut a_bytes = vec![0u8; BLOCK_SAMPLES * 2];
+    let mut b_bytes = vec![0u8; BLOCK_SAMPLES * 2];
     loop {
-        let a = read_sample(&mut mic);
-        let b = system.as_mut().and_then(read_sample);
-        if a.is_none() && b.is_none() {
+        let a_count = read_block(&mut mic, &mut a_bytes)?;
+        let b_count = match system.as_mut() {
+            Some(reader) => read_block(reader, &mut b_bytes)?,
+            None => 0,
+        };
+        if a_count == 0 && b_count == 0 {
             break;
         }
-        let mixed = match (a, b) {
-            (Some(a), Some(b)) => (a + b) * 0.5,
-            (Some(a), None) => a,
-            (None, Some(b)) => b,
-            _ => 0.0,
-        };
-        writer.write_sample(mixed)?;
+        for index in 0..a_count.max(b_count) {
+            let a = (index < a_count)
+                .then(|| sample_at(&a_bytes, index))
+                .flatten();
+            let b = (index < b_count)
+                .then(|| sample_at(&b_bytes, index))
+                .flatten();
+            let mixed = match (a, b) {
+                (Some(a), Some(b)) => (a + b) * 0.5,
+                (Some(a), None) => a,
+                (None, Some(b)) => b,
+                _ => 0.0,
+            };
+            writer.write_sample(mixed)?;
+        }
     }
     writer.finish()
 }
@@ -564,10 +596,23 @@ fn open_wav_data(path: &Path) -> Result<BufReader<File>, String> {
         .map_err(|e| e.to_string())?;
     Ok(reader)
 }
-fn read_sample(reader: &mut BufReader<File>) -> Option<f32> {
-    let mut bytes = [0u8; 2];
-    reader.read_exact(&mut bytes).ok()?;
-    Some(i16::from_le_bytes(bytes) as f32 / 32768.0)
+/// Fill `buffer` with raw PCM16 bytes, returning the sample count.
+fn read_block(reader: &mut BufReader<File>, buffer: &mut [u8]) -> Result<usize, String> {
+    let even_len = buffer.len() - (buffer.len() % 2);
+    let mut filled = 0;
+    while filled < even_len {
+        match reader.read(&mut buffer[filled..even_len]) {
+            Ok(0) => break,
+            Ok(read) => filled += read,
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Ok(filled / 2)
+}
+
+fn sample_at(block: &[u8], index: usize) -> Option<f32> {
+    let bytes = block.get(index * 2..index * 2 + 2)?;
+    Some(i16::from_le_bytes([bytes[0], bytes[1]]) as f32 / 32768.0)
 }
 
 pub fn update_record(

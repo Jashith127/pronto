@@ -641,25 +641,63 @@ fn start_meeting_recording(
 
 fn finish_meeting_recording(app: &AppHandle) -> Result<meeting::MeetingRecord, String> {
     let state = app.state::<AppState>();
+    // stop() only halts the writers and marks the record processing, so
+    // this returns in about a second even for hour-long meetings. Mixing
+    // the two source files (minutes of disk IO) happens on a background
+    // thread below; the meeting worker stays free for status/list.
     let stopped = state.meetings.stop()?;
     // Recording has ended regardless of what follows, so the tray goes
     // back to its idle label even on the error paths below.
     sync_meeting_tray_item(app, false);
-    let settings = state.settings.snapshot()?;
-    let engine = state.engine.lock().map_err(|_| "engine lock poisoned")?;
-    let engine = engine
-        .as_ref()
-        .ok_or_else(|| "Transcription engine is still starting".to_string())?;
-    engine.transcribe_meeting(MeetingTranscriptionJob {
-        id: stopped.record.id.clone(),
-        title: stopped.record.title.clone(),
-        audio_path: stopped.audio_path,
-        settings,
-    })?;
     let _ = app.emit(
         "meeting-status",
         serde_json::json!({ "recording": false, "meeting": stopped.record, "elapsedSeconds": 0 }),
     );
+    let record_id = stopped.record.id.clone();
+    let record_title = stopped.record.title.clone();
+    let handle = app.clone();
+    std::thread::Builder::new()
+        .name("pronto-meeting-finalize".into())
+        .spawn(move || {
+            let state = handle.state::<AppState>();
+            let settings = match state.settings.snapshot() {
+                Ok(settings) => settings,
+                Err(error) => {
+                    fail_meeting_transcription(&handle, &record_id, error);
+                    return;
+                }
+            };
+            let record = match meeting::finalize_meeting(&record_id) {
+                Ok(record) => record,
+                Err(error) => {
+                    fail_meeting_transcription(&handle, &record_id, error);
+                    return;
+                }
+            };
+            let audio_path =
+                std::path::PathBuf::from(record.audio_path.clone().unwrap_or_default());
+            let enqueue = state
+                .engine
+                .lock()
+                .map_err(|_| "engine lock poisoned".to_string())
+                .and_then(|engine| {
+                    engine
+                        .as_ref()
+                        .ok_or_else(|| "Transcription engine is still starting".to_string())
+                        .and_then(|engine| {
+                            engine.transcribe_meeting(MeetingTranscriptionJob {
+                                id: record_id.clone(),
+                                title: record_title.clone(),
+                                audio_path,
+                                settings,
+                            })
+                        })
+                });
+            if let Err(error) = enqueue {
+                fail_meeting_transcription(&handle, &record_id, error);
+            }
+        })
+        .map_err(|error| format!("Could not finalize meeting: {error}"))?;
     Ok(stopped.record)
 }
 

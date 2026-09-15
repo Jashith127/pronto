@@ -50,6 +50,8 @@ const peekClose = document.querySelector('#peek-close');
 
 const PEEK_TIMEOUT_MS = 120_000;
 let peekTimer = 0;
+let peekTick = 0;
+let peekStartedAt = 0;
 
 let uiMode = 'idle';
 let currentQuery = '';
@@ -310,6 +312,10 @@ function hidePeek() {
     clearTimeout(peekTimer);
     peekTimer = 0;
   }
+  if (peekTick) {
+    clearInterval(peekTick);
+    peekTick = 0;
+  }
   if (peek) peek.hidden = true;
 }
 
@@ -321,6 +327,13 @@ function enterPeek() {
   showBackdrop(false);
   if (peekLabel) peekLabel.textContent = currentQuery || 'Search result';
   if (peek) peek.hidden = false;
+  peekStartedAt = Date.now();
+  const paintTimer = () => {
+    const left = Math.max(0, 1 - (Date.now() - peekStartedAt) / PEEK_TIMEOUT_MS);
+    peekClose?.style.setProperty('--p', left.toFixed(3));
+  };
+  paintTimer();
+  peekTick = setInterval(paintTimer, 250);
   peekTimer = setTimeout(() => { dismissPeekCompletely(); }, PEEK_TIMEOUT_MS);
 }
 
