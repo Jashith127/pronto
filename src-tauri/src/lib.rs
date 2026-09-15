@@ -471,10 +471,9 @@ pub(crate) fn complete_transcription(
     result: Result<CompletedTranscription, String>,
 ) {
     let state = app.state::<AppState>();
-    let mut pipeline = match state.pipeline.lock() {
-        Ok(pipeline) => pipeline,
-        Err(_) => return,
-    };
+    // The pipeline lock is held only for the state flip itself. Insertion,
+    // history disk writes, and the overlay pause below all run lock-free so
+    // status reads and the next dictation never queue behind them.
     match result {
         Ok(completed) => {
             let insertion_target = state.insertion_target.finish(completed.target_window);
@@ -501,13 +500,19 @@ pub(crate) fn complete_transcription(
                     format!("File transcribed in {} ms", completed.entry.total_ms)
                 }
             };
-            pipeline.complete(
-                completed.entry.final_text.clone(),
-                completed.entry.asr_ms,
-                completed.entry.cleanup_ms,
-                completed.entry.total_ms,
-                message,
-            );
+            let status = match state.pipeline.lock() {
+                Ok(mut pipeline) => {
+                    pipeline.complete(
+                        completed.entry.final_text.clone(),
+                        completed.entry.asr_ms,
+                        completed.entry.cleanup_ms,
+                        completed.entry.total_ms,
+                        message,
+                    );
+                    pipeline.status.clone()
+                }
+                Err(_) => return,
+            };
             if completed.skip_history {
                 // Note Taker file uploads and other background imports must not
                 // pollute the Dictation History clipboard. They are delivered
@@ -523,13 +528,20 @@ pub(crate) fn complete_transcription(
                 let _ = state.settings.push_history(completed.entry.clone());
                 let _ = app.emit("history-updated", completed.entry);
             }
+            emit_status(app, &status);
         }
         Err(error) => {
             state.insertion_target.cancel();
-            pipeline.fail(error)
+            let status = match state.pipeline.lock() {
+                Ok(mut pipeline) => {
+                    pipeline.fail(error);
+                    pipeline.status.clone()
+                }
+                Err(_) => return,
+            };
+            emit_status(app, &status);
         }
     }
-    emit_status(app, &pipeline.status);
     // A transcription finishing in the background must not hide the overlay
     // while meeting notes are being recorded or offered.
     let meeting_active = app
@@ -542,8 +554,14 @@ pub(crate) fn complete_transcription(
         if let Some(overlay) = app.get_webview_window("overlay") {
             // The result is already inserted and reported; this pause only
             // lets the pill play its ~130ms exit animation before hiding.
-            std::thread::sleep(std::time::Duration::from_millis(140));
-            let _ = overlay.hide();
+            // Off the engine worker so queued jobs don't wait on animation.
+            std::thread::Builder::new()
+                .name("pronto-overlay-hide".into())
+                .spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(140));
+                    let _ = overlay.hide();
+                })
+                .ok();
         }
     }
 }
@@ -884,19 +902,28 @@ fn cancel_recording(app: AppHandle) -> Result<EngineStatus, String> {
     state.insertion_target.cancel();
     state.dictation_active.store(false, Ordering::Release);
     let _ = state.system_audio.restore();
-    let mut pipeline = state
-        .pipeline
-        .lock()
-        .map_err(|_| "pipeline lock poisoned")?;
-    pipeline.reset();
-    pipeline.status.message = "Dictation cancelled".into();
-    emit_status(&app, &pipeline.status);
+    let status = {
+        let mut pipeline = state
+            .pipeline
+            .lock()
+            .map_err(|_| "pipeline lock poisoned")?;
+        pipeline.reset();
+        pipeline.status.message = "Dictation cancelled".into();
+        pipeline.status.clone()
+    };
+    emit_status(&app, &status);
     if let Some(overlay) = app.get_webview_window("overlay") {
-        // Lets the pill play its ~130ms exit animation before hiding.
-        std::thread::sleep(std::time::Duration::from_millis(140));
-        let _ = overlay.hide();
+        // Lets the pill play its ~130ms exit animation before hiding, off
+        // the command thread so cancel returns immediately.
+        std::thread::Builder::new()
+            .name("pronto-overlay-hide".into())
+            .spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(140));
+                let _ = overlay.hide();
+            })
+            .ok();
     }
-    Ok(pipeline.status.clone())
+    Ok(status)
 }
 
 fn handle_paste_hotkey(app: &AppHandle) {
@@ -925,6 +952,7 @@ enum SearchOverlayStage {
     Pill,
     Orb,
     Stage,
+    Peek,
 }
 
 impl SearchOverlayStage {
@@ -933,6 +961,7 @@ impl SearchOverlayStage {
             "pill" => Ok(Self::Pill),
             "orb" => Ok(Self::Orb),
             "stage" => Ok(Self::Stage),
+            "peek" => Ok(Self::Peek),
             other => Err(format!("Unknown search overlay stage: {other}")),
         }
     }
@@ -946,6 +975,28 @@ fn monitor_for(window: &tauri::WebviewWindow) -> Option<tauri::Monitor> {
         .or_else(|| window.primary_monitor().ok().flatten())
 }
 
+/// Top edge (physical pixels, virtual-screen coords) of a bottom taskbar
+/// that belongs to the given monitor, via SHAppBarMessage. This is the
+/// only taskbar geometry query: the pill/overlay code elsewhere assumes a
+/// bottom taskbar with a hardcoded 74px clearance instead.
+fn bottom_taskbar_top(origin_x: i32, origin_y: i32, width: u32, height: u32) -> Option<i32> {
+    use windows::Win32::UI::Shell::{ABM_GETTASKBARPOS, ABE_BOTTOM, APPBARDATA, SHAppBarMessage};
+    let mut data: APPBARDATA = Default::default();
+    data.cbSize = std::mem::size_of::<APPBARDATA>() as u32;
+    let ok = unsafe { SHAppBarMessage(ABM_GETTASKBARPOS, &mut data) };
+    if ok == 0 || data.uEdge != ABE_BOTTOM {
+        return None;
+    }
+    let rc = data.rc;
+    if rc.left < origin_x
+        || rc.right > origin_x + width as i32
+        || rc.bottom != origin_y + height as i32
+    {
+        return None;
+    }
+    Some(rc.top)
+}
+
 fn apply_search_overlay_stage(window: &tauri::WebviewWindow, stage: SearchOverlayStage) {
     let Some(monitor) = monitor_for(window) else {
         let (w, h) = match stage {
@@ -953,6 +1004,7 @@ fn apply_search_overlay_stage(window: &tauri::WebviewWindow, stage: SearchOverla
             // Orb is retired: searching reuses the regular pill loading state.
             SearchOverlayStage::Orb => (120.0, 32.0),
             SearchOverlayStage::Stage => (920.0, 640.0),
+            SearchOverlayStage::Peek => (280.0, 72.0),
         };
         let _ = window.set_size(LogicalSize::new(w, h));
         return;
@@ -980,6 +1032,24 @@ fn apply_search_overlay_stage(window: &tauri::WebviewWindow, stage: SearchOverla
                 area.height,
             )));
             let _ = window.set_position(PhysicalPosition::new(origin.x, origin.y));
+        }
+        SearchOverlayStage::Peek => {
+            // Folder-edge tab, bottom-left, tucked behind a bottom taskbar
+            // so only a sliver peeks out. Falls back to the classic 74px
+            // bottom clearance when the taskbar is elsewhere.
+            let logical_width = 280.0;
+            let logical_height = 72.0;
+            let visible_height = 40.0;
+            let _ = window.set_size(LogicalSize::new(logical_width, logical_height));
+            let x = origin.x + (12.0 * scale).round() as i32;
+            let y = match bottom_taskbar_top(origin.x, origin.y, area.width, area.height) {
+                Some(taskbar_top) => taskbar_top - (visible_height * scale).round() as i32,
+                None => {
+                    let height = (logical_height * scale).round() as u32;
+                    origin.y + area.height.saturating_sub(height + 74) as i32
+                }
+            };
+            let _ = window.set_position(PhysicalPosition::new(x, y));
         }
     }
 }
@@ -1025,6 +1095,28 @@ fn dismiss_search_overlay_inner(app: &AppHandle) {
         }
     }
     hide_search_overlay(app);
+}
+
+/// Click-away from a finished result parks the panel as a small peek tab
+/// at the bottom-left instead of hiding it. Anything else (listening,
+/// searching, idle, error) hides the overlay as before. Returns true when
+/// the result was parked.
+fn park_search_overlay_inner(app: &AppHandle) -> bool {
+    let state = app.state::<AppState>();
+    state.search_blur_dismiss.store(false, Ordering::Release);
+    let phase = state.search.status().map(|status| status.phase).ok();
+    if !matches!(phase, Some(SearchPhase::Complete)) {
+        dismiss_search_overlay_inner(app);
+        return false;
+    }
+    if let Some(window) = app.get_webview_window("search") {
+        apply_search_overlay_stage(&window, SearchOverlayStage::Peek);
+        let _ = window.show();
+        // Deliberately unfocused with blur-dismiss off: the tab lingers
+        // until picked, dismissed, or timed out by the frontend.
+    }
+    let _ = app.emit("search-parked", ());
+    true
 }
 
 fn search_blocked_reason(state: &AppState) -> Option<String> {
@@ -1271,6 +1363,48 @@ fn cancel_search_inner(app: &AppHandle) -> Result<SearchStatus, String> {
     Ok(cancelled)
 }
 
+/// "Ask next" follow-up chip: run a new search for literal text, skipping
+/// microphone capture and going straight to web retrieval + synthesis.
+fn run_text_search_inner(app: &AppHandle, query: String) -> Result<SearchStatus, String> {
+    let query = query.trim().to_string();
+    if query.is_empty() {
+        return Err("Empty follow-up question".into());
+    }
+    let state = app.state::<AppState>();
+    if let Some(reason) = search_blocked_reason(&state) {
+        let _ = app.emit(
+            "tray-message",
+            serde_json::json!({ "message": reason, "error": true }),
+        );
+        return Err(reason);
+    }
+    let settings = state.settings.snapshot()?;
+    // Session context, same as voice results: "what about tomorrow?"
+    // expands against the last queries with no extra LLM cost.
+    let recent = state.search.recent_queries();
+    let expanded = search::expand_followup(&query, &recent);
+    let status = state.search.begin_text_search(expanded.clone())?;
+    emit_search_status(app, &status);
+    let _ = app.emit(
+        "search-query",
+        serde_json::json!({ "query": expanded }),
+    );
+    show_search_overlay(app, SearchOverlayStage::Pill, false);
+    let completed = CompletedSearchAsr {
+        query: expanded,
+        provider_url: settings.search_provider_url.clone(),
+    };
+    let app_handle = app.clone();
+    let resource_dir = state.search.resource_dir();
+    std::thread::Builder::new()
+        .name("pronto-search-web".into())
+        .spawn(move || {
+            run_web_search_and_synthesize(&app_handle, completed, resource_dir);
+        })
+        .map_err(|error| format!("Could not start web search: {error}"))?;
+    Ok(status)
+}
+
 pub(crate) fn complete_search_asr(app: &AppHandle, result: Result<CompletedSearchAsr, String>) {
     let state = app.state::<AppState>();
     match result {
@@ -1400,14 +1534,6 @@ fn run_web_search_and_synthesize(
         grounded,
     );
 
-    let images = banner_handle
-        .and_then(|handle| handle.join().ok())
-        .map(|resolved| search::merge_banner_images(thumbs.clone(), resolved, 3))
-        .unwrap_or(thumbs);
-    state.search.remember_allowed_urls(
-        search::expanded_allowed_urls_with_images(&hits, &images),
-    );
-
     let (parsed, mut warning) = match synth_result {
         Ok(result) => result,
         Err(error) => {
@@ -1419,7 +1545,6 @@ fn run_web_search_and_synthesize(
         }
     };
     let synthesis_ms = synthesis_started.elapsed().as_millis();
-    let banner_image = search::build_banner_image(&state.search_http, &images);
     // Surface cache + timing in warning when otherwise silent (observability
     // without extra IPC): keeps fast-path transparent.
     if warning.is_none() && (cache_hit || retrieval_ms > 0) {
@@ -1431,21 +1556,46 @@ fn run_web_search_and_synthesize(
             let _ = (retrieval_ms, synthesis_ms, retrieved_from_network);
         }
     }
+    // First paint carries text + sources immediately; the banner image
+    // resolves on a side thread below so a slow image host never delays
+    // the answer. Final content is identical, just staged.
     let payload = SearchResultPayload {
         query: completed.query.clone(),
         markdown: parsed.markdown,
         layout: parsed.layout,
         key_facts: parsed.key_facts,
         followups: parsed.followups,
-        banner_image,
-        sources: hits,
+        banner_image: None,
+        sources: hits.clone(),
         warning: warning.clone(),
     };
-    if let Ok(status) = state.search.complete(completed.query, warning) {
+    if let Ok(status) = state.search.complete(completed.query.clone(), warning) {
         emit_search_status(app, &status);
     }
     let _ = app.emit("search-result", payload);
     show_search_overlay(app, SearchOverlayStage::Stage, true);
+    let banner_app = app.clone();
+    let banner_http = state.search_http.clone();
+    let banner_query = completed.query.clone();
+    std::thread::Builder::new()
+        .name("pronto-search-banner-embed".into())
+        .spawn(move || {
+            let images = banner_handle
+                .and_then(|handle| handle.join().ok())
+                .map(|resolved| search::merge_banner_images(thumbs.clone(), resolved, 3))
+                .unwrap_or(thumbs);
+            banner_app
+                .state::<AppState>()
+                .search
+                .remember_allowed_urls(search::expanded_allowed_urls_with_images(&hits, &images));
+            if let Some(banner) = search::build_banner_image(&banner_http, &images) {
+                let _ = banner_app.emit(
+                    "search-banner-ready",
+                    serde_json::json!({ "query": banner_query, "bannerImage": banner }),
+                );
+            }
+        })
+        .ok();
 }
 
 fn handle_search_hotkey(app: &AppHandle, event: HotkeyEvent) {
@@ -1790,19 +1940,25 @@ fn set_hotkey(app: AppHandle, hotkey: String) -> Result<HotkeyStatus, String> {
         .lock()
         .map_err(|_| "shortcut lock poisoned")?
         .clone();
-    let controller = state
-        .hotkey_controller
-        .lock()
-        .map_err(|_| "shortcut controller lock poisoned")?;
-    let controller = controller
-        .as_ref()
-        .ok_or_else(|| "Shortcut listener is still starting".to_string())?;
-    controller.update(HotkeyId::Dictation, next.clone())?;
+    {
+        let controller = state
+            .hotkey_controller
+            .lock()
+            .map_err(|_| "shortcut controller lock poisoned")?;
+        let controller = controller
+            .as_ref()
+            .ok_or_else(|| "Shortcut listener is still starting".to_string())?;
+        controller.update(HotkeyId::Dictation, next.clone())?;
+    }
 
     let mut settings = state.settings.snapshot()?;
     settings.hotkey = canonical;
     if let Err(error) = state.settings.replace(settings) {
-        let _ = controller.update(HotkeyId::Dictation, previous);
+        if let Ok(controller) = state.hotkey_controller.lock() {
+            if let Some(controller) = controller.as_ref() {
+                let _ = controller.update(HotkeyId::Dictation, previous);
+            }
+        }
         return Err(format!(
             "The shortcut worked but could not be saved: {error}"
         ));
@@ -1846,19 +2002,25 @@ fn set_paste_hotkey(app: AppHandle, hotkey: String) -> Result<HotkeyStatus, Stri
         .lock()
         .map_err(|_| "shortcut lock poisoned")?
         .clone();
-    let controller = state
-        .hotkey_controller
-        .lock()
-        .map_err(|_| "shortcut controller lock poisoned")?;
-    let controller = controller
-        .as_ref()
-        .ok_or_else(|| "Shortcut listener is still starting".to_string())?;
-    controller.update(HotkeyId::Paste, next.clone())?;
+    {
+        let controller = state
+            .hotkey_controller
+            .lock()
+            .map_err(|_| "shortcut controller lock poisoned")?;
+        let controller = controller
+            .as_ref()
+            .ok_or_else(|| "Shortcut listener is still starting".to_string())?;
+        controller.update(HotkeyId::Paste, next.clone())?;
+    }
 
     let mut settings = state.settings.snapshot()?;
     settings.paste_hotkey = canonical;
     if let Err(error) = state.settings.replace(settings) {
-        let _ = controller.update(HotkeyId::Paste, previous);
+        if let Ok(controller) = state.hotkey_controller.lock() {
+            if let Some(controller) = controller.as_ref() {
+                let _ = controller.update(HotkeyId::Paste, previous);
+            }
+        }
         return Err(format!(
             "The shortcut worked but could not be saved: {error}"
         ));
@@ -1904,19 +2066,25 @@ fn set_search_hotkey(app: AppHandle, hotkey: String) -> Result<HotkeyStatus, Str
         .lock()
         .map_err(|_| "shortcut lock poisoned")?
         .clone();
-    let controller = state
-        .hotkey_controller
-        .lock()
-        .map_err(|_| "shortcut controller lock poisoned")?;
-    let controller = controller
-        .as_ref()
-        .ok_or_else(|| "Shortcut listener is still starting".to_string())?;
-    controller.update(HotkeyId::Search, next.clone())?;
+    {
+        let controller = state
+            .hotkey_controller
+            .lock()
+            .map_err(|_| "shortcut controller lock poisoned")?;
+        let controller = controller
+            .as_ref()
+            .ok_or_else(|| "Shortcut listener is still starting".to_string())?;
+        controller.update(HotkeyId::Search, next.clone())?;
+    }
 
     let mut settings = state.settings.snapshot()?;
     settings.search_shortcut = canonical;
     if let Err(error) = state.settings.replace(settings) {
-        let _ = controller.update(HotkeyId::Search, previous);
+        if let Ok(controller) = state.hotkey_controller.lock() {
+            if let Some(controller) = controller.as_ref() {
+                let _ = controller.update(HotkeyId::Search, previous);
+            }
+        }
         return Err(format!(
             "The shortcut worked but could not be saved: {error}"
         ));
@@ -1959,6 +2127,11 @@ fn cancel_search(app: AppHandle) -> Result<SearchStatus, String> {
 }
 
 #[tauri::command]
+fn run_text_search(app: AppHandle, query: String) -> Result<SearchStatus, String> {
+    run_text_search_inner(&app, query)
+}
+
+#[tauri::command]
 fn reroute_dictation_to_search_command(app: AppHandle) -> Result<SearchStatus, String> {
     reroute_dictation_to_search(&app)
 }
@@ -1967,6 +2140,11 @@ fn reroute_dictation_to_search_command(app: AppHandle) -> Result<SearchStatus, S
 fn dismiss_search_overlay(app: AppHandle) -> Result<(), String> {
     dismiss_search_overlay_inner(&app);
     Ok(())
+}
+
+#[tauri::command]
+fn park_search_overlay(app: AppHandle) -> Result<bool, String> {
+    Ok(park_search_overlay_inner(&app))
 }
 
 #[tauri::command]
@@ -1983,9 +2161,11 @@ fn open_search_result(app: AppHandle, url: String) -> Result<(), String> {
     if !state.search.is_allowed_url(&url) && !search::is_trusted_external_url(&url) {
         return Err("That URL is not part of the current search results".into());
     }
-    // Opening the system browser steals focus; don't treat that as click-away.
-    state.search_blur_dismiss.store(false, Ordering::Release);
-    search::open_url_in_default_browser(&url)
+    search::open_url_in_default_browser(&url)?;
+    // The link leaves Pronto: drop the always-on-top overlay so the browser
+    // comes forward instead of staying buried underneath it.
+    dismiss_search_overlay_inner(&app);
+    Ok(())
 }
 
 #[derive(serde::Serialize)]
@@ -2007,11 +2187,11 @@ fn fetch_search_image(app: AppHandle, url: String) -> Result<SearchImagePayload,
 
 #[tauri::command]
 fn open_ddg_search(app: AppHandle, query: String) -> Result<(), String> {
-    let state = app.state::<AppState>();
-    state.search_blur_dismiss.store(false, Ordering::Release);
     let url = search::ddg_search_url(&query)
         .ok_or_else(|| "No search query to open".to_string())?;
-    search::open_url_in_default_browser(&url)
+    search::open_url_in_default_browser(&url)?;
+    dismiss_search_overlay_inner(&app);
+    Ok(())
 }
 
 #[tauri::command]
@@ -2361,7 +2541,7 @@ pub fn run() {
                         let app = window.app_handle();
                         let state = app.state::<AppState>();
                         if state.search_blur_dismiss.swap(false, Ordering::AcqRel) {
-                            dismiss_search_overlay_inner(app);
+                            park_search_overlay_inner(app);
                         }
                     }
                     _ => {}
@@ -2406,8 +2586,10 @@ pub fn run() {
             start_search_recording,
             stop_search_recording,
             cancel_search,
+            run_text_search,
             reroute_dictation_to_search_command,
             dismiss_search_overlay,
+            park_search_overlay,
             set_search_overlay_stage,
             open_search_result,
             open_ddg_search,

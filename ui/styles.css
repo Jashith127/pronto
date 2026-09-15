@@ -7,7 +7,7 @@ html, body {
   margin: 0;
   overflow: hidden;
   color: var(--ink);
-  background: var(--canvas);
+  background: transparent;
   font-family: var(--font);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -25,7 +25,8 @@ svg { shape-rendering: geometricPrecision; flex: 0 0 auto; }
 ::-webkit-scrollbar-thumb { border: 3px solid transparent; border-radius: 99px; background-clip: content-box; background-color: var(--scrollbar-thumb); }
 ::-webkit-scrollbar-thumb:hover { background-color: var(--scrollbar-thumb-hover); }
 ::-webkit-scrollbar-track { background: transparent; }
-.app { display: grid; grid-template-columns: 190px minmax(0, 1fr); width: 100vw; height: 100vh; background: var(--canvas); }
+.app { display: grid; grid-template-columns: 190px minmax(0, 1fr); width: 100vw; height: 100vh; overflow: hidden; border: 1px solid var(--line); border-radius: 26px; background: var(--canvas); }
+html.maximized .app { border: 0; border-radius: 0; }
 
 .sidebar { display: flex; flex-direction: column; min-width: 0; padding: 22px 14px 18px; border-right: 1px solid var(--line); background: var(--sidebar-bg); }
 .brand { display: flex; align-items: center; gap: 11px; height: 42px; padding: 0 11px; font-size: 18px; font-weight: 650; letter-spacing: -.02em; }
@@ -332,7 +333,7 @@ nav { display: flex; flex-direction: column; gap: 4px; margin-top: 34px; }
 .notes-markdown strong { font-weight: 700; }
 .notes-markdown ul, .notes-markdown ol { margin: 7px 0 7px 20px; padding: 0; }
 .notes-markdown li { margin: 4px 0; }
-.notes-viewer-body { flex: 1 1 auto; min-height: 0; width: 100%; max-width: 78ch; padding: 22px 24px 40px; overflow-y: auto; color: #383a35; font-size: 13px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; }
+.notes-viewer-body { flex: 1 1 auto; min-height: 0; width: 100%; max-width: none; padding: 22px 24px 40px; overflow-y: auto; color: #383a35; font-size: 13px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; }
 .notes-viewer-body[hidden], .notes-summary[hidden] { display: none; }
 .notes-viewer-body div { max-width: none; }
 .notes-viewer-body .cleaned-label { display: inline-block; margin-bottom: 10px; padding: 4px 10px; border-radius: 20px; background: #e6eee9; color: var(--sage); font-size: 11px; font-weight: 650; }

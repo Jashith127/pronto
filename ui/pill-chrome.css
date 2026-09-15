@@ -69,13 +69,13 @@
   stroke-linejoin: round;
 }
 
-#finish,
+#dictation-pill #finish,
 .search-chrome .chrome-btn.finish {
-  color: #11120f;
+  color: #000;
   background: #fff;
 }
 
-#finish:hover,
+#dictation-pill #finish:hover,
 .search-chrome .chrome-btn.finish:hover {
   background: #fff;
 }
@@ -96,10 +96,8 @@
   line-height: 0;
 }
 
-/* Never theme-transition the pill chrome */
-#dictation-pill,
-#dictation-pill *,
-.search-chrome,
-.search-chrome * {
-  transition: background .12s ease, transform .08s ease, border-color .12s ease !important;
+/* Never theme-transition the pill buttons */
+#dictation-pill button,
+.search-chrome .chrome-btn {
+  transition: background .12s ease, transform .08s ease !important;
 }

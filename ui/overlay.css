@@ -59,7 +59,7 @@ button svg { shape-rendering: geometricPrecision; }
 .side-action-btn:active { transform: scale(.94); }
 .side-action-btn:focus-visible { outline: 2px solid #d97460; outline-offset: 2px; }
 /* Waveform sizing lives in pill-chrome.css */
-.signal i { display: block; flex: 0 0 3px; width: 3px; border-radius: 2px; background: linear-gradient(180deg, #ffb03a 0%, #f4337a 45%, #a03cd0 100%); box-shadow: 0 0 4px rgba(244,51,122,.45); transform-origin: 50% 50%; animation: bar-dance 1.15s cubic-bezier(.45,.05,.35,1) infinite alternate; }
+.signal i { display: block; flex: 0 0 3px; width: 3px; border-radius: 2px; background: linear-gradient(180deg, #ffb03a 0%, #f4337a 45%, #a03cd0 100%); transform-origin: 50% 50%; animation: bar-dance 1.15s cubic-bezier(.45,.05,.35,1) infinite alternate; }
 .signal i:nth-child(even) { background: linear-gradient(180deg, #f4337a 0%, #a03cd0 55%, #3b4a8f 100%); }
 .signal i:nth-child(1), .signal i:nth-child(8) { height: 7px; animation-duration: .98s; }
 .signal i:nth-child(2), .signal i:nth-child(7) { height: 11px; animation-duration: 1.24s; animation-delay: -.4s; }
@@ -71,7 +71,7 @@ button svg { shape-rendering: geometricPrecision; }
 #overlay-row.pill-exit { animation: pill-out .13s ease-in forwards; }
 @keyframes pill-in { from { opacity: 0; transform: translate(-50%, 7px) scale(.96); } to { opacity: 1; transform: translate(-50%, 0) scale(1); } }
 @keyframes pill-out { from { opacity: 1; transform: translate(-50%, 0) scale(1); } to { opacity: 0; transform: translate(-50%, 5px) scale(.97); } }
-.processing .signal i { height: 6px; background: linear-gradient(180deg, #9fb2c8 0%, #5f7288 100%); box-shadow: 0 0 3px rgba(140,165,190,.35); animation: bar-sweep 1.15s ease-in-out infinite; }
+.processing .signal i { height: 6px; background: linear-gradient(180deg, #9fb2c8 0%, #5f7288 100%); animation: bar-sweep 1.15s ease-in-out infinite; }
 .processing .signal i:nth-child(1) { animation-delay: 0s; }
 .processing .signal i:nth-child(2) { animation-delay: .08s; }
 .processing .signal i:nth-child(3) { animation-delay: .16s; }

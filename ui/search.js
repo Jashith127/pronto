@@ -43,9 +43,17 @@ const cancelBtn = document.querySelector('#search-cancel');
 const searchSubmit = document.querySelector('#search-submit');
 const panelClose = document.querySelector('#panel-close');
 const ddgBrand = document.querySelector('#ddg-brand');
+const peek = document.querySelector('#peek');
+const peekLabel = document.querySelector('#peek-label');
+const peekRestore = document.querySelector('#peek-restore');
+const peekClose = document.querySelector('#peek-close');
+
+const PEEK_TIMEOUT_MS = 120_000;
+let peekTimer = 0;
 
 let uiMode = 'idle';
 let currentQuery = '';
+let lastPayload = null;
 
 function showToast(text, error = false) {
   toast.textContent = text;
@@ -297,6 +305,40 @@ function showPanel(on) {
   }
 }
 
+function hidePeek() {
+  if (peekTimer) {
+    clearTimeout(peekTimer);
+    peekTimer = 0;
+  }
+  if (peek) peek.hidden = true;
+}
+
+function enterPeek() {
+  hidePeek();
+  uiMode = 'peek';
+  hideChrome();
+  showPanel(false);
+  showBackdrop(false);
+  if (peekLabel) peekLabel.textContent = currentQuery || 'Search result';
+  if (peek) peek.hidden = false;
+  peekTimer = setTimeout(() => { dismissPeekCompletely(); }, PEEK_TIMEOUT_MS);
+}
+
+async function restorePeek() {
+  hidePeek();
+  uiMode = 'panel';
+  body.className = 'mode-panel';
+  await setNativeStage('stage');
+  showBackdrop(true);
+  showPanel(true);
+}
+
+async function dismissPeekCompletely() {
+  hidePeek();
+  await call('dismiss_search_overlay');
+  await enterIdle();
+}
+
 function setLayoutBadge(layout) {
   const key = (layout || 'article').toLowerCase();
   const label = LAYOUT_LABELS[key] || 'Article';
@@ -366,6 +408,7 @@ function setStatus(kind, text) {
 
 function resetResultSurface() {
   revokeImageObjectUrls();
+  lastPayload = null;
   emptyEl.hidden = false;
   nodesEl.hidden = true;
   nodesEl.innerHTML = '';
@@ -400,6 +443,7 @@ function paintResult(payload) {
 
   emptyEl.hidden = true;
   nodesEl.hidden = false;
+  lastPayload = { markdown, layout };
   nodesEl.innerHTML = `${warning}${factsHtml}${answerHtml}${followupsHtml}${sourcesHtml}`;
   mountImages(nodesEl);
 
@@ -409,7 +453,23 @@ function paintResult(payload) {
   if (panelContent) panelContent.scrollTop = 0;
 }
 
+function applyBanner(payload) {
+  const banner = payload?.bannerImage || payload?.banner_image;
+  if (!banner || !lastPayload) return;
+  if ((payload.query || '') !== currentQuery) return;
+  const layoutEl = nodesEl.querySelector('.search-layout');
+  if (!layoutEl || layoutEl.dataset.bannerApplied) return;
+  const tmp = document.createElement('div');
+  tmp.innerHTML = renderAnswerBlock(lastPayload.markdown, lastPayload.layout, banner);
+  const fresh = tmp.firstElementChild;
+  if (!fresh) return;
+  fresh.dataset.bannerApplied = '1';
+  layoutEl.replaceWith(fresh);
+  mountImages(fresh);
+}
+
 async function enterListening() {
+  hidePeek();
   uiMode = 'listening';
   body.className = 'mode-listening';
   chrome.classList.remove('processing');
@@ -425,6 +485,7 @@ async function enterListening() {
 
 async function enterSearching() {
   if (uiMode === 'searching' || uiMode === 'panel') return;
+  hidePeek();
   uiMode = 'searching';
   body.className = 'mode-searching';
   showPanel(false);
@@ -437,6 +498,7 @@ async function enterSearching() {
 }
 
 async function showResultPanel(payload) {
+  hidePeek();
   paintResult(payload);
   uiMode = 'panel';
   body.className = 'mode-panel';
@@ -490,7 +552,12 @@ nodesEl.addEventListener('click', async event => {
   const followup = event.target.closest('.followup-chip');
   if (followup) {
     const text = followup.getAttribute('data-followup') || '';
-    if (text) showToast(`Say: “${text}”`);
+    if (text) {
+      hidePeek();
+      setStatus('', `Searching “${text}”…`);
+      if (panelContent) panelContent.scrollTop = 0;
+      renderStatus(await call('run_text_search', { query: text }));
+    }
     return;
   }
   const target = event.target.closest('[data-action]');
@@ -500,6 +567,7 @@ nodesEl.addEventListener('click', async event => {
   if (action === 'open_url') {
     event.preventDefault();
     await call('open_search_result', { url: value });
+    await enterIdle();
   }
 });
 
@@ -515,6 +583,7 @@ ddgBrand?.addEventListener('click', async event => {
   event.stopPropagation();
   if (!currentQuery) return;
   await call('open_ddg_search', { query: currentQuery });
+  await enterIdle();
 });
 
 searchSubmit.addEventListener('click', async event => {
@@ -534,8 +603,12 @@ panelClose.addEventListener('click', async event => {
 });
 
 backdrop.addEventListener('click', async () => {
-  await call('dismiss_search_overlay');
-  await enterIdle();
+  const parked = await call('park_search_overlay');
+  if (parked) {
+    enterPeek();
+  } else {
+    await enterIdle();
+  }
 });
 
 panel.addEventListener('click', event => {
@@ -548,17 +621,39 @@ chrome.addEventListener('click', event => {
 
 document.addEventListener('keydown', async event => {
   if (event.key === 'Escape') {
-    await call('dismiss_search_overlay');
-    await enterIdle();
+    if (uiMode === 'peek') {
+      await dismissPeekCompletely();
+      return;
+    }
+    const parked = await call('park_search_overlay');
+    if (parked) {
+      enterPeek();
+    } else {
+      await enterIdle();
+    }
   }
 });
 
+peekRestore?.addEventListener('click', async event => {
+  event.stopPropagation();
+  await restorePeek();
+});
+
+peekClose?.addEventListener('click', async event => {
+  event.stopPropagation();
+  await dismissPeekCompletely();
+});
+
 listen('search-status', event => renderStatus(event.payload));
+listen('search-parked', () => enterPeek());
 listen('search-query', event => {
   if (event.payload?.query) currentQuery = event.payload.query;
 });
 listen('search-result', event => {
   showResultPanel(event.payload || {});
+});
+listen('search-banner-ready', event => {
+  applyBanner(event.payload || {});
 });
 listen('search-error', event => {
   showToast(String(event.payload), true);

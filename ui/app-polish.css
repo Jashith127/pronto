@@ -233,6 +233,83 @@
 }
 .notes-menu button { color: var(--ink-soft); }
 .notes-menu button:hover { background: var(--sage-soft); }
+.notes-menu button.danger:hover { background: var(--danger-soft); }
+
+/* Note Taker detail view: recording title, tabs, transcript, notes */
+.notes-detail-view {
+  border-color: var(--line);
+  background: var(--surface);
+}
+.notes-detail-head {
+  border-bottom-color: var(--line-soft);
+  background: var(--surface-muted);
+}
+.notes-back { color: var(--ink-soft); }
+.notes-back:hover { background: var(--surface-hover); }
+.notes-detail-title h1 { color: var(--ink); }
+.notes-detail-title p { color: var(--muted); }
+.notes-status { color: var(--muted); }
+.notes-tabs {
+  border-color: var(--line);
+  background: var(--surface-muted);
+}
+.notes-tabs button { color: var(--muted); }
+.notes-tabs button:hover:not(.active) {
+  color: var(--ink);
+  background: var(--surface-hover);
+}
+.notes-tabs button.active {
+  color: var(--canvas);
+  background: var(--segmented-active);
+}
+[data-theme="light"] .notes-tabs button.active { color: #fff; }
+.notes-summary {
+  border-color: var(--line);
+  background: var(--surface-muted);
+}
+.notes-summary h2 { color: var(--sage-strong); }
+.notes-summary .notes-markdown { color: var(--ink-soft); }
+.notes-markdown h1,
+.notes-markdown h2,
+.notes-markdown h3 { color: var(--sage-strong); }
+.notes-viewer-body { color: var(--ink-soft); }
+.notes-viewer-body .cleaned-label { background: var(--sage-soft); }
+
+/* Note Taker explorer leftovers with hardcoded light colors */
+.notes-file-row { color: var(--ink-soft); }
+.notes-file-icon {
+  color: var(--sage);
+  background: var(--sage-soft);
+}
+.notes-file-open em { color: var(--muted); }
+.notes-file-status,
+.notes-file-date { color: var(--muted); }
+.notes-folder svg { stroke: var(--faint); }
+.notes-folder small { color: var(--faint); }
+.notes-folder:hover { background: var(--surface-hover); }
+.notes-folder-delete { color: var(--faint); }
+.notes-folder-delete:hover {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+.notes-row-menu-btn { color: var(--muted); }
+.notes-row-menu-btn:hover {
+  color: var(--ink);
+  background: var(--surface-hover);
+}
+.notes-sidebar-head button { color: var(--muted); }
+.notes-sidebar-head button:hover {
+  color: var(--ink);
+  background: var(--surface-hover);
+}
+.notes-upload-action {
+  border-color: var(--line);
+  color: var(--ink-soft);
+  background: var(--surface);
+}
+.notes-upload-action:hover { background: var(--surface-hover); }
+.notes-live-row { color: var(--muted); }
+.processing-badge { background: var(--sage-soft); }
 
 .theme-preview {
   display: inline-flex;

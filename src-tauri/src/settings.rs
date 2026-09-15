@@ -321,25 +321,49 @@ pub fn set_deepseek_key(api_key: &str) -> Result<(), String> {
         entry
             .set_password(api_key.trim())
             .map_err(|error| format!("Could not securely save API key: {error}"))
+    }?;
+    // Drop the cached key so the next read picks up the change.
+    if let Some(cache) = KEY_CACHE.get() {
+        if let Ok(mut guard) = cache.lock() {
+            guard.1 = None;
+        }
     }
+    Ok(())
 }
 
+/// Credential Manager round-trips cost 10–100ms, and the key is read on
+/// every search, cleanup, and preferences fetch — cache it for 60s.
+static KEY_CACHE: std::sync::OnceLock<Mutex<(Option<String>, Option<std::time::Instant>)>> =
+    std::sync::OnceLock::new();
+
 pub fn deepseek_key() -> Option<String> {
-    std::env::var("DEEPSEEK_API_KEY")
+    if let Ok(key) = std::env::var("DEEPSEEK_API_KEY") {
+        if !key.is_empty() {
+            return Some(key);
+        }
+    }
+    let cache = KEY_CACHE.get_or_init(|| Mutex::new((None, None)));
+    if let Ok(guard) = cache.lock() {
+        if let (Some(key), Some(at)) = (&guard.0, guard.1) {
+            if at.elapsed() < std::time::Duration::from_secs(60) {
+                return Some(key.clone());
+            }
+        }
+    }
+    let key = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
+        .ok()?
+        .get_password()
         .ok()
-        .filter(|key| !key.is_empty())
-        .or_else(|| {
-            keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
-                .ok()?
-                .get_password()
-                .ok()
-        })
         .or_else(|| {
             keyring::Entry::new(LEGACY_KEYRING_SERVICE, KEYRING_ACCOUNT)
                 .ok()?
                 .get_password()
                 .ok()
-        })
+        });
+    if let Ok(mut guard) = cache.lock() {
+        *guard = (key.clone(), Some(std::time::Instant::now()));
+    }
+    key
 }
 
 fn data_dir() -> PathBuf {

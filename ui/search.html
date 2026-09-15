@@ -5,9 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Pronto Search</title>
   <link rel="stylesheet" href="fonts.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="preconnect" href="https://icons.duckduckgo.com" />
   <link rel="stylesheet" href="theme.css" />
   <link rel="stylesheet" href="pill-chrome.css" />
-  <link rel="stylesheet" href="vendor/uPlot.min.css" />
   <link rel="stylesheet" href="search.css" />
 </head>
 <body class="mode-idle">
@@ -30,8 +32,8 @@
     <section id="panel" class="search-panel" aria-label="Search result">
       <header class="panel-header">
         <div class="panel-header-text">
-          <span id="search-layout-badge" class="layout-badge" hidden></span>
           <p id="search-query-label" class="search-query-label" hidden></p>
+          <span id="search-layout-badge" class="layout-badge" hidden></span>
         </div>
         <button type="button" id="panel-close" class="panel-close" aria-label="Close search">×</button>
       </header>
@@ -49,19 +51,28 @@
       </main>
 
       <footer class="panel-footer">
-        <!-- DuckDuckGo wordmark links to duckduckgo.com search results; trademark of Duck Duck Go, Inc. -->
+        <!-- DuckDuckGo logo links to duckduckgo.com search results; trademark of Duck Duck Go, Inc. -->
         <button type="button" id="ddg-brand" class="ddg-brand" disabled aria-label="Open this search on DuckDuckGo">
-          <img class="ddg-wordmark" src="assets/duckduckgo-wordmark.svg" width="148" height="22" alt="DuckDuckGo" decoding="async" />
+          <img class="ddg-logo" src="assets/duckduckgo-logo.png" width="24" height="24" alt="" decoding="async" />
+          <span class="ddg-name">DuckDuckGo</span>
         </button>
-        <span class="panel-footer-note">Audio stays on this PC · Text goes to DuckDuckGo and DeepSeek</span>
+        <span class="panel-footer-note">Results by DuckDuckGo · Answer by DeepSeek</span>
       </footer>
 
       <div class="toast" id="toast" role="status"></div>
     </section>
   </div>
 
-  <script src="theme.js"></script>
-  <script src="markdown.js"></script>
-  <script src="search.js"></script>
+  <div id="peek" class="search-peek" hidden>
+    <button type="button" id="peek-restore" class="peek-restore" aria-label="Restore search result">
+      <svg class="peek-folder" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+      <span id="peek-label" class="peek-label"></span>
+    </button>
+    <button type="button" id="peek-close" class="peek-close" aria-label="Dismiss search result">×</button>
+  </div>
+
+  <script src="theme.js" defer></script>
+  <script src="markdown.js" defer></script>
+  <script src="search.js" defer></script>
 </body>
 </html>

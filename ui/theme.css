@@ -170,12 +170,6 @@ html {
   transition: var(--transition-theme);
 }
 
-html *,
-html *::before,
-html *::after {
-  transition: background-color 0.18s ease, border-color 0.18s ease, color 0.12s ease, box-shadow 0.18s ease;
-}
-
 @media (prefers-reduced-motion: reduce) {
   html, html *, html *::before, html *::after {
     transition: none !important;

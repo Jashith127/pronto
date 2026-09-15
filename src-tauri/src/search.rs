@@ -574,19 +574,33 @@ pub fn resolve_banner_images(
     max: usize,
 ) -> Vec<(String, String)> {
     let mut out = photo_candidates_for_hits(hits);
-    if out.len() < max {
-        if let Some(img) = wikipedia_image_for_query(client, query) {
-            push_unique_image(&mut out, img, max);
+    if out.len() >= max {
+        return out.into_iter().take(max).collect();
+    }
+    // Wikipedia + OpenGraph branches run concurrently and merge in the
+    // same priority order as the old sequential version, so output is
+    // identical — just not summed. DDG image search stays a last resort
+    // so no extra requests fire when earlier branches suffice.
+    let (wiki_query, wiki_hits, og) = std::thread::scope(|scope| {
+        let wiki_query = scope.spawn(|| wikipedia_image_for_query(client, query));
+        let wiki_hits = scope.spawn(|| wikipedia_image_from_hits(client, hits));
+        let og = scope.spawn(|| og_images_from_hits(client, hits, max));
+        (
+            wiki_query.join().ok().flatten(),
+            wiki_hits.join().ok().flatten(),
+            og.join().unwrap_or_default(),
+        )
+    });
+    for img in wiki_query.into_iter().chain(wiki_hits) {
+        push_unique_image(&mut out, img, max);
+        if out.len() >= max {
+            return out;
         }
     }
-    if out.len() < max {
-        if let Some(img) = wikipedia_image_from_hits(client, hits) {
-            push_unique_image(&mut out, img, max);
-        }
-    }
-    if out.len() < max {
-        for img in og_images_from_hits(client, hits, max - out.len()) {
-            push_unique_image(&mut out, img, max);
+    for img in og {
+        push_unique_image(&mut out, img, max);
+        if out.len() >= max {
+            return out;
         }
     }
     if out.len() < max {
@@ -1175,6 +1189,30 @@ impl SearchController {
             phase: SearchPhase::Searching,
             message: "Transcribing your question…".into(),
             query: None,
+            elapsed_ms: 0,
+        };
+        Ok(status.clone())
+    }
+
+    /// Text follow-up ("Ask next" chip): skip audio capture and go straight
+    /// to web retrieval. Allowed from rest phases only; history is recorded
+    /// at completion like every other search.
+    pub fn begin_text_search(&self, query: String) -> Result<SearchStatus, String> {
+        let mut status = self.status.lock().map_err(|_| "search status lock poisoned")?;
+        if !matches!(
+            status.phase,
+            SearchPhase::Idle | SearchPhase::Complete | SearchPhase::Error
+        ) {
+            return Err("Voice search is already in progress.".into());
+        }
+        *self
+            .started_at
+            .lock()
+            .map_err(|_| "search timer lock poisoned")? = Some(Instant::now());
+        *status = SearchStatus {
+            phase: SearchPhase::Searching,
+            message: "Searching the web…".into(),
+            query: Some(query),
             elapsed_ms: 0,
         };
         Ok(status.clone())

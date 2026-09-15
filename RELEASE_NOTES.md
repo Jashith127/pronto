@@ -1,3 +1,44 @@
+# Pronto 0.8.1
+
+Pronto 0.8.1 polishes the 0.8.0 voice search experience end to end: results that arrive faster and linger smarter, a search panel that feels calmer and rounder, a fixed shortcut editor, a full dark mode for the Note Taker, a brand-new app icon, and a heavily rounded main window. No behavior you rely on changes — answers, transcripts, and sounds are all identical, just quicker to reach.
+
+## Search results that keep up
+
+- **Answers paint first, photos follow** — the result panel now appears as soon as the answer is synthesized, with the banner image sliding in right after instead of holding everything up. Image lookups (Wikipedia, OpenGraph, DuckDuckGo) now run concurrently.
+- **“Ask next” actually searches** — follow-up chips used to show a “say it out loud” toast; they now run a real text search through the full retrieval + synthesis pipeline, with follow-up-aware query expansion.
+- **Click-away parks instead of losing your answer** — dismissing a finished result (backdrop click, Escape, focus loss) tucks it into a small folder-edge tab peeking out above the taskbar at the bottom-left. Click the tab to restore the full panel, × to dismiss, or let it auto-dismiss after two minutes. The panel × button still closes fully.
+- **Links hand off to the browser** — opening a source, image, or the DuckDuckGo button now drops the always-on-top overlay so the browser comes forward instead of opening underneath it.
+
+## Calmer, rounder search panel
+
+- **Official DuckDuckGo mark** — the footer uses the standard DuckDuckGo logo image (crisp at small sizes) with readable text, right-aligned, shortened to “Results by DuckDuckGo · Answer by DeepSeek”.
+- **Quieter type label** — Profile / Recipe / How-to / etc. moved from a pill above the title to subtle divider text beside it.
+- **Matching pills** — dictation and voice search pills share sizing and waveform motion; dictation keeps its colorful wave with a fixed white finish button (black check), voice search gets its own subtle green.
+- **Rounder everything** — larger corner radii on the panel and all inner cards; the layout label, key-fact chips (now an even grid), and bio image/answer heights all line up.
+
+## Fixed + faster under the hood
+
+- **Shortcut editor no longer hangs** — saving a dictation, paste, or search shortcut froze the app on a locking bug; fixed in all three editors.
+- **Snappier dictation** — the pipeline lock is held only for the state flip (insertion, history writes, and overlay hide run outside it), and cancel returns immediately.
+- **Less waiting on credentials** — the DeepSeek key is cached for 60 seconds instead of hitting Credential Manager on every search and cleanup.
+- **Lighter overlay** — no global per-element theme transitions, no fullscreen backdrop blur, cheaper loading shimmer, deferred scripts, and one less blocking stylesheet, so the pill and panel paint sooner.
+
+## Note Taker in dark mode
+
+- The recording detail view (title card, tabs, transcript, meeting notes) and remaining explorer bits now follow the app theme instead of rendering light-on-dark.
+- Transcripts use the full responsive panel width, just like meeting notes.
+
+## New look
+
+- **New app icon** — flat dark-grey circle with the orange accent waveform, no more rounded square. Applies to the desktop, taskbar, tray, and installer.
+- **Rounded main window** — the app window is now heavily rounded when floating and snaps back to square when maximized.
+
+## Requirements
+
+- Same as 0.8.0: Windows 10 or 11 (64-bit), NVIDIA GPU with current driver, microphone; internet during installation for the one-time model download, plus a DeepSeek API key for full synthesized answers (DuckDuckGo sources still work without one).
+
+---
+
 # Pronto 0.8.0
 
 Pronto 0.8.0 is built around two headline features: **voice search** and **light/dark mode**. Ask a question out loud and get a readable answer in a centered panel — or run the main app and search results in the theme that suits you. Your microphone audio stays on this PC; only the question text and web snippets leave the device for search.

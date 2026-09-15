@@ -306,6 +306,17 @@ const bindWindowAction = (selector, command) => {
 bindWindowAction('#minimize', 'minimize_main_window');
 bindWindowAction('#maximize', 'toggle_maximize_main_window');
 bindWindowAction('#close', 'hide_main_window');
+// Rounded window corners only when floating; maximized fills the screen.
+try {
+  const mainWindow = window.__TAURI__.window.getCurrentWindow();
+  const syncMaximized = async () => {
+    try {
+      document.documentElement.classList.toggle('maximized', await mainWindow.isMaximized());
+    } catch (_) { /* ignore */ }
+  };
+  mainWindow.onResized(() => syncMaximized());
+  syncMaximized();
+} catch (_) { /* non-Tauri preview */ }
 document.querySelector('.titlebar')?.addEventListener('dblclick', event => {
   if (event.target.closest('.window-actions')) return;
   call('toggle_maximize_main_window');
