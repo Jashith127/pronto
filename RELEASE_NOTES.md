@@ -6,7 +6,7 @@ Pronto 0.8.1 polishes the 0.8.0 voice search experience end to end: results that
 
 - **Answers paint first, photos follow** — the result panel now appears as soon as the answer is synthesized, with the banner image sliding in right after instead of holding everything up. Image lookups (Wikipedia, OpenGraph, DuckDuckGo) now run concurrently.
 - **“Ask next” actually searches** — follow-up chips used to show a “say it out loud” toast; they now run a real text search through the full retrieval + synthesis pipeline, with follow-up-aware query expansion.
-- **Click-away parks instead of losing your answer** — dismissing a finished result (backdrop click, Escape, focus loss) tucks it into a small folder-edge tab peeking out above the taskbar at the bottom-left. Click the tab to restore the full panel, × to dismiss, or let it auto-dismiss after two minutes. The panel × button still closes fully.
+- **Click-away parks instead of losing your answer** — dismissing a finished result (backdrop click, Escape, focus loss) tucks it into a small folder-edge tab peeking out above the taskbar at the bottom-left, with a live countdown ring draining on its close button over the two-minute linger. Click the tab to restore the full panel, × to dismiss, or let it auto-dismiss when the ring runs out. The panel × button still closes fully.
 - **Links hand off to the browser** — opening a source, image, or the DuckDuckGo button now drops the always-on-top overlay so the browser comes forward instead of opening underneath it.
 
 ## Calmer, rounder search panel
