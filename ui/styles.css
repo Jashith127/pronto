@@ -5,7 +5,13 @@ html, body {
   width: 100%;
   height: 100%;
   margin: 0;
-  overflow: hidden;
+  /* overflow:clip (not hidden): the app shell is a fixed 100vh grid whose
+     views scroll internally, so the document itself must never scroll.
+     Unlike hidden, clip forbids programmatic and focus scrolling too: a
+     focused control plus a layout shift could otherwise scroll the whole
+     app off-viewport with no scrollbar to get back (looks exactly like the
+     window going transparent; only a restart resets it). */
+  overflow: clip;
   color: var(--ink);
   background: transparent;
   font-family: var(--font);

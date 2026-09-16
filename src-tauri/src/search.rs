@@ -1266,7 +1266,7 @@ impl SearchController {
         let mut status = self.status.lock().map_err(|_| "search status lock poisoned")?;
         *status = SearchStatus {
             phase: SearchPhase::Complete,
-            message: warning.unwrap_or_else(|| format!("Answer ready in {elapsed} ms")),
+            message: warning.unwrap_or_else(|| format!("Answer ready in {}", crate::format_duration(elapsed))),
             query: Some(query),
             elapsed_ms: elapsed,
         };

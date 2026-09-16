@@ -28,6 +28,14 @@ async function call(command, args = {}) {
   catch (error) { showToast(String(error), true); throw error; }
 }
 
+// User-facing durations: milliseconds below one second, seconds at/above it.
+function formatDuration(ms) {
+  const value = Number(ms);
+  if (!Number.isFinite(value) || value < 1000) return `${Math.round(value)} ms`;
+  const rounded = Math.round(value / 100) / 10;
+  return `${Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1)} s`;
+}
+
 function setView(id) {
   document.querySelectorAll('.view').forEach(view => view.classList.toggle('active', view.id === id));
   document.querySelectorAll('.nav').forEach(button => button.classList.toggle('active', button.dataset.view === id));
@@ -48,7 +56,7 @@ function historyMarkup(entries) {
     const date = new Date(Number(entry.createdAtMs));
     const time = date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
     const cleanup = entry.cleanupApplied ? 'DeepSeek cleanup' : 'Local cleanup';
-    return `<article class="history-item"><time class="history-time">${time}</time><div class="history-copy"><p>${escapeHtml(entry.finalText)}</p><small>${date.toLocaleDateString()} · ${cleanup}</small></div><div class="history-actions"><span class="latency">${entry.totalMs} ms</span><button class="copy-transcript" data-copy="${entry.id}" aria-label="Copy transcript" title="Copy transcript"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg></button></div></article>`;
+    return `<article class="history-item"><time class="history-time">${time}</time><div class="history-copy"><p>${escapeHtml(entry.finalText)}</p><small>${date.toLocaleDateString()} · ${cleanup}</small></div><div class="history-actions"><span class="latency">${formatDuration(entry.totalMs)}</span><button class="copy-transcript" data-copy="${entry.id}" aria-label="Copy transcript" title="Copy transcript"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg></button></div></article>`;
   }).join('');
 }
 
@@ -77,7 +85,7 @@ function renderHistory() {
     ? `${recentPaces.length} most recent measured ${recentPaces.length === 1 ? 'dictation' : 'dictations'}`
     : 'Your pace will appear after a dictation';
   const average = history.length ? Math.round(history.reduce((total, entry) => total + Number(entry.totalMs), 0) / history.length) : 0;
-  document.querySelector('#average-latency').textContent = average ? `${average} ms` : '—';
+  document.querySelector('#average-latency').textContent = average ? formatDuration(average) : '—';
 }
 
 function renderDictionary() {

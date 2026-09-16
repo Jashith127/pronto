@@ -321,3 +321,27 @@ listen('dictation-notice-clear', async () => {
   clearTimeout(microphoneTimer);
   await hideNotice();
 });
+
+// Page health + cold-start sync. The backend shows this window on every
+// dictation, but a renderer that died while hidden paints nothing: the page
+// beats regularly so the backend can reload a quiet page, and on every
+// (re)load it re-reads live status so events missed during the reload still
+// render (e.g. the pill-enter animation for an in-flight dictation).
+async function sendOverlayHeartbeat() {
+  try { await invoke('overlay_heartbeat'); } catch (_) {}
+}
+async function syncOverlayStatusOnLoad() {
+  try {
+    const status = await invoke('get_status');
+    const phase = status && status.phase;
+    if (phase === 'listening' || phase === 'processing') {
+      document.documentElement.classList.toggle('processing', phase === 'processing');
+      await showDictationRow();
+      playPillEnter();
+      lastPhase = phase;
+    }
+  } catch (_) {}
+}
+sendOverlayHeartbeat();
+setInterval(sendOverlayHeartbeat, 5000);
+syncOverlayStatusOnLoad();

@@ -23,7 +23,11 @@ html, body {
   width: 100%;
   height: 100%;
   margin: 0;
-  overflow: hidden;
+  /* overflow:clip (not hidden): the search stage is a fixed-size window, so
+     the document must never scroll. Unlike hidden, clip forbids
+     programmatic and focus scrolling too, which could otherwise shift the
+     whole stage off-viewport with no scrollbar to get back. */
+  overflow: clip;
   background: transparent;
   color: var(--ink);
   font-family: var(--font);

@@ -367,6 +367,7 @@ enum AudioCommand {
     Start(mpsc::Sender<Result<ActiveMicrophone, String>>),
     Stop(mpsc::Sender<Result<Recording, String>>),
     Status(mpsc::Sender<Result<MicrophoneStatus, String>>),
+    Reprepare(mpsc::Sender<Result<ActiveMicrophone, String>>),
     Select(
         Option<String>,
         mpsc::Sender<Result<MicrophoneStatus, String>>,
@@ -413,6 +414,31 @@ impl AudioController {
                         AudioCommand::Status(reply) => {
                             let active = prepared.as_ref().ok();
                             let _ = reply.send(microphone_status(selected_id.clone(), active));
+                        }
+                        AudioCommand::Reprepare(reply) => {
+                            if recording {
+                                let _ =
+                                    reply
+                                        .send(Err("Finish dictation before changing microphones"
+                                            .to_string()));
+                                continue;
+                            }
+                            // Drop the stale prewarmed stream (its WASAPI
+                            // handle may have died across sleep or device
+                            // re-enumeration) and negotiate a fresh one. A
+                            // failed reprepare keeps the previous capture so
+                            // the microphone is never left worse off.
+                            let mut fresh = AudioCapture::default();
+                            match fresh.prepare(selected_id.as_deref()) {
+                                Ok(active) => {
+                                    capture = fresh;
+                                    prepared = Ok(active.clone());
+                                    let _ = reply.send(Ok(active));
+                                }
+                                Err(error) => {
+                                    let _ = reply.send(Err(error));
+                                }
+                            }
                         }
                         AudioCommand::Select(next_id, reply) => {
                             if recording {
@@ -489,6 +515,19 @@ impl AudioController {
         response
             .recv()
             .map_err(|_| "audio thread stopped".to_string())?
+    }
+
+    /// Re-negotiates the prewarmed capture stream on the current device.
+    /// Used once when a hotkey activation meets a stale stream handle.
+    pub fn reprepare(&self) -> Result<String, String> {
+        let (reply, response) = mpsc::channel();
+        self.commands
+            .send(AudioCommand::Reprepare(reply))
+            .map_err(|_| "audio thread stopped".to_string())?;
+        response
+            .recv()
+            .map_err(|_| "audio thread stopped".to_string())?
+            .map(|active| active.name)
     }
 
     pub fn select(&self, device_id: Option<String>) -> Result<MicrophoneStatus, String> {

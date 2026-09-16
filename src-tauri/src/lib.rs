@@ -10,6 +10,8 @@ mod meeting_detector;
 #[cfg(windows)]
 mod meeting_icon;
 mod pipeline;
+#[cfg(windows)]
+mod power;
 mod search;
 mod settings;
 #[cfg(windows)]
@@ -38,6 +40,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
 };
+use std::time::{Duration, Instant};
 use system_audio::SystemAudioController;
 
 struct PendingUpload {
@@ -75,6 +78,13 @@ pub(crate) struct AppState {
     meeting_tray_item: Mutex<Option<MenuItem<tauri::Wry>>>,
     detector_control: Arc<meeting_detector::DetectorControl>,
     dictation_active: Arc<AtomicBool>,
+    /// Last check-in from the dictation overlay page (`overlay_heartbeat`
+    /// command, sent on load and every few seconds while visible). A quiet
+    /// page means its renderer is dead or wedged: dictation still works, but
+    /// the pill never paints. The backend reloads the page instead of showing
+    /// a blank pill. Timers throttle while the window idles hidden, hence the
+    /// generous TTL on the read side.
+    overlay_heartbeat: Mutex<Option<Instant>>,
     /// When true, losing focus on the search overlay dismisses it.
     /// Kept false while listening so Win+Space Hold release stays reliable.
     search_blur_dismiss: AtomicBool,
@@ -192,6 +202,7 @@ impl AppState {
             meeting_tray_item: Mutex::new(None),
             detector_control: Arc::new(meeting_detector::DetectorControl::new()),
             dictation_active: Arc::new(AtomicBool::new(false)),
+            overlay_heartbeat: Mutex::new(None),
             search_blur_dismiss: AtomicBool::new(false),
         }
     }
@@ -239,6 +250,20 @@ pub(crate) fn fail_meeting_transcription(app: &AppHandle, id: &str, error: Strin
 
 fn emit_status(app: &AppHandle, status: &EngineStatus) {
     let _ = app.emit("engine-status", status);
+}
+
+/// User-facing durations: milliseconds below one second, seconds at/above it.
+pub(crate) fn format_duration(ms: u128) -> String {
+    if ms < 1000 {
+        return format!("{ms} ms");
+    }
+    let tenths = (ms + 50) / 100;
+    let (seconds, tenth) = (tenths / 10, tenths % 10);
+    if tenth == 0 {
+        format!("{seconds} s")
+    } else {
+        format!("{seconds}.{tenth} s")
+    }
 }
 
 fn restore_system_audio(app: &AppHandle) {
@@ -312,7 +337,17 @@ fn begin_recording(app: &AppHandle) -> Result<EngineStatus, String> {
             let _ = app.emit("audio-warning", error);
         }
     }
-    match state.audio.start() {
+    // The prewarmed capture handle can go stale when Windows power-cycles
+    // audio devices across sleep (or a USB/Bluetooth mic re-enumerates).
+    // One reprepare-and-retry keeps a stale handle from killing dictation.
+    let microphone = match state.audio.start() {
+        Ok(name) => Ok(name),
+        Err(first_error) => match state.audio.reprepare() {
+            Ok(_) => state.audio.start(),
+            Err(_) => Err(first_error),
+        },
+    };
+    match microphone {
         Err(error) => {
             state.insertion_target.cancel();
             let _ = state.system_audio.restore();
@@ -368,6 +403,9 @@ fn begin_recording(app: &AppHandle) -> Result<EngineStatus, String> {
                     show
                 })
                 .unwrap_or(false);
+            // Capture is already running, so a sick overlay page can reload
+            // here without losing speech; the pill just appears a beat late.
+            ensure_overlay_page(app);
             if let Some(overlay) = app.get_webview_window("overlay") {
                 let microphone_width = show_microphone
                     .then(|| (microphone_name.chars().count() as f64 * 6.2 + 24.0).max(96.0));
@@ -466,6 +504,114 @@ fn position_overlay(window: &tauri::WebviewWindow, microphone_width: Option<f64>
     let _ = window.set_position(PhysicalPosition::new(x, y));
 }
 
+/// How recently the dictation overlay page must have checked in (via the
+/// `overlay_heartbeat` command) to be trusted to paint. The page beats on
+/// load and every few seconds; sustained silence means its renderer is dead
+/// or wedged, which surfaces as "dictation works but the pill never appears".
+/// The TTL is generous because Chromium throttles timers in hidden pages
+/// (down to ~1/min after minutes hidden), and this window idles hidden.
+const OVERLAY_HEARTBEAT_TTL: Duration = Duration::from_secs(150);
+/// Upper bound for waiting on a reloaded overlay page to check back in.
+/// Capture is already running by then, so this only delays the pill.
+const OVERLAY_RELOAD_WAIT: Duration = Duration::from_secs(2);
+
+#[tauri::command]
+fn overlay_heartbeat(app: AppHandle) {
+    if let Ok(mut beat) = app.state::<AppState>().overlay_heartbeat.lock() {
+        *beat = Some(Instant::now());
+    }
+}
+
+fn overlay_beat_newer_than(app: &AppHandle, marker: Instant) -> bool {
+    app.state::<AppState>()
+        .overlay_heartbeat
+        .lock()
+        .map(|beat| beat.is_some_and(|seen| seen >= marker))
+        .unwrap_or(false)
+}
+
+fn overlay_page_healthy(app: &AppHandle) -> bool {
+    app.state::<AppState>()
+        .overlay_heartbeat
+        .lock()
+        .map(|beat| {
+            beat.is_some_and(|seen| seen.elapsed() < OVERLAY_HEARTBEAT_TTL)
+        })
+        .unwrap_or(false)
+}
+
+/// Reloads the overlay page when its renderer has gone quiet, then waits
+/// briefly for the fresh page to check in. No-op on the healthy path, so
+/// normal dictations pay nothing.
+fn ensure_overlay_page(app: &AppHandle) {
+    if overlay_page_healthy(app) {
+        return;
+    }
+    let Some(window) = app.get_webview_window("overlay") else {
+        return;
+    };
+    // Instant is monotonic, so a beat at or after this marker can only have
+    // come from the reloaded page.
+    let marker = Instant::now();
+    if window.reload().is_err() {
+        return;
+    }
+    let start = Instant::now();
+    while start.elapsed() < OVERLAY_RELOAD_WAIT {
+        if overlay_beat_newer_than(app, marker) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Recovery after sleep/hibernate. The overlay pages are hidden at idle, so
+/// a lost compositor surface or dead renderer goes unnoticed until the next
+/// dictation shows a blank pill: reload both pages while they are invisible
+/// so they repaint fresh. A dictation (or search) left listening across
+/// suspend can never complete meaningfully, so its resources are released
+/// instead of leaving the pipeline wedged. Meetings are untouched.
+pub(crate) fn handle_system_resume(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let dictation_stuck = state
+        .pipeline
+        .lock()
+        .map(|pipeline| pipeline.status.phase == Phase::Listening)
+        .unwrap_or(false);
+    if dictation_stuck {
+        let _ = state.audio.stop();
+        state.insertion_target.cancel();
+        state.dictation_active.store(false, Ordering::Release);
+        let _ = state.system_audio.restore();
+        if let Ok(mut pipeline) = state.pipeline.lock() {
+            pipeline.reset();
+            pipeline.status.message = "Dictation stopped during sleep".into();
+            emit_status(app, &pipeline.status);
+        }
+        if let Some(overlay) = app.get_webview_window("overlay") {
+            let _ = overlay.hide();
+        }
+    }
+    if state.search.is_listening() {
+        dismiss_search_overlay_inner(app);
+    }
+    restore_system_audio(app);
+    // Hidden reloads: no visible effect, but a fresh page re-registers its
+    // event listeners and repaints on next show.
+    if let Some(overlay) = app.get_webview_window("overlay") {
+        let _ = overlay.reload();
+    }
+    if let Some(search) = app.get_webview_window("search") {
+        let _ = search.reload();
+    }
+    if dictation_stuck {
+        let _ = app.emit(
+            "tray-message",
+            serde_json::json!({ "message": "Pronto recovered after sleep", "error": false }),
+        );
+    }
+}
+
 pub(crate) fn complete_transcription(
     app: &AppHandle,
     result: Result<CompletedTranscription, String>,
@@ -492,12 +638,12 @@ pub(crate) fn complete_transcription(
             ) {
                 (_, _, Some(error)) => format!("Transcribed, but text insertion failed: {error}"),
                 (true, Some(warning), None) => format!("Inserted with local cleanup · {warning}"),
-                (true, None, None) => format!("Inserted in {} ms", completed.entry.total_ms),
+                (true, None, None) => format!("Inserted in {}", format_duration(completed.entry.total_ms)),
                 (false, Some(warning), None) => {
                     format!("File transcribed with local cleanup · {warning}")
                 }
                 (false, None, None) => {
-                    format!("File transcribed in {} ms", completed.entry.total_ms)
+                    format!("File transcribed in {}", format_duration(completed.entry.total_ms))
                 }
             };
             let status = match state.pipeline.lock() {
@@ -1589,7 +1735,7 @@ fn run_web_search_and_synthesize(
         let mode = if cache_hit { "cached" } else { "live" };
         // Only annotate fast cached answers to avoid noise on grounded cards.
         if cache_hit && search::classify_query(&completed.query) == search::QueryKind::Fast {
-            warning = Some(format!("Instant answer ({mode}, retrieval {retrieval_ms} ms)"));
+            warning = Some(format!("Instant answer ({mode}, retrieval {})", format_duration(retrieval_ms)));
         } else {
             let _ = (retrieval_ms, synthesis_ms, retrieved_from_network);
         }
@@ -2506,6 +2652,10 @@ pub fn run() {
                 Arc::clone(&app.state::<AppState>().dictation_active),
                 Arc::clone(&app.state::<AppState>().detector_control),
             );
+            // Power resume heals sleep-related failures (dead overlay page,
+            // wedged dictation state) instead of degrading silently.
+            #[cfg(windows)]
+            power::start(app.handle().clone());
             let paste_shortcut = app
                 .state::<AppState>()
                 .paste_shortcut
@@ -2612,6 +2762,7 @@ pub fn run() {
             get_microphones,
             set_microphone,
             compact_overlay,
+            overlay_heartbeat,
             resize_microphone_overlay,
             resize_overlay,
             dismiss_meeting_prompt,
@@ -2648,4 +2799,25 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Pronto");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn durations_stay_ms_below_one_second() {
+        assert_eq!(format_duration(0), "0 ms");
+        assert_eq!(format_duration(86), "86 ms");
+        assert_eq!(format_duration(999), "999 ms");
+    }
+
+    #[test]
+    fn durations_switch_to_seconds_at_one_second() {
+        assert_eq!(format_duration(1000), "1 s");
+        assert_eq!(format_duration(1050), "1.1 s");
+        assert_eq!(format_duration(1500), "1.5 s");
+        assert_eq!(format_duration(1999), "2 s");
+        assert_eq!(format_duration(12_340), "12.3 s");
+    }
 }

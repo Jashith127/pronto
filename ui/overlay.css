@@ -1,5 +1,5 @@
 * { box-sizing: border-box; }
-html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; }
+html, body { width: 100%; height: 100%; margin: 0; overflow: clip; background: transparent; }
 body { position: relative; color: white; font-family: "DM Sans", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; }
 button { -webkit-tap-highlight-color: transparent; }
 button svg { shape-rendering: geometricPrecision; }
