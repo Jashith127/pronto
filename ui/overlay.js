@@ -69,23 +69,51 @@ function renderMeetingPillIcon(icon, vendor) {
 let meetingHideTimer = null;
 let meetingSequenceActive = false;
 let dictating = false;
+// True while dictation owns the native window (listening or processing).
+// Close/dismiss paths must not hide the window while this is set.
+let overlayOwned = false;
+// Generation counters: overlapping async resizes/timers (mic notice vs
+// meeting sequence vs new dictation) resolve deterministically — a stale
+// timer/resize whose generation no longer matches does nothing.
+let noticeGen = 0;
+let meetingGen = 0;
 
 async function showNotice(text) {
+  const gen = ++noticeGen;
   microphoneLabel.textContent = text;
   microphoneLabel.hidden = false;
   await new Promise(requestAnimationFrame);
+  if (gen !== noticeGen) return;
   // Measure scrollWidth, not the rendered box: the CSS max-width cap uses
   // 100vw (the still-small window), so long notices render ellipsized and
   // measuring the box would size the window to the truncated text.
   // scrollWidth reports the full text; the backend clamps to the monitor.
   const fullWidth = Math.ceil(microphoneLabel.scrollWidth + 6);
   const responsiveWidth = Math.max(136, Math.min(480, fullWidth));
-  await invoke('resize_microphone_overlay', { width: responsiveWidth });
+  try {
+    await invoke('resize_microphone_overlay', { width: responsiveWidth });
+  } catch (_) {
+    // A newer notice already resized; ignore.
+  }
 }
 
 async function hideNotice() {
+  noticeGen += 1;
+  clearTimeout(microphoneTimer);
   microphoneLabel.hidden = true;
-  await invoke('compact_overlay');
+  try {
+    await invoke('compact_overlay');
+  } catch (_) {}
+}
+
+// Auto-hide helper: only hides if no newer notice/sequence took over.
+function armAutoHideNotice(ms) {
+  const gen = noticeGen;
+  clearTimeout(microphoneTimer);
+  microphoneTimer = setTimeout(async () => {
+    if (gen !== noticeGen || persistentNotice || overlayOwned || meetingSequenceActive) return;
+    await hideNotice();
+  }, ms);
 }
 
 function renderMeetingPrompt() {
@@ -116,7 +144,13 @@ async function showMeetingPrompt(title, question, desc) {
 async function closeMeetingPrompt() {
   meetingPromptOpen = false;
   meetingPrompt.hidden = true;
-  if (!meetingRecording) await invoke('dismiss_meeting_prompt');
+  // Dictation owns the window while listening/processing: only hide the card,
+  // never the window out from under a live pill.
+  if (!meetingRecording && !overlayOwned && !meetingSequenceActive) {
+    try { await invoke('dismiss_meeting_prompt'); } catch (_) {}
+  } else {
+    try { await invoke('compact_overlay'); } catch (_) {}
+  }
 }
 
 // Dedicated detection pill: the normal recording pill and circle stay
@@ -142,13 +176,18 @@ async function hideMeetingPill({ dismissBackend = false } = {}) {
 }
 
 // Dictation owns the overlay row; make sure a stale detection pill can
-// never cover it and the window is back to pill size.
+// never cover it and the window is back to pill size. Cancels any in-flight
+// meeting hide sequence so it can't hide the fresh dictation pill.
 async function showDictationRow() {
+  meetingGen += 1;
+  clearTimeout(meetingHideTimer);
+  meetingSequenceActive = false;
   if (meetingPill.hidden && !overlayRow.hidden) return;
   meetingPill.hidden = true;
   meetingPrompt.hidden = true;
   meetingPromptOpen = false;
   overlayRow.hidden = false;
+  overlayRow.classList.remove('meeting-start', 'meeting-flash', 'meeting-gone');
   try { await invoke('compact_overlay'); } catch (_) {}
 }
 
@@ -169,6 +208,7 @@ function showMeetingError(message) {
 // Normal dictation pill UI/behavior is otherwise untouched.
 async function playMeetingStartedSequence() {
   clearTimeout(meetingHideTimer);
+  const gen = ++meetingGen;
   meetingSequenceActive = true;
   meetingPromptOpen = false;
   meetingPrompt.hidden = true;
@@ -180,13 +220,16 @@ async function playMeetingStartedSequence() {
   void overlayRow.offsetWidth;
   overlayRow.classList.add('meeting-start', 'meeting-flash');
   await showNotice('Meeting notes started. You can end it from the tray.');
+  if (gen !== meetingGen) return;
   clearTimeout(microphoneTimer);
   meetingHideTimer = setTimeout(async () => {
+    if (gen !== meetingGen || overlayOwned) return;
     // Same exit as the regular transcription pill (pill-out). meeting-flash
     // stays on through the exit so the X/✓ buttons never pop back in.
     overlayRow.classList.add('meeting-gone');
     // Let the exit finish, then fully hide the pill and restore state.
     setTimeout(async () => {
+      if (gen !== meetingGen || overlayOwned) return;
       microphoneLabel.hidden = true;
       try { await invoke('dismiss_meeting_prompt'); } catch (_) {}
       overlayRow.classList.remove('meeting-start', 'meeting-flash', 'meeting-gone');
@@ -223,20 +266,14 @@ searchReroute?.addEventListener('click', async event => {
     await invoke('reroute_dictation_to_search_command');
   } catch (error) {
     await showNotice(String(error).replace(/^Error:\s*/, ''));
-    clearTimeout(microphoneTimer);
-    microphoneTimer = setTimeout(async () => {
-      if (!persistentNotice) await hideNotice();
-    }, 3200);
+    armAutoHideNotice(3200);
   }
 });
 notetakerButton.addEventListener('click', () => {
   if (meetingRecording) {
     // Note taking is controlled from the tray; surface the status label again.
     showNotice('Meeting notes started. You can end it from the tray.');
-    clearTimeout(microphoneTimer);
-    microphoneTimer = setTimeout(async () => {
-      if (!persistentNotice) await hideNotice();
-    }, 2500);
+    armAutoHideNotice(2500);
     return;
   }
   showMeetingPrompt('Untitled meeting', 'Do you want to start taking notes now?', 'Your microphone and computer audio will be saved locally.');
@@ -245,7 +282,11 @@ notetakerButton.addEventListener('click', () => {
 function dismissMeetingPill() {
   if (meetingPill.hidden || meetingRecording) return;
   meetingPromptOpen = false;
-  hideMeetingPill({ dismissBackend: true }).finally(() => invoke('dismiss_meeting_prompt').catch(() => {}));
+  hideMeetingPill({ dismissBackend: true }).finally(() => {
+    // Re-check: dictation may have started while the pill was dismissing.
+    if (overlayOwned || meetingSequenceActive || meetingRecording) return;
+    invoke('dismiss_meeting_prompt').catch(() => {});
+  });
 }
 
 document.addEventListener('keydown', event => {
@@ -277,6 +318,7 @@ listen('engine-status', event => {
   document.documentElement.classList.toggle('processing', phase === 'processing');
   const wasActive = lastPhase === 'listening' || lastPhase === 'processing';
   dictating = phase === 'listening';
+  overlayOwned = phase === 'listening' || phase === 'processing';
   if (dictating) {
     showDictationRow();
     playPillEnter();
@@ -291,7 +333,7 @@ listen('engine-status', event => {
 });
 
 listen('meeting-suggestion', event => {
-  if (meetingRecording || meetingSequenceActive || dictating) return;
+  if (meetingRecording || meetingSequenceActive || overlayOwned) return;
   const payload = event.payload || {};
   showMeetingPill(payload.title, payload.vendor, payload.icon);
 });
@@ -304,10 +346,7 @@ listen('meeting-status', event => {
 listen('microphone-activated', async event => {
   if (persistentNotice) return;
   await showNotice(event.payload.name);
-  clearTimeout(microphoneTimer);
-  microphoneTimer = setTimeout(async () => {
-    if (!persistentNotice) await hideNotice();
-  }, 3000);
+  armAutoHideNotice(3000);
 });
 
 listen('dictation-notice', async event => {
@@ -319,6 +358,8 @@ listen('dictation-notice', async event => {
 listen('dictation-notice-clear', async () => {
   persistentNotice = false;
   clearTimeout(microphoneTimer);
+  // The meeting started-sequence owns its label; don't cut it off early.
+  if (meetingSequenceActive) return;
   await hideNotice();
 });
 
@@ -334,7 +375,9 @@ async function syncOverlayStatusOnLoad() {
   try {
     const status = await invoke('get_status');
     const phase = status && status.phase;
-    if (phase === 'listening' || phase === 'processing') {
+    overlayOwned = phase === 'listening' || phase === 'processing';
+    dictating = phase === 'listening';
+    if (overlayOwned) {
       document.documentElement.classList.toggle('processing', phase === 'processing');
       await showDictationRow();
       playPillEnter();

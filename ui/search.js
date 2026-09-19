@@ -52,6 +52,11 @@ const PEEK_TIMEOUT_MS = 120_000;
 let peekTimer = 0;
 let peekTick = 0;
 let peekStartedAt = 0;
+// Generation counters make overlapping async transitions (backdrop click vs
+// blur-park event vs peek timeout vs restore) resolve deterministically:
+// stale timers/events whose generation no longer matches are ignored.
+let overlayGen = 0;
+let dismissInFlight = false;
 
 let uiMode = 'idle';
 let currentQuery = '';
@@ -308,6 +313,7 @@ function showPanel(on) {
 }
 
 function hidePeek() {
+  overlayGen += 1;
   if (peekTimer) {
     clearTimeout(peekTimer);
     peekTimer = 0;
@@ -328,28 +334,49 @@ function enterPeek() {
   if (peekLabel) peekLabel.textContent = currentQuery || 'Search result';
   if (peek) peek.hidden = false;
   peekStartedAt = Date.now();
+  const gen = overlayGen;
   const paintTimer = () => {
+    if (gen !== overlayGen) return;
     const left = Math.max(0, 1 - (Date.now() - peekStartedAt) / PEEK_TIMEOUT_MS);
     peekClose?.style.setProperty('--p', left.toFixed(3));
   };
   paintTimer();
   peekTick = setInterval(paintTimer, 250);
-  peekTimer = setTimeout(() => { dismissPeekCompletely(); }, PEEK_TIMEOUT_MS);
+  peekTimer = setTimeout(() => {
+    if (gen !== overlayGen) return;
+    dismissPeekCompletely();
+  }, PEEK_TIMEOUT_MS);
 }
 
 async function restorePeek() {
-  hidePeek();
-  uiMode = 'panel';
-  body.className = 'mode-panel';
-  await setNativeStage('stage');
-  showBackdrop(true);
-  showPanel(true);
+  if (uiMode !== 'peek' || dismissInFlight) return;
+  dismissInFlight = true;
+  try {
+    hidePeek();
+    uiMode = 'panel';
+    body.className = 'mode-panel';
+    await setNativeStage('stage');
+    // If a dismiss landed while staging, don't resurrect a stale panel.
+    if (uiMode !== 'panel') return;
+    showBackdrop(true);
+    showPanel(true);
+  } finally {
+    dismissInFlight = false;
+  }
 }
 
 async function dismissPeekCompletely() {
-  hidePeek();
-  await call('dismiss_search_overlay');
-  await enterIdle();
+  if (dismissInFlight) return;
+  // Second call while already idle is a no-op (stale timer / double click).
+  if (uiMode === 'idle' && (!peek || peek.hidden)) return;
+  dismissInFlight = true;
+  try {
+    hidePeek();
+    await call('dismiss_search_overlay');
+    await enterIdle();
+  } finally {
+    dismissInFlight = false;
+  }
 }
 
 function setLayoutBadge(layout) {
@@ -522,6 +549,8 @@ async function showResultPanel(payload) {
 }
 
 async function enterIdle() {
+  // hidePeek bumps overlayGen, invalidating any in-flight peek timeout.
+  hidePeek();
   uiMode = 'idle';
   body.className = 'mode-idle';
   hideChrome();
@@ -590,6 +619,7 @@ nodesEl.addEventListener('keydown', async event => {
   if (!target?.classList.contains('search-image-link')) return;
   event.preventDefault();
   await call('open_search_result', { url: target.getAttribute('data-value') || '' });
+  await enterIdle();
 });
 
 ddgBrand?.addEventListener('click', async event => {
@@ -611,16 +641,28 @@ cancelBtn.addEventListener('click', async event => {
 
 panelClose.addEventListener('click', async event => {
   event.stopPropagation();
-  await call('dismiss_search_overlay');
-  await enterIdle();
+  if (dismissInFlight) return;
+  dismissInFlight = true;
+  try {
+    await call('dismiss_search_overlay');
+    await enterIdle();
+  } finally {
+    dismissInFlight = false;
+  }
 });
 
 backdrop.addEventListener('click', async () => {
-  const parked = await call('park_search_overlay');
-  if (parked) {
-    enterPeek();
-  } else {
-    await enterIdle();
+  if (dismissInFlight || uiMode === 'peek' || uiMode === 'idle') return;
+  dismissInFlight = true;
+  try {
+    const parked = await call('park_search_overlay');
+    if (parked) {
+      enterPeek();
+    } else {
+      await enterIdle();
+    }
+  } finally {
+    dismissInFlight = false;
   }
 });
 
@@ -634,15 +676,22 @@ chrome.addEventListener('click', event => {
 
 document.addEventListener('keydown', async event => {
   if (event.key === 'Escape') {
+    if (dismissInFlight) return;
     if (uiMode === 'peek') {
       await dismissPeekCompletely();
       return;
     }
-    const parked = await call('park_search_overlay');
-    if (parked) {
-      enterPeek();
-    } else {
-      await enterIdle();
+    if (uiMode === 'idle') return;
+    dismissInFlight = true;
+    try {
+      const parked = await call('park_search_overlay');
+      if (parked) {
+        enterPeek();
+      } else {
+        await enterIdle();
+      }
+    } finally {
+      dismissInFlight = false;
     }
   }
 });
@@ -658,7 +707,12 @@ peekClose?.addEventListener('click', async event => {
 });
 
 listen('search-status', event => renderStatus(event.payload));
-listen('search-parked', () => enterPeek());
+listen('search-parked', () => {
+  // A park emitted before a user dismiss (blur vs click race) must not
+  // resurrect a peek tab after the overlay was deliberately closed.
+  if (dismissInFlight || uiMode === 'idle' || uiMode === 'peek') return;
+  enterPeek();
+});
 listen('search-query', event => {
   if (event.payload?.query) currentQuery = event.payload.query;
 });

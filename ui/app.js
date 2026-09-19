@@ -301,18 +301,27 @@ function openHotkeyDialog(target = 'dictation') {
 
 document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => setView(button.dataset.view)));
 document.querySelectorAll('[data-view-link]').forEach(button => button.addEventListener('click', () => setView(button.dataset.viewLink)));
-const bindWindowAction = (selector, command) => {
+const bindWindowAction = (selector, command, { debounceMs = 0 } = {}) => {
   const button = document.querySelector(selector);
+  if (!button) return;
+  let lastFire = 0;
+  // Native drag happens before JS pointerdown, so the buttons also opt out
+  // via data-tauri-drag-region="false" in index.html. This is belt-and-braces.
   button.addEventListener('pointerdown', event => event.stopPropagation());
   button.addEventListener('click', event => {
     event.preventDefault();
     event.stopPropagation();
+    if (debounceMs > 0) {
+      const now = Date.now();
+      if (now - lastFire < debounceMs) return;
+      lastFire = now;
+    }
     call(command);
   });
 };
 
 bindWindowAction('#minimize', 'minimize_main_window');
-bindWindowAction('#maximize', 'toggle_maximize_main_window');
+bindWindowAction('#maximize', 'toggle_maximize_main_window', { debounceMs: 350 });
 bindWindowAction('#close', 'hide_main_window');
 // Rounded window corners only when floating; maximized fills the screen.
 try {
@@ -324,6 +333,20 @@ try {
   };
   mainWindow.onResized(() => syncMaximized());
   syncMaximized();
+  // Reliable dragging for the frameless main window. The titlebar/brand also
+  // declare data-tauri-drag-region, but attribute-only dragging is finicky on
+  // Windows, so start drags manually from chrome areas. Interactive elements
+  // opt out so their clicks still work. Pill/search overlays are untouched.
+  const startManualDrag = event => {
+    if (event.button !== 0 || event.detail > 1) return; // let dblclick maximize through
+    if (event.target.closest('button, input, select, textarea, a, dialog, .window-actions')) return;
+    try {
+      const started = mainWindow.startDragging();
+      if (started && typeof started.catch === 'function') started.catch(() => {});
+    } catch (_) { /* ignore */ }
+  };
+  document.querySelector('.titlebar')?.addEventListener('mousedown', startManualDrag);
+  document.querySelector('.sidebar .brand')?.addEventListener('mousedown', startManualDrag);
 } catch (_) { /* non-Tauri preview */ }
 document.querySelector('.titlebar')?.addEventListener('dblclick', event => {
   if (event.target.closest('.window-actions')) return;

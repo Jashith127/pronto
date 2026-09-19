@@ -1,3 +1,36 @@
+# Pronto 0.8.2
+
+Bug-fix release: the dictation pill survives sleep, saving a setting can no longer blank the app window, window controls and overlays stop swallowing clicks, the app window is draggable again, and long timings read in seconds instead of milliseconds.
+
+## Overlay that survives sleep
+
+- **Listening pill recovers on its own** — after sleep or hibernate the pill could stop appearing even though dictation, transcription, and insertion kept working. Pronto now notices the quiet overlay page and reloads it (on wake and right before showing), so the pill paints again instead of staying blank.
+- **Clean resume** — waking up drops any dictation left wedged across suspend, restores system audio if ducking got stuck, and re-prepares the microphone if Windows power-cycled the audio device.
+
+## Settings save no longer blanks the window
+
+- **No more transparent window after save** — flipping a setting could scroll the whole app off-viewport with no scrollbar to get back, leaving only the "Settings saved" toast visible until a full restart. The document root can no longer scroll at all (views still scroll internally), so this trap is gone in the main window, the dictation pill, and the search panel.
+
+## Timings in seconds
+
+- Millisecond readouts switch to seconds at 1 second and above: history latencies, average latency, and status messages show "850 ms" but "1.5 s" and "2 s" instead of "1500 ms" and "2000 ms".
+
+## Window controls you can trust
+
+- **Minimize, maximize, and close always fire** — the frameless window's native drag region used to swallow clicks on the titlebar buttons, so a click would silently move the window instead of minimizing, maximizing, or closing to tray. The buttons now explicitly opt out of dragging, and rapid double-clicks on maximize no longer toggle twice and land back where they started.
+- **The app window is draggable again** — drag from the top titlebar strip or the "Pronto" brand in the sidebar to move the window. Button clicks still work from those areas, and titlebar double-click still toggles maximize.
+
+## Search overlay open/close races
+
+- **Close means close** — clicking the result panel's ×, the peek tab's ×, or pressing Escape can no longer resurrect a peek tab afterward via a stale blur-park event or a leftover peek timer.
+- **Restore no longer loses to the timeout** — expanding the parked peek tab back into the result panel can't be undone by the 2-minute auto-dismiss firing mid-restore, and double-clicks on backdrop/close can't park and dismiss at the same time.
+- **Keyboard-opened links close the panel** — opening an image source with Enter/Space now hides the overlay just like clicking it does.
+
+## Dictation pill show/hide races
+
+- **Meeting prompts can't hide a live dictation** — dismissing the meeting prompt or detection pill while dictation is listening or processing now compacts back to pill size instead of hiding the window out from under it, and a meeting suggestion never covers an active pill.
+- **Stale timers can't kill a fresh pill** — microphone notices, the "meeting notes started" sequence, and new dictations are generation-guarded, so a timer from an earlier notice can't resize, compact, or hide the current overlay, and starting dictation cancels any in-flight meeting hide sequence.
+
 # Pronto 0.8.1
 
 Pronto 0.8.1 polishes the 0.8.0 voice search experience end to end: results that arrive faster and linger smarter, a search panel that feels calmer and rounder, a fixed shortcut editor, a full dark mode for the Note Taker, a brand-new app icon, and a heavily rounded main window. No behavior you rely on changes — answers, transcripts, and sounds are all identical, just quicker to reach.

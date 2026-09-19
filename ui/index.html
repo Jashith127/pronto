@@ -12,7 +12,7 @@
   <body>
     <main class="app">
       <aside class="sidebar">
-        <div class="brand" data-tauri-drag-region>
+        <div class="brand" data-tauri-drag-region="true">
           <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
           <span>Pronto</span>
         </div>
@@ -36,11 +36,11 @@
       </aside>
 
       <section class="shell">
-        <header class="titlebar" data-tauri-drag-region>
-          <div class="window-actions">
-            <button id="minimize" aria-label="Minimize"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10"/></svg></button>
-            <button id="maximize" aria-label="Maximize"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="1"/></svg></button>
-            <button id="close" aria-label="Close to tray"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+        <header class="titlebar" data-tauri-drag-region="true">
+          <div class="window-actions" data-tauri-drag-region="false">
+            <button id="minimize" data-tauri-drag-region="false" aria-label="Minimize"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10"/></svg></button>
+            <button id="maximize" data-tauri-drag-region="false" aria-label="Maximize"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="1"/></svg></button>
+            <button id="close" data-tauri-drag-region="false" aria-label="Close to tray"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
           </div>
         </header>
 
