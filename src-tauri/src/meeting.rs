@@ -45,6 +45,36 @@ pub struct MeetingStatus {
 
 pub struct StoppedMeeting {
     pub record: MeetingRecord,
+    microphone_writer: Option<std::thread::JoinHandle<Result<(), String>>>,
+    system_writer: Option<std::thread::JoinHandle<Result<(), String>>>,
+    directory: PathBuf,
+}
+
+impl StoppedMeeting {
+    /// Wait for file headers and buffered audio to finish on the finalization
+    /// worker, after Stop has already returned and the meeting IPC is free.
+    pub fn finish_capture(mut self) -> Result<MeetingRecord, String> {
+        let microphone_result = self.microphone_writer.take().map(|writer| {
+            writer
+                .join()
+                .map_err(|_| "Microphone writer stopped unexpectedly".to_string())?
+        });
+        let system_error = self
+            .system_writer
+            .take()
+            .and_then(|writer| match writer.join() {
+                Ok(Ok(())) => None,
+                Ok(Err(error)) => Some(error),
+                Err(_) => Some("Computer audio writer stopped unexpectedly".into()),
+            });
+        if let Some(result) = microphone_result {
+            result?;
+        }
+        self.record.error =
+            system_error.map(|error| format!("Computer audio was unavailable: {error}"));
+        save_record(&self.directory, &self.record)?;
+        Ok(self.record)
+    }
 }
 
 enum Command {
@@ -221,27 +251,17 @@ fn stop_capture(mut active: ActiveMeeting) -> Result<StoppedMeeting, String> {
         let _ = stream.pause();
         drop(stream);
     }
-    if let Some(writer) = active.microphone_writer.take() {
-        writer
-            .join()
-            .map_err(|_| "Microphone writer stopped unexpectedly".to_string())??;
-    }
-    let system_error = active
-        .system_writer
-        .take()
-        .and_then(|writer| writer.join().ok())
-        .and_then(Result::err);
-    // Stop returns fast: mixing two hour-long files takes minutes and used
-    // to wedge every meeting IPC (status, list) behind it, freezing the app
-    // until the mix finished. Mixing happens in finalize_meeting instead.
+    // File flush, ScreenCaptureKit shutdown, and mixing continue after this
+    // reply, so Stop never queues status/list behind a slow capture teardown.
     active.record.duration_seconds = active.started.elapsed().as_secs();
     active.record.status = "processing".into();
     active.record.audio_path = None;
-    active.record.error =
-        system_error.map(|error| format!("Computer audio was unavailable: {error}"));
     save_record(&active.directory, &active.record)?;
     Ok(StoppedMeeting {
         record: active.record,
+        microphone_writer: active.microphone_writer,
+        system_writer: active.system_writer,
+        directory: active.directory,
     })
 }
 
@@ -293,7 +313,7 @@ fn start_microphone_capture(
     let rate = supported.sample_rate();
     let channels = supported.channels() as usize;
     let (sender, receiver) = mpsc::sync_channel::<Vec<f32>>(16);
-    let config: StreamConfig = supported.clone().into();
+    let config: StreamConfig = supported.into();
     let stream = match supported.sample_format() {
         SampleFormat::F32 => device.build_input_stream(
             config,
@@ -365,12 +385,110 @@ fn start_system_capture(
         .expect("failed to start system audio capture")
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 fn start_system_capture(
-    _: PathBuf,
-    _: Arc<AtomicBool>,
+    path: PathBuf,
+    stop: Arc<AtomicBool>,
 ) -> std::thread::JoinHandle<Result<(), String>> {
-    std::thread::spawn(|| Err("Computer audio capture is available only on Windows".into()))
+    std::thread::Builder::new()
+        .name("pronto-meeting-screen-audio".into())
+        .spawn(move || capture_screen_audio(&path, &stop))
+        .expect("failed to start computer audio capture")
+}
+
+#[cfg(target_os = "macos")]
+struct ScreenAudioWriter {
+    wav: WavWriter,
+    reducer: RateReducer,
+    rate: u32,
+    error: Option<String>,
+}
+
+#[cfg(target_os = "macos")]
+struct ScreenAudioContext<'a> {
+    stop: &'a AtomicBool,
+    writer: std::sync::Mutex<ScreenAudioWriter>,
+}
+
+#[cfg(target_os = "macos")]
+extern "C" fn screen_audio_should_stop(context: *mut std::ffi::c_void) -> bool {
+    let context = unsafe { &*(context as *const ScreenAudioContext<'_>) };
+    context.stop.load(Ordering::Acquire)
+}
+
+#[cfg(target_os = "macos")]
+extern "C" fn screen_audio_samples(
+    samples: *const f32,
+    count: usize,
+    rate: u32,
+    context: *mut std::ffi::c_void,
+) {
+    if samples.is_null() || count == 0 || rate == 0 {
+        return;
+    }
+    let context = unsafe { &*(context as *const ScreenAudioContext<'_>) };
+    if let Ok(mut writer) = context.writer.lock() {
+        if writer.error.is_some() {
+            return;
+        }
+        if writer.rate != rate {
+            writer.reducer = RateReducer::new(rate, TARGET_RATE);
+            writer.rate = rate;
+        }
+        for &sample in unsafe { std::slice::from_raw_parts(samples, count) } {
+            if let Some(value) = writer.reducer.push(sample) {
+                if let Err(error) = writer.wav.write_sample(value) {
+                    writer.error = Some(error);
+                    break;
+                }
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    fn pronto_capture_screen_audio(
+        should_stop: extern "C" fn(*mut std::ffi::c_void) -> bool,
+        receive: extern "C" fn(*const f32, usize, u32, *mut std::ffi::c_void),
+        context: *mut std::ffi::c_void,
+        error: *mut std::ffi::c_char,
+        error_capacity: usize,
+    ) -> i32;
+}
+
+#[cfg(target_os = "macos")]
+fn capture_screen_audio(path: &Path, stop: &AtomicBool) -> Result<(), String> {
+    let mut context = ScreenAudioContext {
+        stop,
+        writer: std::sync::Mutex::new(ScreenAudioWriter {
+            wav: WavWriter::create(path)?,
+            reducer: RateReducer::new(48_000, TARGET_RATE),
+            rate: 48_000,
+            error: None,
+        }),
+    };
+    let mut error = [0i8; 512];
+    let result = unsafe {
+        pronto_capture_screen_audio(
+            screen_audio_should_stop,
+            screen_audio_samples,
+            (&mut context as *mut ScreenAudioContext<'_>).cast(),
+            error.as_mut_ptr(),
+            error.len(),
+        )
+    };
+    let writer = context.writer.into_inner().map_err(|e| e.to_string())?;
+    writer.wav.finish()?;
+    if let Some(error) = writer.error {
+        return Err(error);
+    }
+    if result != 0 {
+        return Err(unsafe { std::ffi::CStr::from_ptr(error.as_ptr()) }
+            .to_string_lossy()
+            .into_owned());
+    }
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -628,7 +746,7 @@ pub fn update_record(
             .map_err(|e| e.to_string())?;
     record.transcript = transcript;
     record.notes = notes;
-    record.error = error;
+    record.error = preserve_capture_warning(record.error.take(), error);
     record.status = if record.transcript.is_empty() {
         "error".into()
     } else {
@@ -636,6 +754,19 @@ pub fn update_record(
     };
     save_record(&directory, &record)?;
     Ok(record)
+}
+
+fn preserve_capture_warning(
+    existing: Option<String>,
+    processing: Option<String>,
+) -> Option<String> {
+    let capture_warning =
+        existing.filter(|message| message.starts_with("Computer audio was unavailable:"));
+    match (capture_warning, processing) {
+        (Some(capture), Some(processing)) => Some(format!("{capture} {processing}")),
+        (Some(capture), None) => Some(capture),
+        (None, processing) => processing,
+    }
 }
 
 pub fn mark_error(id: &str, error: String) -> Result<MeetingRecord, String> {
@@ -693,30 +824,33 @@ pub fn record_for_retry(id: &str) -> Result<(MeetingRecord, PathBuf), String> {
 }
 
 pub fn notetaker_audio_root() -> PathBuf {
-    std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("Pronto")
-        .join("NoteTakerAudio")
+    crate::platform_paths::data_dir().join("NoteTakerAudio")
 }
 
 pub fn notetaker_audio_path(item_id: &str) -> Option<PathBuf> {
-    if item_id.trim().is_empty()
-        || item_id.len() > 128
-        || item_id.contains(['/', '\\', '.', ':'])
-    {
+    if item_id.trim().is_empty() || item_id.len() > 128 || item_id.contains(['/', '\\', '.', ':']) {
         return None;
     }
     Some(notetaker_audio_root().join(format!("{item_id}.wav")))
 }
 
 pub fn save_notetaker_audio(item_id: &str, bytes: &[u8]) -> Result<(), String> {
-    let path = notetaker_audio_path(item_id)
-        .ok_or_else(|| "Invalid recording identifier.".to_string())?;
+    let path =
+        notetaker_audio_path(item_id).ok_or_else(|| "Invalid recording identifier.".to_string())?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    fs::write(&path, bytes).map_err(|e| e.to_string())
+    save_notetaker_audio_at(&path, bytes)
+}
+
+fn save_notetaker_audio_at(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let temporary = path.with_extension("wav.tmp");
+    {
+        let mut file = File::create(&temporary).map_err(|e| e.to_string())?;
+        file.write_all(bytes).map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())?;
+    }
+    fs::rename(&temporary, path).map_err(|e| e.to_string())
 }
 
 pub fn delete_notetaker_audio(item_id: &str) -> Result<(), String> {
@@ -752,10 +886,14 @@ fn list_records() -> Result<Vec<MeetingRecord>, String> {
 
 fn recover_interrupted_meetings() -> Result<(), String> {
     let root = meetings_root();
+    recover_interrupted_meetings_at(&root)
+}
+
+fn recover_interrupted_meetings_at(root: &Path) -> Result<(), String> {
     if !root.exists() {
         return Ok(());
     }
-    for entry in fs::read_dir(&root).map_err(|e| e.to_string())?.flatten() {
+    for entry in fs::read_dir(root).map_err(|e| e.to_string())?.flatten() {
         let directory = entry.path();
         let record_path = directory.join("meeting.json");
         let Ok(bytes) = fs::read(&record_path) else {
@@ -764,7 +902,9 @@ fn recover_interrupted_meetings() -> Result<(), String> {
         let Ok(mut record) = serde_json::from_slice::<MeetingRecord>(&bytes) else {
             continue;
         };
-        if record.status != "recording" {
+        if record.status != "recording"
+            && !(record.status == "processing" && record.audio_path.is_none())
+        {
             continue;
         }
         let microphone = directory.join("microphone.wav");
@@ -802,11 +942,7 @@ fn repair_wav_header(path: &Path) -> Result<(), String> {
     file.sync_all().map_err(|e| e.to_string())
 }
 fn meetings_root() -> PathBuf {
-    std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("Pronto")
-        .join("Meetings")
+    crate::platform_paths::data_dir().join("Meetings")
 }
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -848,5 +984,119 @@ mod tests {
         let mut reducer = RateReducer::new(48_000, 16_000);
         let produced = (0..48_000).filter_map(|_| reducer.push(0.25)).count();
         assert_eq!(produced, 16_000);
+    }
+
+    #[test]
+    fn notetaker_audio_save_preserves_previous_file_on_failure() {
+        let directory = std::env::temp_dir().join(format!(
+            "pronto-notetaker-atomic-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("upload.wav");
+        save_notetaker_audio_at(&path, b"old audio").unwrap();
+        let temporary = path.with_extension("wav.tmp");
+        fs::create_dir(&temporary).unwrap();
+        assert!(save_notetaker_audio_at(&path, b"replacement").is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"old audio");
+        fs::remove_dir(&temporary).unwrap();
+        save_notetaker_audio_at(&path, b"replacement").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"replacement");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn stop_returns_before_capture_writers_finish() {
+        let directory = std::env::temp_dir().join(format!(
+            "pronto-stop-timing-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let writer = || {
+            std::thread::spawn(|| {
+                std::thread::sleep(Duration::from_millis(500));
+                Ok(())
+            })
+        };
+        let active = ActiveMeeting {
+            record: MeetingRecord {
+                id: "test".into(),
+                title: "Test".into(),
+                created_at: now_ms(),
+                duration_seconds: 0,
+                status: "recording".into(),
+                audio_path: None,
+                transcript: String::new(),
+                notes: String::new(),
+                error: None,
+            },
+            started: Instant::now(),
+            stop: Arc::new(AtomicBool::new(false)),
+            microphone: None,
+            microphone_writer: Some(writer()),
+            system_writer: Some(writer()),
+            directory: directory.clone(),
+        };
+        let started = Instant::now();
+        let stopped = stop_capture(active).unwrap();
+        assert!(started.elapsed() < Duration::from_millis(250));
+        assert_eq!(stopped.record.status, "processing");
+        assert!(stopped.finish_capture().is_ok());
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn successful_notes_keep_a_computer_audio_failure_visible() {
+        let warning = preserve_capture_warning(
+            Some("Computer audio was unavailable: Screen Recording denied".into()),
+            Some("Local notes used after network failure".into()),
+        )
+        .unwrap();
+        assert!(warning.contains("Screen Recording denied"));
+        assert!(warning.contains("Local notes used"));
+    }
+
+    #[test]
+    fn startup_recovers_a_recording_interrupted_during_finalization() {
+        let root = std::env::temp_dir().join(format!(
+            "pronto-recover-processing-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let directory = root.join("meeting-test");
+        fs::create_dir_all(&directory).unwrap();
+        let record = MeetingRecord {
+            id: "meeting-test".into(),
+            title: "Interrupted".into(),
+            created_at: now_ms(),
+            duration_seconds: 10,
+            status: "processing".into(),
+            audio_path: None,
+            transcript: String::new(),
+            notes: String::new(),
+            error: None,
+        };
+        save_record(&directory, &record).unwrap();
+        let mut microphone = WavWriter::create(&directory.join("microphone.wav")).unwrap();
+        microphone.write_sample(0.5).unwrap();
+        microphone.finish().unwrap();
+        // A process killed mid-recording can leave a stale WAV size/header.
+        let mut stale = OpenOptions::new()
+            .write(true)
+            .open(directory.join("microphone.wav"))
+            .unwrap();
+        stale.write_all(&[0u8; 44]).unwrap();
+        recover_interrupted_meetings_at(&root).unwrap();
+        let recovered: MeetingRecord =
+            serde_json::from_slice(&fs::read(directory.join("meeting.json")).unwrap()).unwrap();
+        assert_eq!(recovered.status, "interrupted");
+        assert!(recovered
+            .audio_path
+            .as_ref()
+            .is_some_and(|path| Path::new(path).is_file()));
+        assert!(recovered.error.unwrap().contains("recovered"));
+        let _ = fs::remove_dir_all(root);
     }
 }

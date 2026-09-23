@@ -243,7 +243,10 @@ fn extract_thumb_from_block(block: &str) -> Option<String> {
     while let Some(img_idx) = block[search_from..].find("<img") {
         let abs_idx = search_from + img_idx;
         let tag_slice = &block[abs_idx..];
-        let tag_end = tag_slice.find('>').map(|i| abs_idx + i).unwrap_or(block.len());
+        let tag_end = tag_slice
+            .find('>')
+            .map(|i| abs_idx + i)
+            .unwrap_or(block.len());
         let tag = &block[abs_idx..tag_end.min(block.len())];
         if let Some(src_idx) = tag.find("src=\"") {
             let rest = &tag[src_idx + 5..];
@@ -279,16 +282,6 @@ fn truncate_snippet(raw: &str, max_chars: usize) -> String {
     if trimmed.chars().count() <= max_chars {
         return trimmed;
     }
-    let mut end = 0usize;
-    let mut count = 0usize;
-    for (byte_idx, _) in trimmed.char_indices() {
-        if count >= max_chars {
-            end = byte_idx;
-            break;
-        }
-        count += 1;
-        end = byte_idx;
-    }
     let mut out: String = trimmed.chars().take(max_chars).collect();
     // Prefer word boundary.
     if let Some(space) = out.rfind(' ') {
@@ -296,12 +289,11 @@ fn truncate_snippet(raw: &str, max_chars: usize) -> String {
             out.truncate(space);
         }
     }
-    let _ = end;
     format!("{}…", out.trim_end())
 }
 
 /// Lightweight relevance: title matches weigh 2x, snippet 1x.
-pub fn rerank_hits(query: &str, hits: &mut Vec<SearchHit>) {
+pub fn rerank_hits(query: &str, hits: &mut [SearchHit]) {
     let terms: Vec<String> = normalize_query(query)
         .split_whitespace()
         .filter(|w| w.len() > 2)
@@ -314,11 +306,14 @@ pub fn rerank_hits(query: &str, hits: &mut Vec<SearchHit>) {
         let score = |hit: &SearchHit| {
             let title = hit.title.to_ascii_lowercase();
             let snippet = hit.snippet.to_ascii_lowercase();
-            terms.iter().map(|t| {
-                let in_title = title.matches(t).count() as i32 * 2;
-                let in_snip = snippet.matches(t).count() as i32;
-                in_title + in_snip
-            }).sum::<i32>()
+            terms
+                .iter()
+                .map(|t| {
+                    let in_title = title.matches(t).count() as i32 * 2;
+                    let in_snip = snippet.matches(t).count() as i32;
+                    in_title + in_snip
+                })
+                .sum::<i32>()
         };
         score(b).cmp(&score(a))
     });
@@ -338,7 +333,10 @@ pub fn ddg_search_url(query: &str) -> Option<String> {
     if normalized.is_empty() {
         return None;
     }
-    Some(format!("https://duckduckgo.com/?q={}", urlencoding_lite(&normalized)))
+    Some(format!(
+        "https://duckduckgo.com/?q={}",
+        urlencoding_lite(&normalized)
+    ))
 }
 
 pub fn normalize_query(raw: &str) -> String {
@@ -387,9 +385,17 @@ pub fn normalize_query(raw: &str) -> String {
 pub fn expand_followup(query: &str, recent: &[String]) -> String {
     let trimmed = query.trim();
     let lower = trimmed.to_ascii_lowercase();
-    let is_followup = ["and ", "what about", "how about", "then", "and then", "what if", "also "]
-        .iter()
-        .any(|prefix| lower.starts_with(prefix));
+    let is_followup = [
+        "and ",
+        "what about",
+        "how about",
+        "then",
+        "and then",
+        "what if",
+        "also ",
+    ]
+    .iter()
+    .any(|prefix| lower.starts_with(prefix));
     if !is_followup {
         return trimmed.to_string();
     }
@@ -398,7 +404,15 @@ pub fn expand_followup(query: &str, recent: &[String]) -> String {
     };
     // Strip the follow-up prefix, keep the new constraint.
     let mut constraint = trimmed.to_string();
-    for prefix in ["what about", "how about", "and then", "and", "then", "also", "what if"] {
+    for prefix in [
+        "what about",
+        "how about",
+        "and then",
+        "and",
+        "then",
+        "also",
+        "what if",
+    ] {
         if lower.starts_with(prefix) {
             constraint = trimmed[prefix.len()..]
                 .trim_start_matches([' ', ',', '?', '!'])
@@ -410,7 +424,10 @@ pub fn expand_followup(query: &str, recent: &[String]) -> String {
         return last.clone();
     }
     // Avoid duplicating if last already contains constraint.
-    if last.to_ascii_lowercase().contains(&constraint.to_ascii_lowercase()) {
+    if last
+        .to_ascii_lowercase()
+        .contains(&constraint.to_ascii_lowercase())
+    {
         return last.clone();
     }
     format!("{} {}", last.trim(), constraint.trim())
@@ -454,8 +471,20 @@ pub fn classify_query(query: &str) -> QueryKind {
     let lower = normalized.to_ascii_lowercase();
     // Time-sensitive or comparison queries always need grounding.
     let needs_grounding = [
-        "compare", " vs ", " versus ", "table", "chart", "graph", "stats", "statistics",
-        "price", "today", "now", "score", "weather", "news",
+        "compare",
+        " vs ",
+        " versus ",
+        "table",
+        "chart",
+        "graph",
+        "stats",
+        "statistics",
+        "price",
+        "today",
+        "now",
+        "score",
+        "weather",
+        "news",
     ]
     .iter()
     .any(|marker| lower.contains(marker));
@@ -466,9 +495,7 @@ pub fn classify_query(query: &str) -> QueryKind {
     // the answer (open / watch). Who/what/define/meaning questions must go
     // through the LLM — otherwise the card says "check below for sources"
     // with no actual answer (reported bug: "Who is the president of India?").
-    let navigation_markers = [
-        "open ", "youtube", "watch ", "video of ", "play ",
-    ];
+    let navigation_markers = ["open ", "youtube", "watch ", "video of ", "play "];
     if words <= 8 && navigation_markers.iter().any(|m| lower.contains(m)) {
         return QueryKind::Fast;
     }
@@ -479,8 +506,17 @@ pub fn classify_query(query: &str) -> QueryKind {
 pub fn needs_visual_repair(query: &str) -> bool {
     let lower = query.to_ascii_lowercase();
     [
-        "chart", "graph", "table", "compare", "comparison", " vs ", " versus ",
-        "stats", "statistics", "timeline", "breakdown",
+        "chart",
+        "graph",
+        "table",
+        "compare",
+        "comparison",
+        " vs ",
+        " versus ",
+        "stats",
+        "statistics",
+        "timeline",
+        "breakdown",
     ]
     .iter()
     .any(|marker| lower.contains(marker))
@@ -500,9 +536,7 @@ pub fn adaptive_max_tokens(query: &str, kind: QueryKind) -> u32 {
 /// True for tiny site icons — crisp at 14px in the source list, but a
 /// blurry mess when blown up into a 600px banner (reported bug).
 pub fn is_favicon_candidate(src: &str) -> bool {
-    src.contains("icons.duckduckgo.com/ip3/")
-        || src.contains("/favicons")
-        || src.ends_with(".ico")
+    src.contains("icons.duckduckgo.com/ip3/") || src.contains("/favicons") || src.ends_with(".ico")
 }
 
 /// `(src, alt)` candidates: real thumbs first, then host favicons.
@@ -808,9 +842,8 @@ fn fetch_ddg_images_network(
     };
     // Step 2: JSON results. `thumbnail` is a fast DDG proxy URL; `image` is
     // the original (often hotlink-protected / slow) — prefer thumbnail.
-    let json_url = format!(
-        "https://duckduckgo.com/i.js?l=us-en&o=json&q={encoded}&vqd={vqd}&f=,,,,,&p=1"
-    );
+    let json_url =
+        format!("https://duckduckgo.com/i.js?l=us-en&o=json&q={encoded}&vqd={vqd}&f=,,,,,&p=1");
     let body = match client
         .get(&json_url)
         .timeout(IMAGE_FETCH_TIMEOUT)
@@ -855,11 +888,7 @@ pub fn parse_ddg_vqd(html: &str) -> Option<String> {
     None
 }
 
-pub fn parse_ddg_image_json(
-    body: &str,
-    max: usize,
-    query_hint: &str,
-) -> Vec<(String, String)> {
+pub fn parse_ddg_image_json(body: &str, max: usize, query_hint: &str) -> Vec<(String, String)> {
     #[derive(Deserialize)]
     struct ImageApiResponse {
         #[serde(default)]
@@ -943,9 +972,11 @@ pub fn store_hits_cache(normalized_query: String, hits: Vec<SearchHit>) {
 
 pub fn is_time_sensitive(query: &str) -> bool {
     let lower = query.to_ascii_lowercase();
-    ["today", "now", "current", "live ", "score", "price", "weather", "stock"]
-        .iter()
-        .any(|m| lower.contains(m))
+    [
+        "today", "now", "current", "live ", "score", "price", "weather", "stock",
+    ]
+    .iter()
+    .any(|m| lower.contains(m))
 }
 
 fn unwrap_ddg_redirect(url: &str) -> String {
@@ -1011,8 +1042,14 @@ fn percent_decode(value: &str) -> String {
     while index < bytes.len() {
         if bytes[index] == b'%' && index + 2 < bytes.len() {
             if let (Ok(high), Ok(low)) = (
-                u8::from_str_radix(std::str::from_utf8(&bytes[index + 1..index + 2]).unwrap_or(""), 16),
-                u8::from_str_radix(std::str::from_utf8(&bytes[index + 2..index + 3]).unwrap_or(""), 16),
+                u8::from_str_radix(
+                    std::str::from_utf8(&bytes[index + 1..index + 2]).unwrap_or(""),
+                    16,
+                ),
+                u8::from_str_radix(
+                    std::str::from_utf8(&bytes[index + 2..index + 3]).unwrap_or(""),
+                    16,
+                ),
             ) {
                 output.push((high << 4) | low);
                 index += 3;
@@ -1125,7 +1162,10 @@ impl SearchController {
     }
 
     pub fn begin_listening(&self, hold_mode: bool) -> Result<(SearchStatus, u64), String> {
-        let mut status = self.status.lock().map_err(|_| "search status lock poisoned")?;
+        let mut status = self
+            .status
+            .lock()
+            .map_err(|_| "search status lock poisoned")?;
         if !matches!(
             status.phase,
             SearchPhase::Idle | SearchPhase::Complete | SearchPhase::Error
@@ -1158,7 +1198,10 @@ impl SearchController {
     }
 
     pub fn mark_transcribing(&self) -> Result<SearchStatus, String> {
-        let mut status = self.status.lock().map_err(|_| "search status lock poisoned")?;
+        let mut status = self
+            .status
+            .lock()
+            .map_err(|_| "search status lock poisoned")?;
         if status.phase != SearchPhase::Listening {
             return Ok(status.clone());
         }
@@ -1174,7 +1217,10 @@ impl SearchController {
 
     /// Dictation reroute: audio was captured outside the search listener.
     pub fn begin_transcribing_imported(&self) -> Result<SearchStatus, String> {
-        let mut status = self.status.lock().map_err(|_| "search status lock poisoned")?;
+        let mut status = self
+            .status
+            .lock()
+            .map_err(|_| "search status lock poisoned")?;
         if !matches!(
             status.phase,
             SearchPhase::Idle | SearchPhase::Complete | SearchPhase::Error
@@ -1198,7 +1244,10 @@ impl SearchController {
     /// to web retrieval. Allowed from rest phases only; history is recorded
     /// at completion like every other search.
     pub fn begin_text_search(&self, query: String) -> Result<SearchStatus, String> {
-        let mut status = self.status.lock().map_err(|_| "search status lock poisoned")?;
+        let mut status = self
+            .status
+            .lock()
+            .map_err(|_| "search status lock poisoned")?;
         if !matches!(
             status.phase,
             SearchPhase::Idle | SearchPhase::Complete | SearchPhase::Error
@@ -1219,8 +1268,14 @@ impl SearchController {
     }
 
     pub fn mark_searching(&self, query_hint: Option<String>) -> Result<SearchStatus, String> {
-        let mut status = self.status.lock().map_err(|_| "search status lock poisoned")?;
-        if !matches!(status.phase, SearchPhase::Listening | SearchPhase::Searching) {
+        let mut status = self
+            .status
+            .lock()
+            .map_err(|_| "search status lock poisoned")?;
+        if !matches!(
+            status.phase,
+            SearchPhase::Listening | SearchPhase::Searching
+        ) {
             return Ok(status.clone());
         }
         let elapsed = self.listen_elapsed_ms();
@@ -1238,7 +1293,10 @@ impl SearchController {
     }
 
     pub fn mark_synthesizing(&self, query: String) -> Result<SearchStatus, String> {
-        let mut status = self.status.lock().map_err(|_| "search status lock poisoned")?;
+        let mut status = self
+            .status
+            .lock()
+            .map_err(|_| "search status lock poisoned")?;
         if status.phase != SearchPhase::Searching {
             return Ok(status.clone());
         }
@@ -1263,10 +1321,14 @@ impl SearchController {
             })
             .unwrap_or(0);
         self.push_history(query.clone());
-        let mut status = self.status.lock().map_err(|_| "search status lock poisoned")?;
+        let mut status = self
+            .status
+            .lock()
+            .map_err(|_| "search status lock poisoned")?;
         *status = SearchStatus {
             phase: SearchPhase::Complete,
-            message: warning.unwrap_or_else(|| format!("Answer ready in {}", crate::format_duration(elapsed))),
+            message: warning
+                .unwrap_or_else(|| format!("Answer ready in {}", crate::format_duration(elapsed))),
             query: Some(query),
             elapsed_ms: elapsed,
         };
@@ -1274,7 +1336,10 @@ impl SearchController {
     }
 
     pub fn fail(&self, message: impl Into<String>) -> Result<SearchStatus, String> {
-        let mut status = self.status.lock().map_err(|_| "search status lock poisoned")?;
+        let mut status = self
+            .status
+            .lock()
+            .map_err(|_| "search status lock poisoned")?;
         *status = SearchStatus {
             phase: SearchPhase::Error,
             message: message.into(),
@@ -1288,7 +1353,10 @@ impl SearchController {
     }
 
     pub fn reset(&self) -> Result<SearchStatus, String> {
-        let mut status = self.status.lock().map_err(|_| "search status lock poisoned")?;
+        let mut status = self
+            .status
+            .lock()
+            .map_err(|_| "search status lock poisoned")?;
         *status = SearchStatus::default();
         if let Ok(mut started) = self.started_at.lock() {
             *started = None;
@@ -1303,7 +1371,12 @@ impl SearchController {
     pub fn is_busy(&self) -> bool {
         self.status
             .lock()
-            .map(|status| matches!(status.phase, SearchPhase::Listening | SearchPhase::Searching))
+            .map(|status| {
+                matches!(
+                    status.phase,
+                    SearchPhase::Listening | SearchPhase::Searching
+                )
+            })
             .unwrap_or(false)
     }
 
@@ -1328,7 +1401,10 @@ impl SearchController {
     }
 
     pub fn resource_dir(&self) -> Option<PathBuf> {
-        self.resource_dir.lock().ok().and_then(|guard| guard.clone())
+        self.resource_dir
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
     }
 }
 
@@ -1343,8 +1419,7 @@ pub fn synthesize_search_markdown(
         return synthesize_direct_markdown(client, query);
     }
     if hits.is_empty() {
-        let parsed =
-            finalize_markdown_answer(&markdown_fallback_from_hits(query, hits), query);
+        let parsed = finalize_markdown_answer(&markdown_fallback_from_hits(query, hits), query);
         return Ok((
             parsed,
             Some("No evidence found in the retrieved sources.".into()),
@@ -1352,8 +1427,7 @@ pub fn synthesize_search_markdown(
     }
 
     let Some(api_key) = deepseek_key() else {
-        let parsed =
-            finalize_markdown_answer(&markdown_fallback_from_hits(query, hits), query);
+        let parsed = finalize_markdown_answer(&markdown_fallback_from_hits(query, hits), query);
         return Ok((
             parsed,
             Some("Add a DeepSeek API key in Settings to synthesize answers.".into()),
@@ -1361,8 +1435,7 @@ pub fn synthesize_search_markdown(
     };
 
     if classify_query(query) == QueryKind::Fast {
-        let parsed =
-            finalize_markdown_answer(&markdown_fallback_from_hits(query, hits), query);
+        let parsed = finalize_markdown_answer(&markdown_fallback_from_hits(query, hits), query);
         return Ok((parsed, None));
     }
 
@@ -1372,10 +1445,7 @@ pub fn synthesize_search_markdown(
             Ok((parsed, None))
         }
         Err(error) => {
-            let parsed = finalize_markdown_answer(
-                &markdown_fallback_from_hits(query, hits),
-                query,
-            );
+            let parsed = finalize_markdown_answer(&markdown_fallback_from_hits(query, hits), query);
             Ok((parsed, Some(format!("Answer synthesis failed: {error}"))))
         }
     }
@@ -1459,10 +1529,11 @@ pub fn is_trusted_search_image_url(url: &str) -> bool {
 }
 
 /// Build a banner image, embedding bytes inline when the fetch succeeds.
-pub fn build_banner_image(client: &Client, images: &[(String, String)]) -> Option<SearchBannerImage> {
-    let Some((src, alt)) = images.first() else {
-        return None;
-    };
+pub fn build_banner_image(
+    client: &Client,
+    images: &[(String, String)],
+) -> Option<SearchBannerImage> {
+    let (src, alt) = images.first()?;
     let mut banner = SearchBannerImage {
         src: src.clone(),
         alt: alt.clone(),
@@ -1510,10 +1581,9 @@ fn wikimedia_filename_from_src(src: &str) -> Option<String> {
             return None;
         }
         segments[2]
-    } else if let Some(rest) = src.split("/commons/").nth(1) {
-        rest.split('/').last()?
     } else {
-        return None;
+        let rest = src.split("/commons/").nth(1)?;
+        rest.split('/').next_back()?
     };
     let decoded = percent_decode(raw.split('?').next()?);
     if decoded.is_empty() {
@@ -1529,7 +1599,7 @@ fn bytes_to_data_url(mime: &str, bytes: &[u8]) -> String {
 
 fn base64_encode(input: &[u8]) -> String {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((input.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
         let b0 = chunk[0] as u32;
         let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
@@ -1554,12 +1624,7 @@ fn base64_encode(input: &[u8]) -> String {
 fn wikipedia_subject_from_query(query: &str) -> Option<String> {
     let q = normalize_query(query);
     for prefix in [
-        "who is ",
-        "who was ",
-        "who are ",
-        "who's ",
-        "what is ",
-        "what's ",
+        "who is ", "who was ", "who are ", "who's ", "what is ", "what's ",
     ] {
         if let Some(rest) = q.strip_prefix(prefix) {
             let name = rest.trim().trim_end_matches('?').trim();
@@ -1732,14 +1797,9 @@ pub fn infer_answer_layout(query: &str) -> String {
         || q.starts_with("was ")
     {
         "yesno".into()
-    } else if q.contains("where is ")
-        || q.contains("address of")
-        || q.contains("located")
-    {
+    } else if q.contains("where is ") || q.contains("address of") || q.contains("located") {
         "location".into()
-    } else if q.contains("recipe")
-        || q.contains("ingredients")
-    {
+    } else if q.contains("recipe") || q.contains("ingredients") {
         "recipe".into()
     } else if q.contains("population")
         || q.contains("statistics")
@@ -1866,7 +1926,11 @@ pub fn parse_classified_markdown(raw: &str, query: &str) -> ParsedSearchAnswer {
         break;
     }
 
-    while lines.first().map(|line| line.trim().is_empty()).unwrap_or(false) {
+    while lines
+        .first()
+        .map(|line| line.trim().is_empty())
+        .unwrap_or(false)
+    {
         lines.remove(0);
     }
 
@@ -1912,15 +1976,20 @@ TABLES (use them generously when they improve clarity):
 - You may add a short sentence before a table to introduce it; put the table immediately after the blockquote or after one brief setup paragraph."#
     );
     let user = if grounded {
-        format!(
-            "QUERY:\n{query}\n\nSEARCH RESULTS:\n{sources}\n\nWrite the markdown answer."
-        )
+        format!("QUERY:\n{query}\n\nSEARCH RESULTS:\n{sources}\n\nWrite the markdown answer.")
     } else {
         format!(
             "QUERY:\n{query}\n\nNo web results were retrieved. Answer from general knowledge and note any uncertainty.\n\nWrite the markdown answer."
         )
     };
-    deepseek_markdown_at(client, api_key, query, &system, &user, adaptive_max_tokens(query, classify_query(query)))
+    deepseek_markdown_at(
+        client,
+        api_key,
+        query,
+        &system,
+        &user,
+        adaptive_max_tokens(query, classify_query(query)),
+    )
 }
 
 fn deepseek_direct_markdown(client: &Client, api_key: &str, query: &str) -> Result<String, String> {
@@ -2029,10 +2098,7 @@ pub fn synthesize_search_ui(
 
     // Fast-path: navigation queries render instantly with photo + sources, $0.
     if classify_query(query) == QueryKind::Fast {
-        return Ok((
-            fallback_document_with_images(query, &sources, photos),
-            None,
-        ));
+        return Ok((fallback_document_with_images(query, &sources, photos), None));
     }
 
     let _ = resource_dir;
@@ -2050,7 +2116,15 @@ pub fn synthesize_search_ui(
                         Some(format!("UI synthesis failed validation: {first_error}")),
                     ));
                 }
-                match deepseek_search_ui_repair(client, &api_key, query, hits, photos, &raw, &first_error) {
+                match deepseek_search_ui_repair(
+                    client,
+                    &api_key,
+                    query,
+                    hits,
+                    photos,
+                    &raw,
+                    &first_error,
+                ) {
                     Ok(repaired) => match parse_and_validate_ui(&repaired, &allowed) {
                         Ok(mut document) => {
                             ensure_image(&mut document, photos);
@@ -2081,10 +2155,15 @@ pub fn ensure_image(document: &mut SearchUiDocument, images: &[(String, String)]
     if images.is_empty() {
         return;
     }
-    let has_visual = document.nodes.iter().any(|node| matches!(
-        node,
-        UiNode::ImageFrame { .. } | UiNode::Youtube { .. } | UiNode::Chart { .. } | UiNode::Table { .. }
-    ));
+    let has_visual = document.nodes.iter().any(|node| {
+        matches!(
+            node,
+            UiNode::ImageFrame { .. }
+                | UiNode::Youtube { .. }
+                | UiNode::Chart { .. }
+                | UiNode::Table { .. }
+        )
+    });
     if has_visual {
         return;
     }
@@ -2293,16 +2372,25 @@ pub fn open_url_in_default_browser(url: &str) -> Result<(), String> {
         )
     };
     if result.0 as usize <= 32 {
-        return Err(format!("Could not open URL in the default browser ({})", result.0 as usize));
+        return Err(format!(
+            "Could not open URL in the default browser ({})",
+            result.0 as usize
+        ));
     }
     Ok(())
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 pub fn open_url_in_default_browser(url: &str) -> Result<(), String> {
-    Err(format!(
-        "Opening URLs is only supported on Windows (requested {url})"
-    ))
+    use objc2_app_kit::NSWorkspace;
+    use objc2_foundation::{NSString, NSURL};
+
+    let url = NSURL::URLWithString(&NSString::from_str(url))
+        .ok_or_else(|| "Invalid browser URL".to_string())?;
+    if !NSWorkspace::sharedWorkspace().openURL(&url) {
+        return Err("macOS could not open the URL in the default browser".into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2436,7 +2524,7 @@ mod tests {
         let request = rx.recv_timeout(Duration::from_secs(2)).unwrap();
         assert!(request.contains("deepseek-v4-flash"));
         assert!(request.contains("json_object"));
-        assert!(request.contains("\"temperature\":0")); 
+        assert!(request.contains("\"temperature\":0"));
         let allowed = hits.iter().map(|hit| hit.url.clone()).collect();
         let document = parse_and_validate_ui(&content, &allowed).unwrap();
         assert_eq!(document.nodes.len(), 3);
@@ -2449,9 +2537,7 @@ mod tests {
         let controller = SearchController::new();
         let _ = controller.begin_listening(true).unwrap();
         let _ = controller.mark_searching(Some("weather".into())).unwrap();
-        let status = controller
-            .complete("weather".into(), None)
-            .unwrap();
+        let status = controller.complete("weather".into(), None).unwrap();
         assert_eq!(status.phase, SearchPhase::Complete);
         assert_eq!(status.query.as_deref(), Some("weather"));
     }
@@ -2472,7 +2558,10 @@ mod tests {
 
     #[test]
     fn normalize_strips_fillers_and_prefixes() {
-        assert_eq!(normalize_query("  Search for um best ramens in Osaka please "), "best ramens in osaka");
+        assert_eq!(
+            normalize_query("  Search for um best ramens in Osaka please "),
+            "best ramens in osaka"
+        );
         assert_eq!(normalize_query("hey pronto search for weather"), "weather");
     }
 
@@ -2483,10 +2572,7 @@ mod tests {
             expand_followup("what about tomorrow?", &recent),
             "weather osaka tomorrow?"
         );
-        assert_eq!(
-            expand_followup("weather tokyo", &recent),
-            "weather tokyo"
-        );
+        assert_eq!(expand_followup("weather tokyo", &recent), "weather tokyo");
     }
 
     #[test]
@@ -2496,7 +2582,10 @@ mod tests {
         assert_eq!(classify_query("watch lofi video"), QueryKind::Fast);
         // Who/what/define must go through the LLM so the card contains an
         // actual answer instead of "check below for sources".
-        assert_eq!(classify_query("what is photosynthesis"), QueryKind::Grounded);
+        assert_eq!(
+            classify_query("what is photosynthesis"),
+            QueryKind::Grounded
+        );
         assert_eq!(
             classify_query("Who is the president of India?"),
             QueryKind::Grounded
@@ -2570,7 +2659,9 @@ mod tests {
     #[test]
     fn needs_web_skips_simple_math() {
         assert!(!needs_web_retrieval("what is 25 plus 17"));
-        assert!(needs_web_retrieval("who was the first president of the united states"));
+        assert!(needs_web_retrieval(
+            "who was the first president of the united states"
+        ));
     }
 
     #[test]

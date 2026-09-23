@@ -93,7 +93,7 @@ pub enum ActivationMode {
 impl Default for UserSettings {
     fn default() -> Self {
         Self {
-            cleanup_enabled: true,
+            cleanup_enabled: false,
             language: "auto".into(),
             auto_insert: true,
             dictionary: Vec::new(),
@@ -235,8 +235,10 @@ impl SettingsStore {
             }
             _ => None,
         };
-        *self.settings.lock().map_err(|_| "settings lock poisoned")? = next.clone();
+        let mut settings = self.settings.lock().map_err(|_| "settings lock poisoned")?;
         write_json(self.data_dir.join("settings.json"), &next)?;
+        *settings = next.clone();
+        drop(settings);
         self.preferences()
     }
 
@@ -246,27 +248,29 @@ impl SettingsStore {
             return Err("Dictionary terms must contain 1–100 characters".into());
         }
         let mut settings = self.settings.lock().map_err(|_| "settings lock poisoned")?;
-        if !settings
+        let mut updated = settings.clone();
+        if !updated
             .dictionary
             .iter()
             .any(|existing| existing.eq_ignore_ascii_case(term))
         {
-            settings.dictionary.push(term.into());
-            settings
-                .dictionary
-                .sort_by_key(|value| value.to_lowercase());
+            updated.dictionary.push(term.into());
+            updated.dictionary.sort_by_key(|value| value.to_lowercase());
         }
-        write_json(self.data_dir.join("settings.json"), &*settings)?;
-        Ok(settings.clone())
+        write_json(self.data_dir.join("settings.json"), &updated)?;
+        *settings = updated.clone();
+        Ok(updated)
     }
 
     pub fn remove_dictionary_term(&self, term: &str) -> Result<UserSettings, String> {
         let mut settings = self.settings.lock().map_err(|_| "settings lock poisoned")?;
-        settings
+        let mut updated = settings.clone();
+        updated
             .dictionary
             .retain(|existing| !existing.eq_ignore_ascii_case(term));
-        write_json(self.data_dir.join("settings.json"), &*settings)?;
-        Ok(settings.clone())
+        write_json(self.data_dir.join("settings.json"), &updated)?;
+        *settings = updated.clone();
+        Ok(updated)
     }
 
     pub fn history(&self) -> Result<Vec<HistoryEntry>, String> {
@@ -278,15 +282,22 @@ impl SettingsStore {
 
     pub fn push_history(&self, entry: HistoryEntry) -> Result<(), String> {
         let mut history = self.history.lock().map_err(|_| "history lock poisoned")?;
-        history.insert(0, entry);
-        history.truncate(100);
-        write_json(self.data_dir.join("history.json"), &*history)
+        let mut updated = history.clone();
+        updated.insert(0, entry);
+        updated.truncate(100);
+        write_json(self.data_dir.join("history.json"), &updated)?;
+        *history = updated;
+        Ok(())
     }
 
     pub fn clear_history(&self) -> Result<(), String> {
         let mut history = self.history.lock().map_err(|_| "history lock poisoned")?;
+        write_json(
+            self.data_dir.join("history.json"),
+            &Vec::<HistoryEntry>::new(),
+        )?;
         history.clear();
-        write_json(self.data_dir.join("history.json"), &*history)
+        Ok(())
     }
 
     pub fn last_transcript(&self) -> Result<Option<String>, String> {
@@ -310,24 +321,31 @@ impl SettingsStore {
 }
 
 pub fn set_deepseek_key(api_key: &str) -> Result<(), String> {
+    // Invalidate first: even a partial deletion must not leave an old key
+    // available from the in-process cache for another minute.
+    if let Some(cache) = KEY_CACHE.get() {
+        if let Ok(mut guard) = cache.lock() {
+            guard.1 = None;
+        }
+    }
     let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
         .map_err(|error| format!("Credential Manager unavailable: {error}"))?;
     if api_key.trim().is_empty() {
         match entry.delete_password() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(error) => Err(format!("Could not remove API key: {error}")),
+        }?;
+        let legacy = keyring::Entry::new(LEGACY_KEYRING_SERVICE, KEYRING_ACCOUNT)
+            .map_err(|error| format!("Credential Manager unavailable: {error}"))?;
+        match legacy.delete_password() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(error) => Err(format!("Could not remove migrated API key: {error}")),
         }
     } else {
         entry
             .set_password(api_key.trim())
             .map_err(|error| format!("Could not securely save API key: {error}"))
     }?;
-    // Drop the cached key so the next read picks up the change.
-    if let Some(cache) = KEY_CACHE.get() {
-        if let Ok(mut guard) = cache.lock() {
-            guard.1 = None;
-        }
-    }
     Ok(())
 }
 
@@ -367,10 +385,7 @@ pub fn deepseek_key() -> Option<String> {
 }
 
 fn data_dir() -> PathBuf {
-    std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("Pronto")
+    crate::platform_paths::data_dir()
 }
 
 fn normalize_dictionary(values: Vec<String>) -> Vec<String> {
@@ -396,12 +411,65 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: PathBuf) -> Option<T> {
 
 fn write_json(path: PathBuf, value: &impl Serialize) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(value).map_err(|error| error.to_string())?;
-    fs::write(path, bytes).map_err(|error| error.to_string())
+    #[cfg(windows)]
+    return fs::write(path, bytes).map_err(|error| error.to_string());
+    #[cfg(not(windows))]
+    {
+        let temporary = path.with_extension("json.tmp");
+        fs::write(&temporary, bytes).map_err(|error| error.to_string())?;
+        fs::rename(&temporary, &path).map_err(|error| error.to_string())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(windows))]
+    #[test]
+    fn failed_disk_writes_leave_settings_and_history_unchanged() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let data_dir = std::env::temp_dir().join(format!(
+            "pronto-settings-test-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(data_dir.join("settings.json.tmp")).unwrap();
+        fs::create_dir_all(data_dir.join("history.json.tmp")).unwrap();
+        let store = SettingsStore {
+            settings: Mutex::new(UserSettings::default()),
+            history: Mutex::new(Vec::new()),
+            data_dir: data_dir.clone(),
+        };
+
+        let mut next = store.snapshot().unwrap();
+        next.auto_insert = false;
+        assert!(store.replace(next).is_err());
+        assert!(store.snapshot().unwrap().auto_insert);
+
+        let entry = HistoryEntry::new("raw".into(), "final".into(), 1, 0, 1, 1, false);
+        assert!(store.push_history(entry).is_err());
+        assert!(store.history().unwrap().is_empty());
+
+        fs::remove_dir(data_dir.join("history.json.tmp")).unwrap();
+        store
+            .push_history(HistoryEntry::new(
+                "raw".into(),
+                "final".into(),
+                1,
+                0,
+                1,
+                1,
+                false,
+            ))
+            .unwrap();
+        fs::create_dir(data_dir.join("history.json.tmp")).unwrap();
+        assert!(store.clear_history().is_err());
+        assert_eq!(store.history().unwrap().len(), 1);
+        fs::remove_dir_all(data_dir).unwrap();
+    }
 
     #[test]
     fn dictionary_is_trimmed_sorted_and_deduplicated() {
@@ -426,7 +494,10 @@ mod tests {
     #[test]
     fn older_settings_migrate_search_defaults() {
         let settings: UserSettings = serde_json::from_str(r#"{"language":"en"}"#).unwrap();
-        assert_eq!(settings.search_shortcut, crate::hotkey::DEFAULT_SEARCH_HOTKEY);
+        assert_eq!(
+            settings.search_shortcut,
+            crate::hotkey::DEFAULT_SEARCH_HOTKEY
+        );
         assert_eq!(
             settings.search_provider_url,
             "https://html.duckduckgo.com/html/"
@@ -437,10 +508,13 @@ mod tests {
     fn older_settings_without_microphone_are_compatible() {
         let settings: UserSettings = serde_json::from_str(r#"{"language":"en"}"#).unwrap();
         assert_eq!(settings.language, "en");
+        assert!(!settings.cleanup_enabled);
         assert!(settings.microphone_id.is_none());
         assert!(settings.microphone_name.is_none());
         assert!(!settings.gpu_memory_management);
         assert!(settings.dictation_sounds);
         assert!(settings.cleanup_prompt.is_none());
+        let enabled: UserSettings = serde_json::from_str(r#"{"cleanupEnabled":true}"#).unwrap();
+        assert!(enabled.cleanup_enabled);
     }
 }

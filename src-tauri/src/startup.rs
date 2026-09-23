@@ -12,7 +12,7 @@ pub fn is_background_launch() -> bool {
     std::env::args_os().any(|argument| argument == BACKGROUND_ARG)
 }
 
-pub fn set_enabled(enabled: bool) -> Result<(), String> {
+pub fn set_enabled(_app: &tauri::AppHandle, enabled: bool) -> Result<(), String> {
     let mut key = HKEY::default();
     let open = unsafe {
         RegOpenKeyExW(

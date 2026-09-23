@@ -1,3 +1,18 @@
+# macOS port development (unreleased)
+
+Pronto 0.8.2 is being ported to Apple Silicon macOS 13+. The shared interface
+and command contracts remain. Native Mac paths now cover registered key-based
+shortcuts and CGEventTap modifier-only shortcuts,
+CPAL microphone capture and cues, CoreAudio ducking, Accessibility insertion,
+ScreenCaptureKit computer audio, meeting detection, menu-bar lifecycle, login
+startup, sleep recovery, and the Metal speech runtime. The model is downloaded
+separately with progress, resume, cancellation, and SHA-256 verification.
+
+The Rust suite has passed on an Apple Silicon Mac, and a bundled Metal server
+transcribed a short synthetic fixture correctly. This is not yet a signed or
+notarized macOS release. Interactive permission, insertion, overlay, meeting,
+and clean-install validation remains. See `docs/macos-port-status.md`.
+
 # Pronto 0.8.2
 
 Bug-fix release: the dictation pill survives sleep, saving a setting can no longer blank the app window, window controls and overlays stop swallowing clicks, the app window is draggable again, and long timings read in seconds instead of milliseconds.

@@ -8,7 +8,7 @@ use reqwest::blocking::{multipart, Client};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fs::{self, OpenOptions};
-use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom};
 use std::net::TcpListener;
 #[cfg(windows)]
 use std::os::windows::{io::AsRawHandle, process::CommandExt};
@@ -100,6 +100,7 @@ pub struct ModelStatus {
     pub backend: String,
 }
 
+#[derive(Clone)]
 pub struct EngineController {
     commands: mpsc::Sender<EngineCommand>,
 }
@@ -136,6 +137,11 @@ impl EngineController {
         let _ = self.commands.send(EngineCommand::Warm);
     }
 
+    #[cfg(target_os = "macos")]
+    pub fn warm_after_install(&self) {
+        let _ = self.commands.send(EngineCommand::ModelInstalled);
+    }
+
     pub fn set_gpu_memory_management(&self, enabled: bool) {
         let _ = self
             .commands
@@ -148,6 +154,8 @@ enum EngineCommand {
     TranscribeMeeting(MeetingTranscriptionJob),
     TranscribeSearch(SearchAsrJob),
     Warm,
+    #[cfg(target_os = "macos")]
+    ModelInstalled,
     ConfigureGpuMemory(bool),
 }
 
@@ -213,8 +221,16 @@ fn engine_worker(
 ) {
     let gpu = GpuMemoryMonitor::new().ok();
     let before_load = gpu.as_ref().and_then(|gpu| gpu.memory_info().ok());
-    emit_model_status(&app, false, "Loading Parakeet on the GPU…");
-    let runtime = locate_runtime(resource_dir.as_deref());
+    emit_model_status(
+        &app,
+        false,
+        if cfg!(target_os = "macos") {
+            "Checking Parakeet for Metal…"
+        } else {
+            "Loading Parakeet on the GPU…"
+        },
+    );
+    let mut runtime = locate_runtime(resource_dir.as_deref());
     let minimum_model_bytes = runtime
         .as_ref()
         .ok()
@@ -272,7 +288,11 @@ fn engine_worker(
                             emit_model_status(
                                 &app,
                                 false,
-                                "Parakeet released to protect GPU memory",
+                                if cfg!(target_os = "macos") {
+                                    "Parakeet released under unified-memory pressure"
+                                } else {
+                                    "Parakeet released to protect GPU memory"
+                                },
                             );
                         }
                     }
@@ -288,6 +308,16 @@ fn engine_worker(
         };
 
         match command.expect("received engine command") {
+            #[cfg(target_os = "macos")]
+            EngineCommand::ModelInstalled => {
+                runtime = locate_runtime(resource_dir.as_deref());
+                last_start_failure = None;
+                if server.is_none() {
+                    server =
+                        warm_server(&app, runtime.as_ref().map_err(String::as_str), &mut policy);
+                    last_start_failure = server.is_none().then(Instant::now);
+                }
+            }
             EngineCommand::ConfigureGpuMemory(enabled) => {
                 policy.enabled = enabled;
                 policy.low_readings = 0;
@@ -317,7 +347,15 @@ fn engine_worker(
                         );
                         last_start_failure = server.is_none().then(Instant::now);
                     } else {
-                        emit_model_status(&app, false, "Waiting for available GPU memory…");
+                        emit_model_status(
+                            &app,
+                            false,
+                            if cfg!(target_os = "macos") {
+                                "Waiting for available memory…"
+                            } else {
+                                "Waiting for available GPU memory…"
+                            },
+                        );
                     }
                 }
             }
@@ -344,7 +382,15 @@ fn engine_worker(
                             break;
                         }
                         if !waiting_emitted {
-                            emit_model_status(&app, false, "Waiting for available GPU memory…");
+                            emit_model_status(
+                                &app,
+                                false,
+                                if cfg!(target_os = "macos") {
+                                    "Waiting for available memory…"
+                                } else {
+                                    "Waiting for available GPU memory…"
+                                },
+                            );
                             waiting_emitted = true;
                         }
                         if Instant::now() >= deadline {
@@ -361,7 +407,11 @@ fn engine_worker(
                         "Parakeet failed to start. See engine.log in Pronto's local data folder, then try again shortly."
                             .into(),
                     ),
-                    None => Err("Not enough GPU memory to load Parakeet. Dictation was not transcribed.".into()),
+                    None => Err(if cfg!(target_os = "macos") {
+                        "Not enough available memory to load Parakeet. Dictation was not transcribed."
+                    } else {
+                        "Not enough GPU memory to load Parakeet. Dictation was not transcribed."
+                    }.into()),
                 };
                 crate::complete_transcription(&app, result);
             }
@@ -417,11 +467,19 @@ fn warm_server(
             return None;
         }
     };
-    emit_model_status(app, false, "Warming Parakeet on the GPU…");
+    emit_model_status(
+        app,
+        false,
+        if cfg!(target_os = "macos") {
+            "Warming Parakeet on Metal…"
+        } else {
+            "Warming Parakeet on the GPU…"
+        },
+    );
     match SpeechServer::start(runtime) {
         Ok(server) => {
             policy.note_transition(Instant::now());
-            emit_model_status(&app, true, "Parakeet is warm and ready");
+            emit_model_status(app, true, "Parakeet is warm and ready");
             Some(server)
         }
         Err(error) => {
@@ -584,38 +642,17 @@ fn process_meeting_job(
 ) -> Result<CompletedMeetingTranscription, String> {
     const CHUNK_SAMPLES: usize = 16_000 * 120;
     const CHUNK_BYTES: usize = CHUNK_SAMPLES * 2;
-    // Stream raw chunk bytes up front (fast disk read); transcription fans
-    // out over a few workers below instead of one chunk at a time, which is
-    // what made hour-long meetings take so long.
-    let mut raw_chunks: Vec<Vec<u8>> = Vec::new();
-    {
-        let mut file = BufReader::new(
-            fs::File::open(&job.audio_path)
-                .map_err(|e| format!("Could not open meeting audio: {e}"))?,
-        );
-        file.seek(SeekFrom::Start(44)).map_err(|e| e.to_string())?;
-        loop {
-            let mut bytes = vec![0u8; CHUNK_BYTES];
-            let mut filled = 0;
-            while filled < CHUNK_BYTES {
-                match file.read(&mut bytes[filled..]) {
-                    Ok(0) => break,
-                    Ok(read) => filled += read,
-                    Err(error) => return Err(error.to_string()),
-                }
-            }
-            if filled == 0 {
-                break;
-            }
-            bytes.truncate(filled - (filled % 2));
-            if !bytes.is_empty() {
-                raw_chunks.push(bytes);
-            }
-        }
+    let audio_len = fs::metadata(&job.audio_path)
+        .map_err(|error| format!("Could not inspect meeting audio: {error}"))?
+        .len();
+    let pcm_bytes = audio_len.saturating_sub(44) & !1;
+    let total = pcm_bytes.div_ceil(CHUNK_BYTES as u64) as usize;
+    if total == 0 {
+        return Err("The saved meeting audio has no samples".into());
     }
-    let total = raw_chunks.len();
     // Bounded parallel transcription, order preserved. Any chunk failure
-    // fails the whole job, exactly like the old serial loop.
+    // fails the whole job. Each worker loads only its current chunk, so a
+    // two-hour recording does not sit in memory beside the warmed model.
     const WORKERS: usize = 3;
     let slots: Vec<Mutex<Option<Result<String, String>>>> =
         (0..total).map(|_| Mutex::new(None)).collect();
@@ -626,7 +663,7 @@ fn process_meeting_job(
             // Fresh shared references per worker: the `move` closure takes
             // copies of these while the owned values stay put for later use.
             let start = worker;
-            let raw = &raw_chunks;
+            let audio_path = job.audio_path.as_path();
             let slot_list = &slots;
             let counter = &done;
             let http = client;
@@ -637,17 +674,25 @@ fn process_meeting_job(
             scope.spawn(move || {
                 let mut index = start;
                 while index < total {
-                    let samples = raw[index]
-                        .chunks_exact(2)
-                        .map(|v| i16::from_le_bytes([v[0], v[1]]) as f32 / 32768.0)
-                        .collect();
-                    let recording = Recording {
-                        samples,
-                        sample_rate: 16_000,
-                        channels: 1,
-                    };
-                    let result =
-                        transcribe_recording_url(http, url, &recording, language);
+                    let result = read_meeting_chunk(audio_path, index, CHUNK_BYTES, pcm_bytes)
+                        .and_then(|raw| {
+                            let samples = raw
+                                .as_chunks::<2>()
+                                .0
+                                .iter()
+                                .map(|v| i16::from_le_bytes([v[0], v[1]]) as f32 / 32768.0)
+                                .collect();
+                            transcribe_recording_url(
+                                http,
+                                url,
+                                &Recording {
+                                    samples,
+                                    sample_rate: 16_000,
+                                    channels: 1,
+                                },
+                                language,
+                            )
+                        });
                     if let Ok(mut slot) = slot_list[index].lock() {
                         *slot = Some(result);
                     }
@@ -702,6 +747,32 @@ fn process_meeting_job(
         notes,
         warning,
     })
+}
+
+fn read_meeting_chunk(
+    path: &Path,
+    index: usize,
+    chunk_bytes: usize,
+    pcm_bytes: u64,
+) -> Result<Vec<u8>, String> {
+    let offset = (index as u64)
+        .checked_mul(chunk_bytes as u64)
+        .ok_or_else(|| "Meeting audio is too large".to_string())?;
+    let available = pcm_bytes
+        .checked_sub(offset)
+        .ok_or_else(|| "Meeting chunk is outside the saved audio".to_string())?;
+    if available == 0 {
+        return Err("Meeting chunk is outside the saved audio".into());
+    }
+    let count = available.min(chunk_bytes as u64) as usize;
+    let mut file =
+        fs::File::open(path).map_err(|error| format!("Could not open meeting audio: {error}"))?;
+    file.seek(SeekFrom::Start(44 + offset))
+        .map_err(|error| error.to_string())?;
+    let mut bytes = vec![0u8; count];
+    file.read_exact(&mut bytes)
+        .map_err(|error| format!("Meeting audio was truncated: {error}"))?;
+    Ok(bytes)
 }
 
 fn generate_meeting_notes(
@@ -819,7 +890,9 @@ pub fn recording_from_pcm16_wav(bytes: &[u8]) -> Result<Recording, String> {
     }
     let data = data.ok_or_else(|| "The decoded audio contains no samples.".to_string())?;
     let samples = data
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|sample| i16::from_le_bytes([sample[0], sample[1]]) as f32 / 32768.0)
         .collect::<Vec<_>>();
     if samples.is_empty() {
@@ -948,7 +1021,11 @@ impl SpeechServer {
                 "1",
                 "--no-ui",
                 "--device",
-                "cuda:0",
+                if cfg!(target_os = "macos") {
+                    "metal"
+                } else {
+                    "cuda:0"
+                },
                 "--asr-model",
             ])
             .arg(&runtime.model)
@@ -964,7 +1041,9 @@ impl SpeechServer {
         command.creation_flags(0x0800_0000);
         let mut child = command
             .spawn()
-            .map_err(|error| format!("Could not start NVIDIA speech runtime: {error}"))?;
+            .map_err(|error| format!("Could not start local speech runtime: {error}"))?;
+        #[cfg(target_os = "macos")]
+        register_speech_child(child.id());
         #[cfg(windows)]
         let job = match ProcessJob::attach(&child) {
             Ok(job) => job,
@@ -1015,12 +1094,64 @@ impl SpeechServer {
     }
 }
 
+impl Drop for SpeechServer {
+    fn drop(&mut self) {
+        // Child::drop alone leaves the local server running after Pronto exits.
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        #[cfg(target_os = "macos")]
+        {
+            let _ = SPEECH_CHILD_PID.compare_exchange(
+                self.child.id() as i32,
+                0,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+static SPEECH_CHILD_PID: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+#[cfg(target_os = "macos")]
+extern "C" fn stop_speech_child_at_exit() {
+    let pid = SPEECH_CHILD_PID.swap(0, Ordering::AcqRel);
+    if pid > 0 {
+        unsafe {
+            libc::kill(pid, libc::SIGTERM);
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+extern "C" fn stop_speech_child_on_signal(signal: i32) {
+    let pid = SPEECH_CHILD_PID.load(Ordering::Acquire);
+    if pid > 0 {
+        unsafe { libc::kill(pid, libc::SIGTERM) };
+    }
+    unsafe { libc::_exit(128 + signal) };
+}
+
+#[cfg(target_os = "macos")]
+fn register_speech_child(pid: u32) {
+    static REGISTER: std::sync::Once = std::sync::Once::new();
+    REGISTER.call_once(|| unsafe {
+        libc::atexit(stop_speech_child_at_exit);
+        libc::signal(
+            libc::SIGTERM,
+            stop_speech_child_on_signal as *const () as libc::sighandler_t,
+        );
+        libc::signal(
+            libc::SIGINT,
+            stop_speech_child_on_signal as *const () as libc::sighandler_t,
+        );
+    });
+    SPEECH_CHILD_PID.store(pid as i32, Ordering::Release);
+}
+
 fn engine_log_path() -> PathBuf {
-    std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("Pronto")
-        .join("engine.log")
+    crate::platform_paths::log_dir().join("engine.log")
 }
 
 fn log_tail(log: &mut fs::File) -> String {
@@ -1061,12 +1192,27 @@ fn locate_runtime(resource_dir: Option<&Path>) -> Result<RuntimePaths, String> {
     }
 
     for root in roots {
+        #[cfg(target_os = "macos")]
+        let executable = root.join("runtime/nemo-speech/bin/nemo-speech");
+        #[cfg(not(target_os = "macos"))]
         let executable = root.join("runtime/nemo-speech/bin/nemo-speech.exe");
+        #[cfg(target_os = "macos")]
+        let model = crate::platform_paths::data_dir()
+            .join("models")
+            .join(PARAKEET_MODEL);
+        #[cfg(not(target_os = "macos"))]
         let model = root.join("models").join(PARAKEET_MODEL);
-        if executable.is_file() && model.is_file() {
+        #[cfg(target_os = "macos")]
+        let model_ready = crate::model_provision::verified_model(&model);
+        #[cfg(not(target_os = "macos"))]
+        let model_ready = model.is_file();
+        if executable.is_file() && model_ready {
             return Ok(RuntimePaths { executable, model });
         }
     }
+    #[cfg(target_os = "macos")]
+    return Err(format!("Parakeet runtime or verified model ({PARAKEET_MODEL}) is unavailable. Check the model download in Settings."));
+    #[cfg(not(target_os = "macos"))]
     Err(format!(
         "Missing Parakeet runtime or model ({PARAKEET_MODEL}). Reinstall Pronto or set PRONTO_HOME."
     ))
@@ -1119,7 +1265,7 @@ pub(crate) fn deepseek_longform_cleanup(
     // Long interviews need room to breathe: scale output budget with input
     // length instead of the 768-token cap used for short dictations.
     let words = transcript.split_whitespace().count().max(1);
-    let max_tokens = ((words * 2 + 500).min(8192)).max(1500) as u32;
+    let max_tokens = (words * 2 + 500).clamp(1500, 8192) as u32;
     deepseek_cleanup_at(
         client,
         "https://api.deepseek.com/chat/completions",
@@ -1510,6 +1656,30 @@ mod tests {
     use std::sync::mpsc;
 
     #[test]
+    fn meeting_chunks_are_read_on_demand_in_order_and_detect_truncation() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "pronto-meeting-chunks-{}-{unique}.wav",
+            std::process::id()
+        ));
+        let mut bytes = vec![0u8; 44];
+        for value in 0i16..10 {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        fs::write(&path, &bytes).unwrap();
+        assert_eq!(read_meeting_chunk(&path, 0, 8, 20).unwrap(), bytes[44..52]);
+        assert_eq!(read_meeting_chunk(&path, 1, 8, 20).unwrap(), bytes[52..60]);
+        assert_eq!(read_meeting_chunk(&path, 2, 8, 20).unwrap(), bytes[60..64]);
+        assert!(read_meeting_chunk(&path, 3, 8, 20).is_err());
+        fs::write(&path, &bytes[..60]).unwrap();
+        assert!(read_meeting_chunk(&path, 2, 8, 20).is_err());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn creates_valid_mono_16k_wav() {
         let recording = Recording {
             samples: vec![0.1; 48_000],
@@ -1520,6 +1690,64 @@ mod tests {
         assert_eq!(&wav[0..4], b"RIFF");
         assert_eq!(&wav[8..12], b"WAVE");
         assert_eq!(u32::from_le_bytes(wav[24..28].try_into().unwrap()), 16_000);
+    }
+
+    #[test]
+    fn local_asr_request_sends_wav_and_reads_transcript() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 4096];
+            loop {
+                let read = stream.read(&mut buffer).unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if let Some(header_end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&request[..header_end]);
+                    let content_length = headers.lines().find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .and_then(|value| value.trim().parse::<usize>().ok())
+                    });
+                    if content_length.is_some_and(|length| request.len() >= header_end + 4 + length)
+                    {
+                        break;
+                    }
+                }
+            }
+            let headers_end = request
+                .windows(4)
+                .position(|part| part == b"\r\n\r\n")
+                .unwrap();
+            let headers = String::from_utf8_lossy(&request[..headers_end]);
+            assert!(headers.starts_with("POST /v1/audio/transcriptions HTTP/1.1"));
+            assert!(headers.to_ascii_lowercase().contains("multipart/form-data"));
+            assert!(request.windows(4).any(|part| part == b"RIFF"));
+            assert!(request.windows(8).any(|part| part == b"parakeet"));
+            let body = r#"{"text":"Pronto works on this Mac."}"#;
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+        });
+        let recording = Recording {
+            samples: vec![0.25; 1_600],
+            sample_rate: 16_000,
+            channels: 1,
+        };
+        let client = Client::builder()
+            .timeout(Duration::from_secs(3))
+            .build()
+            .unwrap();
+        let text =
+            transcribe_recording_url(&client, &format!("http://{address}"), &recording, "auto")
+                .unwrap();
+        assert_eq!(text, "Pronto works on this Mac.");
+        server.join().unwrap();
     }
 
     #[test]
@@ -1780,7 +2008,9 @@ mod tests {
             .map(|position| position + 8)
             .unwrap();
         let samples = bytes[data_offset..]
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|sample| i16::from_le_bytes([sample[0], sample[1]]) as f32 / i16::MAX as f32)
             .collect();
         let recording = Recording {
@@ -1794,9 +2024,11 @@ mod tests {
             .timeout(Duration::from_secs(10))
             .build()
             .unwrap();
-        let mut settings = UserSettings::default();
-        settings.cleanup_enabled = false;
-        settings.auto_insert = false;
+        let settings = UserSettings {
+            cleanup_enabled: false,
+            auto_insert: false,
+            ..UserSettings::default()
+        };
         let result = process_job(
             &client,
             &mut server,

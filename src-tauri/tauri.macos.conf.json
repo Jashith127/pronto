@@ -1,0 +1,22 @@
+{
+  "app": {
+    "macOSPrivateApi": true
+  },
+  "bundle": {
+    "targets": ["app", "dmg"],
+    "category": "Productivity",
+    "icon": ["icons/icon.icns"],
+    "resources": {
+      "../runtime/nemo-speech-macos/bin/": "runtime/nemo-speech/bin/",
+      "../runtime/nemo-speech-macos/lib/": "runtime/nemo-speech/lib/",
+      "../runtime/nemo-speech-macos/share/licenses/": "runtime/nemo-speech/share/licenses/",
+      "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
+      "resources/design-system.json": "resources/design-system.json"
+    },
+    "macOS": {
+      "minimumSystemVersion": "13.0",
+      "hardenedRuntime": true,
+      "entitlements": "Entitlements.plist"
+    }
+  }
+}

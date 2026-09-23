@@ -1,12 +1,97 @@
 const invoke = window.__TAURI__.core.invoke;
 const listen = window.__TAURI__.event.listen;
 const root = document.documentElement;
+const isMac = /Macintosh/.test(navigator.userAgent);
+if (isMac) {
+  document.querySelector('#settings-subtitle').textContent = 'Choose how Pronto listens, writes, and behaves on macOS.';
+  document.querySelector('#shortcut-help').textContent = 'Default Control + Option + Space. Choose a shortcut that does not conflict with a macOS or app shortcut.';
+  document.querySelector('#dictation-shortcut-help').textContent = 'Works globally, including modifier-only combinations such as Control + Option.';
+  document.querySelector('#close').setAttribute('aria-label', 'Close to menu bar');
+  document.querySelector('#platform-settings-heading').textContent = 'macOS';
+  document.querySelector('#capture-note').textContent = 'Use two modifiers, or Control, Option, or Command with another key. Known macOS-reserved combinations are rejected.';
+  document.querySelector('#gpu-memory-row strong').textContent = 'Release model under memory pressure';
+  document.querySelector('#gpu-memory-row p').textContent = 'Unloads Parakeet after sustained Apple unified-memory pressure. The next dictation warms it again.';
+  document.querySelector('#launch-at-startup').closest('.setting-row').querySelector('p').textContent = 'Starts Pronto silently in the menu bar without opening this window.';
+  document.querySelector('#mac-permissions').hidden = false;
+  const permissionNames = { microphone: 'microphone', accessibility: 'accessibility', 'input-monitoring': 'inputMonitoring', 'screen-recording': 'screenRecording' };
+  const permissionDescriptions = {
+    microphone: 'Needed for dictation and meeting notes.',
+    accessibility: 'Needed to insert text into the app you were using. If this still says setup after enabling Pronto, remove its old Accessibility entry, add the installed Pronto app again, then restart.',
+    'input-monitoring': 'Needed only for shortcuts made of modifier keys alone.',
+    'screen-recording': 'Needed only to record computer audio for meeting notes. Pronto does not save video.'
+  };
+  let permissionWatchTimer = null;
+  let permissionWatchKind = null;
+  async function refreshPermissions() {
+    const status = await invoke('get_macos_permissions');
+    for (const [name, property] of Object.entries(permissionNames)) {
+      const button = document.querySelector(`.permission-action[data-permission="${name}"]`);
+      button.hidden = Boolean(status[property]);
+      const description = document.querySelector(`#permission-${name}`);
+      description.textContent = status[property] ? 'Allowed in macOS System Settings.' : permissionDescriptions[name];
+    }
+    document.querySelectorAll('.mac-restart-action').forEach(button => { button.hidden = Boolean(status.accessibility); });
+    const alert = document.querySelector('#mac-permission-alert');
+    const alertButton = document.querySelector('#mac-permission-alert-action');
+    if (!status.microphone || !status.accessibility) {
+      const kind = status.microphone ? 'accessibility' : 'microphone';
+      alert.hidden = false;
+      alertButton.dataset.permission = kind;
+      document.querySelector('#mac-permission-alert-title').textContent = kind === 'microphone' ? 'Allow Microphone for dictation' : 'Allow Accessibility for automatic insertion';
+      document.querySelector('#mac-permission-alert-message').textContent = kind === 'microphone'
+        ? 'Pronto needs your microphone to record speech locally.'
+        : 'Pronto can transcribe now, but macOS will only let it write into other apps after you allow Accessibility. If Pronto already looks enabled in System Settings, remove its old entry, add the installed app again, then restart Pronto.';
+    } else {
+      alert.hidden = true;
+    }
+    if (permissionWatchKind && status[permissionNames[permissionWatchKind]] && permissionWatchTimer) {
+      clearInterval(permissionWatchTimer);
+      permissionWatchTimer = null;
+      permissionWatchKind = null;
+    }
+  }
+  function watchPermissions(kind) {
+    if (permissionWatchTimer) clearInterval(permissionWatchTimer);
+    permissionWatchKind = kind;
+    let checks = 0;
+    permissionWatchTimer = setInterval(() => {
+      if (++checks > 120) {
+        clearInterval(permissionWatchTimer);
+        permissionWatchTimer = null;
+        permissionWatchKind = null;
+        return;
+      }
+      refreshPermissions().catch(() => {});
+    }, 1000);
+  }
+  document.querySelectorAll('.permission-action').forEach(button => button.addEventListener('click', async () => {
+    const kind = button.dataset.permission;
+    if (kind === 'microphone' || kind === 'input-monitoring' || kind === 'screen-recording') {
+      await call('request_macos_permission', { kind });
+    }
+    if (kind !== 'microphone') await call('open_macos_permission_settings', { kind });
+    watchPermissions(kind);
+  }));
+  document.querySelector('#mac-permission-alert-action').addEventListener('click', async event => {
+    const kind = event.currentTarget.dataset.permission;
+    if (kind === 'microphone') await call('request_macos_permission', { kind });
+    else await call('open_macos_permission_settings', { kind });
+    watchPermissions(kind);
+  });
+  document.querySelectorAll('.mac-restart-action').forEach(button => button.addEventListener('click', () => {
+    call('restart_pronto').catch(() => {});
+  }));
+  window.addEventListener('focus', () => refreshPermissions().catch(() => {}));
+  refreshPermissions().catch(() => {});
+}
 const toast = document.querySelector('#toast');
 const hotkeyDialog = document.querySelector('#hotkey-dialog');
 const hotkeyCapture = document.querySelector('#hotkey-capture');
 let preferences = null;
 let hotkeyStatus = null;
 let microphoneStatus = null;
+let microphoneRetryTimer = null;
+let microphoneLoading = false;
 let history = [];
 let engineStatus = null;
 let pendingShortcut = '';
@@ -15,6 +100,7 @@ let meetings = [];
 let selectedMeetingId = null;
 let meetingRecording = false;
 let meetingStartedAt = 0;
+let modelInstallAnnounced = false;
 
 function showToast(text, error = false) {
   toast.textContent = text;
@@ -48,6 +134,36 @@ function renderStatus(next) {
 
 function renderModel(next) {
   document.querySelector('#engine-message').textContent = next.message;
+  if (isMac && next.ready) {
+    document.querySelector('#model-install-message').textContent = 'Model verified and ready for offline speech.';
+  }
+}
+
+function renderModelInstall(next) {
+  const row = document.querySelector('#model-install-row');
+  if (!isMac || !next) return;
+  row.hidden = false;
+  if (!modelInstallAnnounced && ['downloading', 'error'].includes(next.phase)) {
+    modelInstallAnnounced = true;
+    setView('settings');
+  }
+  document.querySelector('#model-install-message').textContent = next.message;
+  const progress = document.querySelector('#model-install-progress');
+  progress.hidden = next.phase !== 'downloading';
+  progress.value = next.totalBytes ? Math.round(next.downloadedBytes * 100 / next.totalBytes) : 0;
+  const action = document.querySelector('#model-install-action');
+  action.hidden = !['downloading', 'error', 'cancelled'].includes(next.phase);
+  action.textContent = next.phase === 'downloading' ? 'Cancel' : 'Retry';
+  action.dataset.action = next.phase === 'downloading' ? 'cancel' : 'retry';
+}
+
+if (isMac) {
+  call('get_model_install_status').then(renderModelInstall).catch(() => {});
+  document.querySelector('#model-install-action').addEventListener('click', async event => {
+    const command = event.currentTarget.dataset.action === 'cancel' ? 'cancel_model_install' : 'retry_model_install';
+    await call(command);
+  });
+  listen('model-install-status', event => renderModelInstall(event.payload));
 }
 
 function historyMarkup(entries) {
@@ -96,7 +212,9 @@ function renderDictionary() {
 }
 
 function keyLabel(token) {
-  const labels = { control: 'Ctrl', alt: 'Alt', shift: 'Shift', super: 'Win', Space: 'Space', ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→' };
+  const labels = isMac
+    ? { control: '⌃', alt: '⌥', shift: '⇧', super: '⌘', Space: 'Space', ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→' }
+    : { control: 'Ctrl', alt: 'Alt', shift: 'Shift', super: 'Win', Space: 'Space', ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→' };
   if (labels[token]) return labels[token];
   if (token.startsWith('Key')) return token.slice(3);
   if (token.startsWith('Digit')) return token.slice(5);
@@ -123,11 +241,13 @@ function renderHotkey(next) {
 function renderMicrophones() {
   if (!microphoneStatus) return;
   const select = document.querySelector('#microphone');
+  select.disabled = false;
+  document.querySelector('#microphone-retry').hidden = true;
   const defaultDevice = microphoneStatus.devices.find(device => device.isDefault);
   const systemDefault = defaultDevice ? `System default — ${defaultDevice.name}` : 'System default';
   const options = [{ id: '', name: systemDefault }, ...microphoneStatus.devices.map(device => ({ id: device.id, name: device.name }))];
   if (microphoneStatus.selectedId && !options.some(option => option.id === microphoneStatus.selectedId)) {
-    options.push({ id: microphoneStatus.selectedId, name: `${preferences.settings.microphoneName || 'Saved microphone'} — unavailable` });
+    options.push({ id: microphoneStatus.selectedId, name: `${preferences?.settings?.microphoneName || 'Saved microphone'} — unavailable` });
   }
   select.innerHTML = options.map(option => `<option value="${escapeAttr(option.id)}">${escapeHtml(option.name)}</option>`).join('');
   select.value = microphoneStatus.selectedId || '';
@@ -135,6 +255,28 @@ function renderMicrophones() {
     ? `Saved microphone unavailable — using ${microphoneStatus.activeName}`
     : `Using ${microphoneStatus.activeName}`;
 }
+
+async function retryMicrophones() {
+  if (microphoneLoading) return;
+  microphoneLoading = true;
+  clearTimeout(microphoneRetryTimer);
+  const retry = document.querySelector('#microphone-retry');
+  const select = document.querySelector('#microphone');
+  retry.hidden = true;
+  select.disabled = true;
+  document.querySelector('#microphone-status').textContent = 'Checking available microphones…';
+  try {
+    microphoneStatus = await invoke('get_microphones');
+    renderMicrophones();
+  } catch (_) {
+    document.querySelector('#microphone-status').textContent = 'Could not list microphones. Check Microphone access, then retry.';
+    select.innerHTML = '<option>Unavailable</option>';
+    retry.hidden = false;
+  } finally {
+    microphoneLoading = false;
+  }
+}
+document.querySelector('#microphone-retry').addEventListener('click', retryMicrophones);
 
 function themePreviewLabel(pref) {
   if (pref === 'light') return 'Light mode';
@@ -164,7 +306,7 @@ function renderPreferences() {
   document.querySelector('#meeting-suggestions').checked = preferences.settings.meetingSuggestions !== false;
   document.querySelector('#language').value = preferences.settings.language;
   document.querySelectorAll('[data-activation]').forEach(button => button.classList.toggle('active', button.dataset.activation === preferences.settings.activationMode));
-  document.querySelector('#api-status').textContent = preferences.apiKeyConfigured ? 'Stored securely in Windows Credential Manager' : 'Not configured — local cleanup will be used';
+  document.querySelector('#api-status').textContent = preferences.apiKeyConfigured ? (isMac ? 'Stored securely in macOS Keychain' : 'Stored securely in Windows Credential Manager') : 'Not configured — local cleanup will be used';
   const promptInput = document.querySelector('#cleanup-prompt');
   const effectivePrompt = preferences.settings.cleanupPrompt || preferences.defaultCleanupPrompt;
   if (document.activeElement !== promptInput) promptInput.value = effectivePrompt;
@@ -284,9 +426,9 @@ function openHotkeyDialog(target = 'dictation') {
     search: 'Set voice search shortcut',
   };
   const descriptions = {
-    dictation: 'Press your combination, then save it. Modifier-only chords such as Win + Ctrl are supported.',
+    dictation: isMac ? 'Press your combination, then save it. Modifier-only chords such as Control + Option are supported.' : 'Press your combination, then save it. Modifier-only chords such as Win + Ctrl are supported.',
     paste: 'Press the combination that pastes your last transcript, then save it.',
-    search: 'Press the combination for voice search, then save it. Default is Win + Space. Windows may also switch keyboard layouts for that chord. The Fn key cannot be used.',
+    search: isMac ? 'Press the combination for voice search, then save it. Default is Control + Option + S.' : 'Press the combination for voice search, then save it. Default is Win + Space. Windows may also switch keyboard layouts for that chord. The Fn key cannot be used.',
   };
   document.querySelector('#hotkey-dialog-title').textContent = titles[target] || titles.dictation;
   document.querySelector('#hotkey-dialog-desc').textContent = descriptions[target] || descriptions.dictation;
@@ -1181,27 +1323,37 @@ document.querySelector('#meeting-toggle')?.addEventListener('click', async event
 });
 setInterval(() => { if (meetingRecording) renderMeetingStatus(); }, 1000);
 
-Promise.all([
+Promise.allSettled([
   call('get_status'),
   call('get_model_status'),
   call('get_preferences'),
   call('get_history'),
   call('get_hotkey_status'),
-  call('get_microphones'),
+  invoke('get_microphones'),
   call('get_meetings'),
   call('get_meeting_status')
-]).then(([engine, model, prefs, items, shortcut, microphones, savedMeetings, currentMeeting]) => {
-  preferences = prefs;
-  microphoneStatus = microphones;
-  history = items;
-  meetings = savedMeetings;
-  meetingRecording = currentMeeting.recording;
-  if (meetingRecording) meetingStartedAt = Date.now() - Number(currentMeeting.elapsedSeconds || 0) * 1000;
-  renderStatus(engine);
-  renderModel(model);
-  renderPreferences();
-  renderHistory();
-  renderHotkey(shortcut);
+]).then(results => {
+  const [engine, model, prefs, items, shortcut, microphones, savedMeetings, currentMeeting] =
+    results.map(result => result.status === 'fulfilled' ? result.value : null);
+  if (prefs) { preferences = prefs; renderPreferences(); }
+  if (microphones) { microphoneStatus = microphones; renderMicrophones(); }
+  else {
+    document.querySelector('#microphone-status').textContent = 'Could not list microphones. Check Microphone access, then retry.';
+    document.querySelector('#microphone').innerHTML = '<option>Unavailable</option>';
+    document.querySelector('#microphone-retry').hidden = false;
+    microphoneRetryTimer = setTimeout(retryMicrophones, 4000);
+  }
+  if (items) { history = items; renderHistory(); }
+  if (savedMeetings) meetings = savedMeetings;
+  if (currentMeeting) {
+    meetingRecording = currentMeeting.recording;
+    if (meetingRecording) meetingStartedAt = Date.now() - Number(currentMeeting.elapsedSeconds || 0) * 1000;
+  }
+  if (engine) renderStatus(engine);
+  if (model) renderModel(model);
+  if (shortcut) renderHotkey(shortcut);
   renderMeetingStatus();
   renderMeetings();
+  const failed = results.map((result, index) => result.status === 'rejected' && index !== 5 ? `${['status', 'model', 'settings', 'history', 'shortcuts', 'microphones', 'meetings', 'meeting status'][index]}: ${result.reason}` : null).filter(Boolean);
+  if (failed.length) showToast(`Could not load ${failed.join('; ')}`, true);
 });

@@ -7,8 +7,7 @@ use windows::Win32::Graphics::Gdi::{
     BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ,
 };
 use windows::Win32::System::Threading::{
-    OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT,
-    PROCESS_QUERY_LIMITED_INFORMATION,
+    OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::Shell::ExtractIconExW;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -60,11 +59,7 @@ pub fn icon_for_window(hwnd: HWND) -> Option<MeetingIcon> {
         {
             return None;
         }
-        let icon = if !large.is_invalid() {
-            large
-        } else {
-            small
-        };
+        let icon = if !large.is_invalid() { large } else { small };
         let result = if icon.is_invalid() {
             None
         } else {

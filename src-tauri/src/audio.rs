@@ -2,7 +2,10 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, SampleFormat, Stream, StreamConfig, SupportedStreamConfig};
 use serde::Serialize;
 use std::sync::{mpsc, Arc, Mutex};
+use std::time::Duration;
+#[cfg(windows)]
 use windows::core::PSTR;
+#[cfg(windows)]
 use windows::Win32::Media::Audio::{
     waveInAddBuffer, waveInClose, waveInOpen, waveInPrepareHeader, waveInReset, waveInStart,
     waveInStop, waveInUnprepareHeader, CALLBACK_NULL, HWAVEIN, WAVEFORMATEX, WAVEHDR,
@@ -43,6 +46,7 @@ struct ActiveMicrophone {
 struct AudioCapture {
     samples: Arc<Mutex<Vec<f32>>>,
     stream: Option<Stream>,
+    #[cfg(windows)]
     wave_in: Option<WaveInCapture>,
     sample_rate: u32,
     channels: u16,
@@ -54,6 +58,7 @@ impl Default for AudioCapture {
         Self {
             samples: Arc::new(Mutex::new(Vec::new())),
             stream: None,
+            #[cfg(windows)]
             wave_in: None,
             sample_rate: 0,
             channels: 0,
@@ -64,7 +69,14 @@ impl Default for AudioCapture {
 
 impl AudioCapture {
     pub fn prepare(&mut self, selected_id: Option<&str>) -> Result<ActiveMicrophone, String> {
-        if self.stream.is_some() || self.wave_in.is_some() {
+        if self.stream.is_some() {
+            return self
+                .active
+                .clone()
+                .ok_or_else(|| "Prepared microphone is unavailable".to_string());
+        }
+        #[cfg(windows)]
+        if self.wave_in.is_some() {
             return self
                 .active
                 .clone()
@@ -141,7 +153,8 @@ impl AudioCapture {
             ));
         }
 
-        match WaveInCapture::prepare() {
+        #[cfg(windows)]
+        return match WaveInCapture::prepare() {
             Ok(capture) => {
                 self.sample_rate = capture.sample_rate;
                 self.channels = capture.channels;
@@ -158,7 +171,12 @@ impl AudioCapture {
                 "Could not open {device_name}. WASAPI tried: {}. WinMM fallback: {wave_error}",
                 failures.join("; ")
             )),
-        }
+        };
+        #[cfg(not(windows))]
+        Err(format!(
+            "Could not open {device_name}. CoreAudio tried: {}",
+            failures.join("; ")
+        ))
     }
 
     pub fn start(&mut self) -> Result<ActiveMicrophone, String> {
@@ -170,6 +188,7 @@ impl AudioCapture {
             .lock()
             .map_err(|_| "audio buffer poisoned")?
             .clear();
+        #[cfg(windows)]
         if let Some(capture) = self.wave_in.as_mut() {
             capture.start()?;
             return Ok(active);
@@ -183,6 +202,7 @@ impl AudioCapture {
     }
 
     pub fn stop(&mut self) -> Result<Recording, String> {
+        #[cfg(windows)]
         if let Some(capture) = self.wave_in.as_mut() {
             return capture.stop();
         }
@@ -205,6 +225,7 @@ impl AudioCapture {
 /// format but reject `IAudioClient::Initialize`. The system wave mapper handles
 /// conversion to a simple PCM format and is available on every supported Windows
 /// version.
+#[cfg(windows)]
 struct WaveInCapture {
     handle: HWAVEIN,
     buffer: Vec<i16>,
@@ -213,6 +234,7 @@ struct WaveInCapture {
     channels: u16,
 }
 
+#[cfg(windows)]
 impl WaveInCapture {
     fn prepare() -> Result<Self, String> {
         const MAX_SECONDS: usize = 300;
@@ -308,6 +330,7 @@ impl WaveInCapture {
     }
 }
 
+#[cfg(windows)]
 impl Drop for WaveInCapture {
     fn drop(&mut self) {
         if self.handle.is_invalid() {
@@ -327,7 +350,7 @@ fn build_input_stream(
     supported: &SupportedStreamConfig,
     shared: &Arc<Mutex<Vec<f32>>>,
 ) -> Result<Stream, cpal::Error> {
-    let config: StreamConfig = supported.clone().into();
+    let config: StreamConfig = (*supported).into();
     match supported.sample_format() {
         SampleFormat::F32 => {
             let buffer = Arc::clone(shared);
@@ -404,7 +427,12 @@ impl AudioController {
                             if result.is_ok() {
                                 recording = true;
                             }
-                            let _ = reply.send(result);
+                            if reply.send(result).is_err() && recording {
+                                // The caller timed out while the device was opening.
+                                // Do not leave capture running without a live dictation.
+                                let _ = capture.stop();
+                                recording = false;
+                            }
                         }
                         AudioCommand::Stop(reply) => {
                             let result = capture.stop();
@@ -491,10 +519,7 @@ impl AudioController {
         self.commands
             .send(AudioCommand::Start(reply))
             .map_err(|_| "audio thread stopped".to_string())?;
-        response
-            .recv()
-            .map_err(|_| "audio thread stopped".to_string())?
-            .map(|active| active.name)
+        receive_audio_reply(response, "start", Duration::from_secs(10)).map(|active| active.name)
     }
 
     pub fn stop(&self) -> Result<Recording, String> {
@@ -502,9 +527,7 @@ impl AudioController {
         self.commands
             .send(AudioCommand::Stop(reply))
             .map_err(|_| "audio thread stopped".to_string())?;
-        response
-            .recv()
-            .map_err(|_| "audio thread stopped".to_string())?
+        receive_audio_reply(response, "stop", Duration::from_secs(15))
     }
 
     pub fn status(&self) -> Result<MicrophoneStatus, String> {
@@ -512,9 +535,7 @@ impl AudioController {
         self.commands
             .send(AudioCommand::Status(reply))
             .map_err(|_| "audio thread stopped".to_string())?;
-        response
-            .recv()
-            .map_err(|_| "audio thread stopped".to_string())?
+        receive_audio_reply(response, "list microphones", Duration::from_secs(5))
     }
 
     /// Re-negotiates the prewarmed capture stream on the current device.
@@ -524,9 +545,7 @@ impl AudioController {
         self.commands
             .send(AudioCommand::Reprepare(reply))
             .map_err(|_| "audio thread stopped".to_string())?;
-        response
-            .recv()
-            .map_err(|_| "audio thread stopped".to_string())?
+        receive_audio_reply(response, "prepare microphone", Duration::from_secs(15))
             .map(|active| active.name)
     }
 
@@ -535,10 +554,23 @@ impl AudioController {
         self.commands
             .send(AudioCommand::Select(device_id, reply))
             .map_err(|_| "audio thread stopped".to_string())?;
-        response
-            .recv()
-            .map_err(|_| "audio thread stopped".to_string())?
+        receive_audio_reply(response, "select microphone", Duration::from_secs(20))
     }
+}
+
+fn receive_audio_reply<T>(
+    response: mpsc::Receiver<Result<T, String>>,
+    operation: &str,
+    timeout: Duration,
+) -> Result<T, String> {
+    response
+        .recv_timeout(timeout)
+        .map_err(|error| match error {
+            mpsc::RecvTimeoutError::Timeout => {
+                format!("Timed out waiting to {operation}; check the microphone in system settings")
+            }
+            mpsc::RecvTimeoutError::Disconnected => "audio thread stopped".to_string(),
+        })?
 }
 
 fn device_id(device: &Device) -> Result<String, String> {
@@ -615,8 +647,6 @@ fn append_u16(buffer: &Mutex<Vec<f32>>, data: &[u16]) {
 mod tests {
     use super::*;
     use std::time::Duration;
-
-
 
     /// Hardware validation for release checks. It is ignored during ordinary
     /// unit tests because CI machines may not expose a microphone.

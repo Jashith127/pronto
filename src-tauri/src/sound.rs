@@ -1,8 +1,22 @@
+#[cfg(target_os = "macos")]
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+#[cfg(target_os = "macos")]
+use cpal::{SampleFormat, StreamConfig};
 use std::f32::consts::TAU;
+#[cfg(windows)]
 use std::mem::size_of;
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+#[cfg(target_os = "macos")]
+use std::sync::{
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+    Arc,
+};
+use std::time::Duration;
+#[cfg(windows)]
+use std::time::Instant;
+#[cfg(windows)]
 use windows::core::PSTR;
+#[cfg(windows)]
 use windows::Win32::Media::Audio::{
     waveOutClose, waveOutOpen, waveOutPrepareHeader, waveOutReset, waveOutUnprepareHeader,
     waveOutWrite, CALLBACK_NULL, HWAVEOUT, WAVEFORMATEX, WAVEHDR, WAVE_FORMAT_PCM, WAVE_MAPPER,
@@ -64,6 +78,7 @@ impl SoundController {
     }
 }
 
+#[cfg(windows)]
 fn play_pcm(samples: &mut [i16]) -> Result<(), String> {
     let format = WAVEFORMATEX {
         wFormatTag: WAVE_FORMAT_PCM as u16,
@@ -130,6 +145,141 @@ fn play_pcm(samples: &mut [i16]) -> Result<(), String> {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn play_pcm(samples: &mut [i16]) -> Result<(), String> {
+    let device = cpal::default_host()
+        .default_output_device()
+        .ok_or_else(|| "No audio output device is available".to_string())?;
+    let supported = device
+        .default_output_config()
+        .map_err(|error| format!("Could not configure cue output: {error}"))?;
+    let config: StreamConfig = supported.into();
+    let channels = usize::from(config.channels);
+    let rate = config.sample_rate;
+    let samples = Arc::new(samples.to_vec());
+    let cursor = Arc::new(AtomicUsize::new(0));
+    let completed = Arc::new(AtomicBool::new(false));
+    let (done, result) = mpsc::channel();
+    let error_sender = done.clone();
+    let on_error = move |error| {
+        let _ = error_sender.send(Err(format!("Cue output failed: {error}")));
+    };
+    let stream = match supported.sample_format() {
+        SampleFormat::F32 => {
+            let (samples, cursor, completed, done) = (
+                Arc::clone(&samples),
+                Arc::clone(&cursor),
+                Arc::clone(&completed),
+                done.clone(),
+            );
+            device.build_output_stream(
+                config,
+                move |data: &mut [f32], _| {
+                    fill_cue(
+                        data,
+                        channels,
+                        rate,
+                        &samples,
+                        &cursor,
+                        &completed,
+                        &done,
+                        |sample| sample as f32 / 32768.0,
+                        0.0,
+                    )
+                },
+                on_error,
+                None,
+            )
+        }
+        SampleFormat::I16 => {
+            let (samples, cursor, completed, done) = (
+                Arc::clone(&samples),
+                Arc::clone(&cursor),
+                Arc::clone(&completed),
+                done.clone(),
+            );
+            device.build_output_stream(
+                config,
+                move |data: &mut [i16], _| {
+                    fill_cue(
+                        data,
+                        channels,
+                        rate,
+                        &samples,
+                        &cursor,
+                        &completed,
+                        &done,
+                        |sample| sample,
+                        0,
+                    )
+                },
+                on_error,
+                None,
+            )
+        }
+        SampleFormat::U16 => {
+            let (samples, cursor, completed, done) = (
+                Arc::clone(&samples),
+                Arc::clone(&cursor),
+                Arc::clone(&completed),
+                done.clone(),
+            );
+            device.build_output_stream(
+                config,
+                move |data: &mut [u16], _| {
+                    fill_cue(
+                        data,
+                        channels,
+                        rate,
+                        &samples,
+                        &cursor,
+                        &completed,
+                        &done,
+                        |sample| (i32::from(sample) + 32768) as u16,
+                        32768,
+                    )
+                },
+                on_error,
+                None,
+            )
+        }
+        other => return Err(format!("Unsupported cue output format: {other:?}")),
+    }
+    .map_err(|error| format!("Could not open cue output: {error}"))?;
+    stream
+        .play()
+        .map_err(|error| format!("Could not play cue: {error}"))?;
+    result
+        .recv_timeout(Duration::from_millis(500))
+        .map_err(|_| "Cue output timed out".to_string())?
+}
+
+#[cfg(target_os = "macos")]
+#[allow(clippy::too_many_arguments)]
+fn fill_cue<T: Copy>(
+    output: &mut [T],
+    channels: usize,
+    output_rate: u32,
+    samples: &[i16],
+    cursor: &AtomicUsize,
+    completed: &AtomicBool,
+    done: &mpsc::Sender<Result<(), String>>,
+    convert: impl Fn(i16) -> T,
+    silence: T,
+) {
+    for frame in output.chunks_mut(channels) {
+        let frame_index = cursor.fetch_add(1, Ordering::Relaxed);
+        let sample_index = frame_index * SAMPLE_RATE as usize / output_rate as usize;
+        let sample = samples.get(sample_index).copied();
+        for channel in frame {
+            *channel = sample.map(&convert).unwrap_or(silence);
+        }
+        if sample.is_none() && !completed.swap(true, Ordering::Relaxed) {
+            let _ = done.send(Ok(()));
+        }
+    }
+}
+
 /// Modern two-tone UI blips: discrete low notes (A3 <-> E4) with a fast
 /// attack and exponential decay. No pitch glide, so nothing chirps or
 /// bubbles; direction alone tells start (ascending) from stop
@@ -149,18 +299,12 @@ fn make_cue(starts: bool) -> Vec<i16> {
         // Endpoints in low-power idle (notably Bluetooth headsets) can
         // swallow the first tens of milliseconds after opening. Leading
         // silence wakes the route so the audible notes arrive complete.
-        samples.extend(std::iter::repeat_n(
-            0,
-            (SAMPLE_RATE * 70 / 1_000) as usize,
-        ));
+        samples.extend(std::iter::repeat_n(0, (SAMPLE_RATE * 70 / 1_000) as usize));
     }
     for (note_index, &(frequency, duration_ms, target_peak)) in notes.iter().enumerate() {
         if note_index > 0 {
             // 6 ms of silence between notes keeps the two tones distinct.
-            samples.extend(std::iter::repeat_n(
-                0,
-                (SAMPLE_RATE * 6 / 1_000) as usize,
-            ));
+            samples.extend(std::iter::repeat_n(0, (SAMPLE_RATE * 6 / 1_000) as usize));
         }
         let note_samples = (SAMPLE_RATE * duration_ms / 1_000) as usize;
         // Synthesize unscaled first so the note can be normalized to its
@@ -174,9 +318,7 @@ fn make_cue(starts: bool) -> Vec<i16> {
             phase += TAU * frequency / SAMPLE_RATE as f32;
             let attack = (time / 0.004).min(1.0);
             let decay = (-3.2 * time / length).exp();
-            let tone = phase.sin() * 0.72
-                + (phase * 2.0).sin() * 0.20
-                + (phase * 3.0).sin() * 0.08;
+            let tone = phase.sin() * 0.72 + (phase * 2.0).sin() * 0.20 + (phase * 3.0).sin() * 0.08;
             note.push(tone * attack * decay);
         }
         let peak = note

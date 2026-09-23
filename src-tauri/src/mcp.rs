@@ -84,9 +84,16 @@ fn load_design_system(resource_dir: Option<&Path>) -> Result<Value, String> {
 }
 
 fn local_override_path() -> Option<PathBuf> {
-    std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .map(|dir| dir.join("Pronto").join("design-system.json"))
+    #[cfg(windows)]
+    {
+        std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .map(|dir| dir.join("Pronto").join("design-system.json"))
+    }
+    #[cfg(not(windows))]
+    {
+        Some(crate::platform_paths::data_dir().join("design-system.json"))
+    }
 }
 
 #[cfg(test)]
@@ -104,9 +111,9 @@ mod tests {
             .get("components")
             .and_then(|v| v.as_array())
             .expect("components array");
-        assert!(components.iter().any(|component| {
-            component.get("type").and_then(|v| v.as_str()) == Some("chart")
-        }));
+        assert!(components
+            .iter()
+            .any(|component| { component.get("type").and_then(|v| v.as_str()) == Some("chart") }));
         assert!(components.iter().any(|component| {
             component.get("type").and_then(|v| v.as_str()) == Some("source_list")
         }));

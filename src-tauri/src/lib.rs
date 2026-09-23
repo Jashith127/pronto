@@ -1,24 +1,57 @@
 mod audio;
 mod engine;
 mod gpu_memory;
+#[cfg(windows)]
 mod hotkey;
+#[cfg(target_os = "macos")]
+#[path = "platform/macos/hotkey.rs"]
+mod hotkey;
+#[cfg(windows)]
 mod insert;
+#[cfg(target_os = "macos")]
+#[path = "platform/macos/insert.rs"]
+mod insert;
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 mod mcp;
 mod meeting;
-#[cfg(windows)]
 mod meeting_detector;
 #[cfg(windows)]
 mod meeting_icon;
+#[cfg(target_os = "macos")]
+#[path = "platform/macos/meeting_icon.rs"]
+mod meeting_icon;
+#[cfg(target_os = "macos")]
+mod model_provision;
+#[cfg(target_os = "macos")]
+#[path = "platform/macos/navigation.rs"]
+mod navigation;
+#[cfg(target_os = "macos")]
+#[path = "platform/macos/permissions.rs"]
+mod permissions;
 mod pipeline;
+mod platform_paths;
 #[cfg(windows)]
 mod power;
+#[cfg(target_os = "macos")]
+#[path = "platform/macos/power.rs"]
+mod power;
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 mod search;
 mod settings;
 #[cfg(windows)]
 mod single_instance;
 mod sound;
+#[cfg(windows)]
 mod startup;
+#[cfg(target_os = "macos")]
+#[path = "platform/macos/startup.rs"]
+mod startup;
+#[cfg(windows)]
 mod system_audio;
+#[cfg(target_os = "macos")]
+#[path = "platform/macos/system_audio.rs"]
+mod system_audio;
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 mod ui_schema;
 
 use audio::{AudioController, MicrophoneStatus};
@@ -29,15 +62,14 @@ use engine::{
 use hotkey::{Hotkey, HotkeyController, HotkeyEvent, HotkeyId, HotkeyStatus};
 use pipeline::{EngineStatus, Phase, Pipeline};
 use search::{
-    DuckDuckGoProvider, SearchController, SearchPhase, SearchProvider,
-    SearchResultPayload,
+    DuckDuckGoProvider, SearchController, SearchPhase, SearchProvider, SearchResultPayload,
     SearchStatus,
 };
 use settings::{ActivationMode, AppPreferences, HistoryEntry, SettingsStore, UserSettings};
 use sound::SoundController;
 use std::collections::HashMap;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, Mutex,
 };
 use std::time::{Duration, Instant};
@@ -78,6 +110,9 @@ pub(crate) struct AppState {
     meeting_tray_item: Mutex<Option<MenuItem<tauri::Wry>>>,
     detector_control: Arc<meeting_detector::DetectorControl>,
     dictation_active: Arc<AtomicBool>,
+    /// A delayed hide may only close the overlay that scheduled it. New
+    /// dictation and meeting surfaces advance this before becoming visible.
+    overlay_generation: AtomicU64,
     /// Last check-in from the dictation overlay page (`overlay_heartbeat`
     /// command, sent on load and every few seconds while visible). A quiet
     /// page means its renderer is dead or wedged: dictation still works, but
@@ -104,6 +139,9 @@ fn sync_meeting_tray_item(app: &AppHandle, recording: bool) {
 }
 
 impl AppState {
+    pub(crate) fn claim_overlay(&self) {
+        self.overlay_generation.fetch_add(1, Ordering::AcqRel);
+    }
     pub(crate) fn meeting_suggestions_enabled(&self) -> bool {
         self.settings
             .snapshot()
@@ -188,7 +226,11 @@ impl AppState {
             model_status: Mutex::new(ModelStatus {
                 ready: false,
                 message: "Starting local speech engine…".into(),
-                backend: "NVIDIA Parakeet TDT 0.6B v3 · CUDA".into(),
+                backend: if cfg!(target_os = "macos") {
+                    "NVIDIA Parakeet TDT 0.6B v3 · Metal".into()
+                } else {
+                    "NVIDIA Parakeet TDT 0.6B v3 · CUDA".into()
+                },
             }),
             active_shortcut: Mutex::new(active_shortcut),
             paste_shortcut: Mutex::new(paste_shortcut),
@@ -202,6 +244,7 @@ impl AppState {
             meeting_tray_item: Mutex::new(None),
             detector_control: Arc::new(meeting_detector::DetectorControl::new()),
             dictation_active: Arc::new(AtomicBool::new(false)),
+            overlay_generation: AtomicU64::new(0),
             overlay_heartbeat: Mutex::new(None),
             search_blur_dismiss: AtomicBool::new(false),
         }
@@ -294,7 +337,29 @@ pub(crate) fn set_model_status(app: &AppHandle, status: ModelStatus) {
     let _ = app.emit("model-status", status);
 }
 
+#[cfg(target_os = "macos")]
+fn log_dictation_step(step: &str) {
+    use std::io::Write;
+    let path = platform_paths::log_dir().join("dictation.log");
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let seconds = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|value| value.as_secs())
+            .unwrap_or_default();
+        let _ = writeln!(file, "{seconds} {step}");
+    }
+}
+
 fn begin_recording(app: &AppHandle) -> Result<EngineStatus, String> {
+    #[cfg(target_os = "macos")]
+    log_dictation_step("begin requested");
     let state = app.state::<AppState>();
     if state.search.is_busy() {
         return Err("Voice search is in progress. Finish or cancel it before dictating.".into());
@@ -305,11 +370,20 @@ fn begin_recording(app: &AppHandle) -> Result<EngineStatus, String> {
         );
     }
     let settings = state.settings.snapshot()?;
+    #[cfg(target_os = "macos")]
+    if settings.auto_insert && !insert::accessibility_trusted() {
+        let _ = app.emit(
+            "tray-message",
+            serde_json::json!({ "message": "Allow Accessibility for Pronto to insert dictated text. Until then, transcripts remain in History; your clipboard is unchanged.", "error": true }),
+        );
+    }
     let mut pipeline = state
         .pipeline
         .lock()
         .map_err(|_| "pipeline lock poisoned")?;
     if !pipeline.begin() {
+        #[cfg(target_os = "macos")]
+        log_dictation_step("begin ignored: pipeline already active");
         return Ok(pipeline.status.clone());
     }
     state.dictation_active.store(true, Ordering::Release);
@@ -318,7 +392,7 @@ fn begin_recording(app: &AppHandle) -> Result<EngineStatus, String> {
         ActivationMode::Toggle => "Listening… press your shortcut again to finish".into(),
     };
 
-    let initial_target = insert::foreground_window();
+    let initial_target = insert::preferred_target();
     *state
         .target_window
         .lock()
@@ -329,8 +403,7 @@ fn begin_recording(app: &AppHandle) -> Result<EngineStatus, String> {
     // plays late on the settled link instead (capture still starts
     // instantly, so no speech is lost); everywhere else it plays up front
     // on the stable route at full volume.
-    let bluetooth_route =
-        settings.dictation_sounds && system_audio::default_render_is_bluetooth();
+    let bluetooth_route = settings.dictation_sounds && system_audio::default_render_is_bluetooth();
     if settings.dictation_sounds && !bluetooth_route {
         // Ducking still happens afterwards so it never touches the cue.
         if let Err(error) = state.sounds.start_and_wait() {
@@ -349,11 +422,16 @@ fn begin_recording(app: &AppHandle) -> Result<EngineStatus, String> {
     };
     match microphone {
         Err(error) => {
+            #[cfg(target_os = "macos")]
+            log_dictation_step(&format!("microphone failed: {error}"));
             state.insertion_target.cancel();
+            state.dictation_active.store(false, Ordering::Release);
             let _ = state.system_audio.restore();
             pipeline.fail(format!("Microphone unavailable: {error}"));
         }
         Ok(microphone_name) => {
+            #[cfg(target_os = "macos")]
+            log_dictation_step("microphone started");
             if bluetooth_route {
                 let cue_app = app.clone();
                 let duck_after_cue = settings.duck_audio;
@@ -403,6 +481,7 @@ fn begin_recording(app: &AppHandle) -> Result<EngineStatus, String> {
                     show
                 })
                 .unwrap_or(false);
+            state.claim_overlay();
             // Capture is already running, so a sick overlay page can reload
             // here without losing speech; the pill just appears a beat late.
             ensure_overlay_page(app);
@@ -410,13 +489,23 @@ fn begin_recording(app: &AppHandle) -> Result<EngineStatus, String> {
                 let microphone_width = show_microphone
                     .then(|| (microphone_name.chars().count() as f64 * 6.2 + 24.0).max(96.0));
                 position_overlay(&overlay, microphone_width);
-                let _ = overlay.show();
+                let shown = overlay.show();
+                #[cfg(target_os = "macos")]
+                log_dictation_step(&format!(
+                    "overlay show: {shown:?}; visible: {:?}; position: {:?}",
+                    overlay.is_visible(),
+                    overlay.outer_position()
+                ));
                 if show_microphone {
                     let _ = app.emit(
                         "microphone-activated",
                         serde_json::json!({ "name": microphone_name }),
                     );
                 }
+            }
+            #[cfg(target_os = "macos")]
+            if app.get_webview_window("overlay").is_none() {
+                log_dictation_step("overlay window missing");
             }
         }
     }
@@ -425,6 +514,8 @@ fn begin_recording(app: &AppHandle) -> Result<EngineStatus, String> {
 }
 
 fn finish_recording(app: &AppHandle) -> Result<EngineStatus, String> {
+    #[cfg(target_os = "macos")]
+    log_dictation_step("finish requested");
     let state = app.state::<AppState>();
     let settings = state.settings.snapshot()?;
     // Restore the endpoint before cueing: ducking lowers the master volume,
@@ -534,9 +625,7 @@ fn overlay_page_healthy(app: &AppHandle) -> bool {
     app.state::<AppState>()
         .overlay_heartbeat
         .lock()
-        .map(|beat| {
-            beat.is_some_and(|seen| seen.elapsed() < OVERLAY_HEARTBEAT_TTL)
-        })
+        .map(|beat| beat.is_some_and(|seen| seen.elapsed() < OVERLAY_HEARTBEAT_TTL))
         .unwrap_or(false)
 }
 
@@ -627,23 +716,39 @@ pub(crate) fn complete_transcription(
                 *remembered = insertion_target;
             }
             let insertion_error = if completed.auto_insert {
-                insert::insert_text(insertion_target, &completed.entry.final_text).err()
+                insert::insert_dictation_text(insertion_target, &completed.entry.final_text).err()
             } else {
+                state.insertion_target.cancel();
                 None
             };
+            #[cfg(target_os = "macos")]
+            log_dictation_step(&format!(
+                "transcription complete: target={insertion_target}, auto_insert={}, insertion={}",
+                completed.auto_insert,
+                if !completed.auto_insert {
+                    "skipped"
+                } else {
+                    insertion_error.as_deref().unwrap_or("verified")
+                }
+            ));
             let message = match (
                 completed.auto_insert,
                 completed.cleanup_warning.as_ref(),
                 insertion_error.as_ref(),
             ) {
-                (_, _, Some(error)) => format!("Transcribed, but text insertion failed: {error}"),
+                (_, _, Some(error)) => format!("Transcribed. {error}"),
                 (true, Some(warning), None) => format!("Inserted with local cleanup · {warning}"),
-                (true, None, None) => format!("Inserted in {}", format_duration(completed.entry.total_ms)),
+                (true, None, None) => {
+                    format!("Inserted in {}", format_duration(completed.entry.total_ms))
+                }
                 (false, Some(warning), None) => {
                     format!("File transcribed with local cleanup · {warning}")
                 }
                 (false, None, None) => {
-                    format!("File transcribed in {}", format_duration(completed.entry.total_ms))
+                    format!(
+                        "File transcribed in {}",
+                        format_duration(completed.entry.total_ms)
+                    )
                 }
             };
             let status = match state.pipeline.lock() {
@@ -675,6 +780,12 @@ pub(crate) fn complete_transcription(
                 let _ = app.emit("history-updated", completed.entry);
             }
             emit_status(app, &status);
+            if let Some(error) = insertion_error {
+                let _ = app.emit(
+                    "tray-message",
+                    serde_json::json!({ "message": error, "error": true }),
+                );
+            }
         }
         Err(error) => {
             state.insertion_target.cancel();
@@ -688,28 +799,48 @@ pub(crate) fn complete_transcription(
             emit_status(app, &status);
         }
     }
-    // A transcription finishing in the background must not hide the overlay
-    // while meeting notes are being recorded or offered.
-    let meeting_active = app
+    // Give the pill's exit animation time to render. The generation check
+    // keeps this hide from closing a newer dictation or meeting prompt.
+    schedule_overlay_hide(app, Duration::from_millis(140));
+}
+
+fn schedule_overlay_hide(app: &AppHandle, delay: Duration) {
+    let generation = app
         .state::<AppState>()
-        .meetings
-        .status()
-        .map(|status| status.recording)
-        .unwrap_or(false);
-    if !meeting_active {
-        if let Some(overlay) = app.get_webview_window("overlay") {
-            // The result is already inserted and reported; this pause only
-            // lets the pill play its ~130ms exit animation before hiding.
-            // Off the engine worker so queued jobs don't wait on animation.
-            std::thread::Builder::new()
-                .name("pronto-overlay-hide".into())
-                .spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_millis(140));
-                    let _ = overlay.hide();
-                })
-                .ok();
-        }
-    }
+        .overlay_generation
+        .load(Ordering::Acquire);
+    let app = app.clone();
+    std::thread::Builder::new()
+        .name("pronto-overlay-hide".into())
+        .spawn(move || {
+            std::thread::sleep(delay);
+            let state = app.state::<AppState>();
+            if !overlay_hide_allowed(
+                generation,
+                state.overlay_generation.load(Ordering::Acquire),
+                state.dictation_active.load(Ordering::Acquire),
+                state
+                    .meetings
+                    .status()
+                    .map(|status| status.recording)
+                    .unwrap_or(true),
+            ) {
+                return;
+            }
+            if let Some(overlay) = app.get_webview_window("overlay") {
+                let _ = overlay.hide();
+            }
+        })
+        .ok();
+}
+
+fn overlay_hide_allowed(
+    scheduled_generation: u64,
+    current_generation: u64,
+    dictation_active: bool,
+    meeting_recording: bool,
+) -> bool {
+    scheduled_generation == current_generation && !dictation_active && !meeting_recording
 }
 
 #[tauri::command]
@@ -729,6 +860,51 @@ fn get_model_status(state: tauri::State<'_, AppState>) -> Result<ModelStatus, St
         .lock()
         .map(|status| status.clone())
         .map_err(|_| "model status lock poisoned".into())
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn get_model_install_status(
+    state: tauri::State<'_, model_provision::ModelProvisioner>,
+) -> Result<model_provision::InstallStatus, String> {
+    state.status()
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn retry_model_install(app: AppHandle) -> Result<(), String> {
+    app.state::<model_provision::ModelProvisioner>()
+        .start(app.clone())
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn cancel_model_install(app: AppHandle) {
+    app.state::<model_provision::ModelProvisioner>().cancel();
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn get_macos_permissions() -> permissions::PermissionStatus {
+    permissions::status()
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn request_macos_permission(kind: String) -> Result<(), String> {
+    permissions::request(&kind)
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn open_macos_permission_settings(kind: String) -> Result<(), String> {
+    permissions::open_settings(&kind)
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn restart_pronto(app: AppHandle) {
+    app.request_restart();
 }
 
 #[tauri::command]
@@ -787,10 +963,9 @@ fn start_meeting_recording(
 
 fn finish_meeting_recording(app: &AppHandle) -> Result<meeting::MeetingRecord, String> {
     let state = app.state::<AppState>();
-    // stop() only halts the writers and marks the record processing, so
-    // this returns in about a second even for hour-long meetings. Mixing
-    // the two source files (minutes of disk IO) happens on a background
-    // thread below; the meeting worker stays free for status/list.
+    // stop() halts capture and marks the record processing. Flushing the
+    // writers, closing ScreenCaptureKit, and mixing happen in the background
+    // so the meeting worker remains free for status/list requests.
     let stopped = state.meetings.stop()?;
     // Recording has ended regardless of what follows, so the tray goes
     // back to its idle label even on the error paths below.
@@ -799,13 +974,18 @@ fn finish_meeting_recording(app: &AppHandle) -> Result<meeting::MeetingRecord, S
         "meeting-status",
         serde_json::json!({ "recording": false, "meeting": stopped.record, "elapsedSeconds": 0 }),
     );
-    let record_id = stopped.record.id.clone();
-    let record_title = stopped.record.title.clone();
+    let record = stopped.record.clone();
+    let record_id = record.id.clone();
+    let record_title = record.title.clone();
     let handle = app.clone();
     std::thread::Builder::new()
         .name("pronto-meeting-finalize".into())
         .spawn(move || {
             let state = handle.state::<AppState>();
+            if let Err(error) = stopped.finish_capture() {
+                fail_meeting_transcription(&handle, &record_id, error);
+                return;
+            }
             let settings = match state.settings.snapshot() {
                 Ok(settings) => settings,
                 Err(error) => {
@@ -843,8 +1023,12 @@ fn finish_meeting_recording(app: &AppHandle) -> Result<meeting::MeetingRecord, S
                 fail_meeting_transcription(&handle, &record_id, error);
             }
         })
-        .map_err(|error| format!("Could not finalize meeting: {error}"))?;
-    Ok(stopped.record)
+        .map_err(|error| {
+            let message = format!("Could not finalize meeting: {error}");
+            fail_meeting_transcription(app, &record.id, message.clone());
+            message
+        })?;
+    Ok(record)
 }
 
 #[tauri::command]
@@ -876,14 +1060,14 @@ fn queue_file_import(
             "This file is too long. Import a recording shorter than about 90 minutes.".into(),
         );
     }
-    // Note Taker uploads persist their WAV to disk so a failed item ("Needs
-    // attention") keeps its audio for retry even after restart.
+    let recording = engine::recording_from_pcm16_wav(wav_bytes)?;
+    // A failed Note Taker item promises a retry after restart, so the audio
+    // must be durably saved before reporting that transcription has started.
     if skip_history {
         if let Some(id) = upload_id.as_deref() {
-            let _ = meeting::save_notetaker_audio(id, wav_bytes);
+            meeting::save_notetaker_audio(id, wav_bytes)?;
         }
     }
-    let recording = engine::recording_from_pcm16_wav(wav_bytes)?;
     let state = app.state::<AppState>();
     let settings = state.settings.snapshot()?;
     let mut pipeline = state
@@ -1015,9 +1199,9 @@ fn finish_media_upload(
             .pending_uploads
             .lock()
             .map_err(|_| "upload lock poisoned")?;
-        let entry = pending.remove(&upload_id).ok_or_else(|| {
-            "Upload session expired. Please try again.".to_string()
-        })?;
+        let entry = pending
+            .remove(&upload_id)
+            .ok_or_else(|| "Upload session expired. Please try again.".to_string())?;
         (entry.file_name, entry.bytes)
     };
     // queue_file_import re-validates size and decodes the WAV off the
@@ -1096,17 +1280,8 @@ fn cancel_recording(app: AppHandle) -> Result<EngineStatus, String> {
         pipeline.status.clone()
     };
     emit_status(&app, &status);
-    if let Some(overlay) = app.get_webview_window("overlay") {
-        // Lets the pill play its ~130ms exit animation before hiding, off
-        // the command thread so cancel returns immediately.
-        std::thread::Builder::new()
-            .name("pronto-overlay-hide".into())
-            .spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(140));
-                let _ = overlay.hide();
-            })
-            .ok();
-    }
+    // Let the pill play its exit animation without hiding a newer surface.
+    schedule_overlay_hide(&app, Duration::from_millis(140));
     Ok(status)
 }
 
@@ -1163,8 +1338,9 @@ fn monitor_for(window: &tauri::WebviewWindow) -> Option<tauri::Monitor> {
 /// that belongs to the given monitor, via SHAppBarMessage. This is the
 /// only taskbar geometry query: the pill/overlay code elsewhere assumes a
 /// bottom taskbar with a hardcoded 74px clearance instead.
+#[cfg(windows)]
 fn bottom_taskbar_top(origin_x: i32, origin_y: i32, width: u32, height: u32) -> Option<i32> {
-    use windows::Win32::UI::Shell::{ABM_GETTASKBARPOS, ABE_BOTTOM, APPBARDATA, SHAppBarMessage};
+    use windows::Win32::UI::Shell::{SHAppBarMessage, ABE_BOTTOM, ABM_GETTASKBARPOS, APPBARDATA};
     let mut data: APPBARDATA = Default::default();
     data.cbSize = std::mem::size_of::<APPBARDATA>() as u32;
     let ok = unsafe { SHAppBarMessage(ABM_GETTASKBARPOS, &mut data) };
@@ -1179,6 +1355,58 @@ fn bottom_taskbar_top(origin_x: i32, origin_y: i32, width: u32, height: u32) -> 
         return None;
     }
     Some(rc.top)
+}
+
+#[cfg(target_os = "macos")]
+fn visible_screen_bottom(
+    window: &tauri::WebviewWindow,
+    origin_x: i32,
+    origin_y: i32,
+    width: u32,
+    height: u32,
+) -> Option<i32> {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::NSScreen;
+
+    let calculate = move |marker: MainThreadMarker| -> Option<i32> {
+        let main = NSScreen::mainScreen(marker)?;
+        let main_frame = main.frame();
+        let main_top = main_frame.origin.y + main_frame.size.height;
+        NSScreen::screens(marker)
+            .iter()
+            .map(|screen| {
+                let frame = screen.frame();
+                let visible = screen.visibleFrame();
+                let scale = screen.backingScaleFactor();
+                let screen_x = (frame.origin.x * scale).round() as i32;
+                let screen_y =
+                    ((main_top - frame.origin.y - frame.size.height) * scale).round() as i32;
+                let screen_width = (frame.size.width * scale).round() as i32;
+                let screen_height = (frame.size.height * scale).round() as i32;
+                let distance = (screen_x - origin_x).abs()
+                    + (screen_y - origin_y).abs()
+                    + (screen_width - width as i32).abs()
+                    + (screen_height - height as i32).abs();
+                let from_top = (frame.origin.y + frame.size.height - visible.origin.y) * scale;
+                (distance, origin_y + from_top.round() as i32)
+            })
+            .min_by_key(|(distance, _)| *distance)
+            .map(|(_, bottom)| bottom)
+    };
+    if let Some(marker) = MainThreadMarker::new() {
+        return calculate(marker);
+    }
+    let (sender, receiver) = std::sync::mpsc::channel();
+    window
+        .run_on_main_thread(move || {
+            let result = MainThreadMarker::new().and_then(calculate);
+            let _ = sender.send(result);
+        })
+        .ok()?;
+    receiver
+        .recv_timeout(Duration::from_millis(500))
+        .ok()
+        .flatten()
 }
 
 fn apply_search_overlay_stage(window: &tauri::WebviewWindow, stage: SearchOverlayStage) {
@@ -1205,7 +1433,13 @@ fn apply_search_overlay_stage(window: &tauri::WebviewWindow, stage: SearchOverla
             let width = (logical_width * scale).round() as u32;
             let height = (logical_height * scale).round() as u32;
             let x = origin.x + (area.width.saturating_sub(width) / 2) as i32;
+            #[cfg(windows)]
             let y = origin.y + area.height.saturating_sub(height + 74) as i32;
+            #[cfg(target_os = "macos")]
+            let y = visible_screen_bottom(window, origin.x, origin.y, area.width, area.height)
+                .unwrap_or(origin.y + area.height as i32 - 74)
+                - height as i32
+                - (16.0 * scale).round() as i32;
             let _ = window.set_position(PhysicalPosition::new(x, y));
         }
         SearchOverlayStage::Stage => {
@@ -1226,6 +1460,7 @@ fn apply_search_overlay_stage(window: &tauri::WebviewWindow, stage: SearchOverla
             let visible_height = 40.0;
             let _ = window.set_size(LogicalSize::new(logical_width, logical_height));
             let x = origin.x + (12.0 * scale).round() as i32;
+            #[cfg(windows)]
             let y = match bottom_taskbar_top(origin.x, origin.y, area.width, area.height) {
                 Some(taskbar_top) => taskbar_top - (visible_height * scale).round() as i32,
                 None => {
@@ -1233,6 +1468,10 @@ fn apply_search_overlay_stage(window: &tauri::WebviewWindow, stage: SearchOverla
                     origin.y + area.height.saturating_sub(height + 74) as i32
                 }
             };
+            #[cfg(target_os = "macos")]
+            let y = visible_screen_bottom(window, origin.x, origin.y, area.width, area.height)
+                .unwrap_or(origin.y + area.height as i32 - 74)
+                - (visible_height * scale).round() as i32;
             let _ = window.set_position(PhysicalPosition::new(x, y));
         }
     }
@@ -1254,6 +1493,8 @@ fn show_search_overlay(app: &AppHandle, stage: SearchOverlayStage, focus: bool) 
     state.search_blur_dismiss.store(false, Ordering::Release);
     if let Some(window) = app.get_webview_window("search") {
         apply_search_overlay_stage(&window, stage);
+        #[cfg(target_os = "macos")]
+        let _ = window.set_focusable(focus);
         let _ = window.show();
         if focus {
             let _ = window.set_focus();
@@ -1266,10 +1507,7 @@ fn dismiss_search_overlay_inner(app: &AppHandle) {
     let state = app.state::<AppState>();
     state.search_blur_dismiss.store(false, Ordering::Release);
     let phase = state.search.status().map(|status| status.phase).ok();
-    if matches!(
-        phase,
-        Some(SearchPhase::Listening | SearchPhase::Searching)
-    ) {
+    if matches!(phase, Some(SearchPhase::Listening | SearchPhase::Searching)) {
         restore_system_audio(app);
         let _ = state.audio.stop();
         if let Ok(status) = state.search.reset() {
@@ -1419,7 +1657,11 @@ fn finish_search_recording_inner(app: &AppHandle, force: bool) -> Result<SearchS
     if !force && elapsed < SEARCH_MIN_LISTEN_MS {
         // Bounce release from Win+Space layout switching — finish shortly if
         // we are still listening (keys are typically already up).
-        arm_deferred_search_finish(app, generation, SEARCH_MIN_LISTEN_MS.saturating_sub(elapsed));
+        arm_deferred_search_finish(
+            app,
+            generation,
+            SEARCH_MIN_LISTEN_MS.saturating_sub(elapsed),
+        );
         return Ok(current);
     }
 
@@ -1569,10 +1811,7 @@ fn run_text_search_inner(app: &AppHandle, query: String) -> Result<SearchStatus,
     let expanded = search::expand_followup(&query, &recent);
     let status = state.search.begin_text_search(expanded.clone())?;
     emit_search_status(app, &status);
-    let _ = app.emit(
-        "search-query",
-        serde_json::json!({ "query": expanded }),
-    );
+    let _ = app.emit("search-query", serde_json::json!({ "query": expanded }));
     show_search_overlay(app, SearchOverlayStage::Pill, false);
     let completed = CompletedSearchAsr {
         query: expanded,
@@ -1649,10 +1888,11 @@ fn run_web_search_and_synthesize(
     let mut retrieved_from_network = false;
     if needs_web {
         hits = if !time_sensitive {
-            search::cached_hits_for(&cache_key).map(|cached| {
-                cache_hit = true;
-                cached
-            }).unwrap_or_default()
+            search::cached_hits_for(&cache_key)
+                .inspect(|_cached| {
+                    cache_hit = true;
+                })
+                .unwrap_or_default()
         } else {
             Vec::new()
         };
@@ -1660,10 +1900,8 @@ fn run_web_search_and_synthesize(
         if hits.is_empty() {
             retrieved_from_network = false;
             cache_hit = false;
-            let provider = DuckDuckGoProvider::with_client(
-                completed.provider_url,
-                state.search_http.clone(),
-            );
+            let provider =
+                DuckDuckGoProvider::with_client(completed.provider_url, state.search_http.clone());
             hits = match provider.search(&completed.query) {
                 Ok(hits) => hits,
                 Err(error) => {
@@ -1690,9 +1928,9 @@ fn run_web_search_and_synthesize(
     let retrieval_ms = retrieval_started.elapsed().as_millis();
     // Thumbs are instant; DDG photos fetch in parallel with LLM synthesis.
     let thumbs = search::photo_candidates_for_hits(&hits);
-    state.search.remember_allowed_urls(
-        search::expanded_allowed_urls_with_images(&hits, &thumbs),
-    );
+    state
+        .search
+        .remember_allowed_urls(search::expanded_allowed_urls_with_images(&hits, &thumbs));
 
     if let Ok(status) = state.search.mark_synthesizing(completed.query.clone()) {
         emit_search_status(app, &status);
@@ -1703,20 +1941,14 @@ fn run_web_search_and_synthesize(
     let hits_for_images = hits.clone();
     let banner_handle = std::thread::Builder::new()
         .name("pronto-search-banner-img".into())
-        .spawn(move || {
-            search::resolve_banner_images(&http, &query_for_images, &hits_for_images, 3)
-        })
+        .spawn(move || search::resolve_banner_images(&http, &query_for_images, &hits_for_images, 3))
         .ok();
 
     let client = state.search_http.clone();
     let synthesis_started = std::time::Instant::now();
     let grounded = needs_web && !hits.is_empty();
-    let synth_result = search::synthesize_search_markdown(
-        &client,
-        &completed.query,
-        &hits,
-        grounded,
-    );
+    let synth_result =
+        search::synthesize_search_markdown(&client, &completed.query, &hits, grounded);
 
     let (parsed, mut warning) = match synth_result {
         Ok(result) => result,
@@ -1735,7 +1967,10 @@ fn run_web_search_and_synthesize(
         let mode = if cache_hit { "cached" } else { "live" };
         // Only annotate fast cached answers to avoid noise on grounded cards.
         if cache_hit && search::classify_query(&completed.query) == search::QueryKind::Fast {
-            warning = Some(format!("Instant answer ({mode}, retrieval {})", format_duration(retrieval_ms)));
+            warning = Some(format!(
+                "Instant answer ({mode}, retrieval {})",
+                format_duration(retrieval_ms)
+            ));
         } else {
             let _ = (retrieval_ms, synthesis_ms, retrieved_from_network);
         }
@@ -1918,7 +2153,7 @@ fn save_settings(
     settings.microphone_name = previous.microphone_name;
     settings.gpu_memory_management_configured = true;
     if settings.launch_at_startup != previous.launch_at_startup {
-        startup::set_enabled(settings.launch_at_startup)?;
+        startup::set_enabled(&app, settings.launch_at_startup)?;
     }
     match state.settings.replace(settings) {
         Ok(preferences) => {
@@ -1941,7 +2176,7 @@ fn save_settings(
             Ok(preferences)
         }
         Err(error) => {
-            let _ = startup::set_enabled(previous.launch_at_startup);
+            let _ = startup::set_enabled(&app, previous.launch_at_startup);
             Err(error)
         }
     }
@@ -2030,6 +2265,16 @@ fn position_overlay_custom(window: &tauri::WebviewWindow, width: f64, height: f6
 
 #[tauri::command]
 fn dismiss_meeting_prompt(app: AppHandle) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let dictation_owns_overlay = state.dictation_active.load(Ordering::Acquire)
+        || state
+            .pipeline
+            .lock()
+            .map(|pipeline| matches!(pipeline.status.phase, Phase::Listening | Phase::Processing))
+            .unwrap_or(true);
+    if dictation_owns_overlay {
+        return Ok(());
+    }
     if let Some(overlay) = app.get_webview_window("overlay") {
         overlay.hide().map_err(|e| e.to_string())?;
     }
@@ -2076,6 +2321,13 @@ fn hotkey_status(state: &AppState) -> Result<HotkeyStatus, String> {
         .lock()
         .map_err(|_| "shortcut status lock poisoned")?
         .clone();
+    #[cfg(target_os = "macos")]
+    let modifier_tap_error = state
+        .hotkey_controller
+        .lock()
+        .map_err(|_| "shortcut controller lock poisoned")?
+        .as_ref()
+        .and_then(HotkeyController::modifier_tap_error);
     Ok(HotkeyStatus {
         shortcut: shortcut.canonical().to_string(),
         paste_shortcut: paste_shortcut.canonical().to_string(),
@@ -2085,9 +2337,36 @@ fn hotkey_status(state: &AppState) -> Result<HotkeyStatus, String> {
             .lock()
             .map(|value| value.is_some())
             .unwrap_or(false),
-        error,
-        paste_error,
-        search_error,
+        error: {
+            #[cfg(target_os = "macos")]
+            let error = error.or_else(|| {
+                shortcut
+                    .modifier_only()
+                    .then(|| modifier_tap_error.clone())
+                    .flatten()
+            });
+            error
+        },
+        paste_error: {
+            #[cfg(target_os = "macos")]
+            let paste_error = paste_error.or_else(|| {
+                paste_shortcut
+                    .modifier_only()
+                    .then(|| modifier_tap_error.clone())
+                    .flatten()
+            });
+            paste_error
+        },
+        search_error: {
+            #[cfg(target_os = "macos")]
+            let search_error = search_error.or_else(|| {
+                search_shortcut
+                    .modifier_only()
+                    .then(|| modifier_tap_error.clone())
+                    .flatten()
+            });
+            search_error
+        },
     })
 }
 
@@ -2107,9 +2386,7 @@ fn set_hotkey(app: AppHandle, hotkey: String) -> Result<HotkeyStatus, String> {
             .lock()
             .map_err(|_| "shortcut lock poisoned")?;
         if hotkey::shortcuts_conflict(&next, &paste) {
-            return Err(
-                "That shortcut is already used for pasting the last transcript".into(),
-            );
+            return Err("That shortcut is already used for pasting the last transcript".into());
         }
         let search = state
             .search_shortcut
@@ -2240,9 +2517,7 @@ fn set_search_hotkey(app: AppHandle, hotkey: String) -> Result<HotkeyStatus, Str
             .lock()
             .map_err(|_| "shortcut lock poisoned")?;
         if hotkey::shortcuts_conflict(&next, &paste) {
-            return Err(
-                "That shortcut is already used for pasting the last transcript".into(),
-            );
+            return Err("That shortcut is already used for pasting the last transcript".into());
         }
     }
     let previous = state
@@ -2371,8 +2646,8 @@ fn fetch_search_image(app: AppHandle, url: String) -> Result<SearchImagePayload,
 
 #[tauri::command]
 fn open_ddg_search(app: AppHandle, query: String) -> Result<(), String> {
-    let url = search::ddg_search_url(&query)
-        .ok_or_else(|| "No search query to open".to_string())?;
+    let url =
+        search::ddg_search_url(&query).ok_or_else(|| "No search query to open".to_string())?;
     search::open_url_in_default_browser(&url)?;
     dismiss_search_overlay_inner(&app);
     Ok(())
@@ -2436,7 +2711,10 @@ fn paste_last(app: &AppHandle) -> Result<String, String> {
     if insert::copy_and_paste_focus(target, &text)? {
         Ok("Last transcript pasted".into())
     } else {
-        Ok("Last transcript copied to the clipboard".into())
+        #[cfg(target_os = "macos")]
+        return Err("The last transcript could not be inserted. It is still in History; your clipboard is unchanged.".into());
+        #[cfg(windows)]
+        return Ok("Last transcript copied to the clipboard".into());
     }
 }
 
@@ -2517,6 +2795,13 @@ fn hide_main_window(app: AppHandle) -> Result<(), String> {
 
 fn create_tray(app: &tauri::App) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Open Pronto", true, None::<&str>)?;
+    let dictation = MenuItem::with_id(
+        app,
+        "dictation",
+        "Start / Stop Dictation",
+        true,
+        None::<&str>,
+    )?;
     let meeting = MenuItem::with_id(app, "meeting", "Take meeting notes", true, None::<&str>)?;
     let paste = MenuItem::with_id(
         app,
@@ -2526,7 +2811,7 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
         None::<&str>,
     )?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open, &meeting, &paste, &quit])?;
+    let menu = Menu::with_items(app, &[&open, &dictation, &meeting, &paste, &quit])?;
     *app.state::<AppState>()
         .meeting_tray_item
         .lock()
@@ -2540,6 +2825,31 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.show();
                     let _ = window.set_focus();
+                }
+            }
+            "dictation" => {
+                #[cfg(target_os = "macos")]
+                log_dictation_step("menu dictation action");
+                let listening = app
+                    .state::<AppState>()
+                    .pipeline
+                    .lock()
+                    .map(|pipeline| pipeline.status.phase == Phase::Listening)
+                    .unwrap_or(false);
+                let result = if listening {
+                    finish_recording(app)
+                } else {
+                    begin_recording(app)
+                };
+                if let Err(message) = result {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                    let _ = app.emit(
+                        "tray-message",
+                        serde_json::json!({ "message": message, "error": true }),
+                    );
                 }
             }
             "meeting" => {
@@ -2572,6 +2882,7 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
                     }
                     return;
                 }
+                app.state::<AppState>().claim_overlay();
                 if let Some(overlay) = app.get_webview_window("overlay") {
                     let _ = overlay.show();
                 }
@@ -2613,6 +2924,28 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+pub fn diagnose() {
+    let permissions = serde_json::to_string_pretty(&permissions::status())
+        .unwrap_or_else(|error| format!("permission status unavailable: {error}"));
+    println!("Permissions in this launch context: {permissions}");
+    println!("A shell-launched diagnostic may inherit its terminal's macOS permission identity; check Pronto's own Settings for the installed app's grant.");
+    let audio = AudioController::new(None);
+    match audio.status() {
+        Ok(status) => println!(
+            "Microphone: {} ({} devices)",
+            status.active_name,
+            status.devices.len()
+        ),
+        Err(error) => println!("Microphone error: {error}"),
+    }
+    let shortcut = hotkey::parse(hotkey::DEFAULT_HOTKEY).expect("valid default shortcut");
+    match HotkeyController::new(vec![(HotkeyId::Dictation, shortcut)], |_, _| {}) {
+        Ok(_) => println!("Global keyboard listener: available"),
+        Err(error) => println!("Global keyboard listener: {error}"),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(windows)]
@@ -2621,11 +2954,34 @@ pub fn run() {
         Ok(None) => return,
         Err(_) => return,
     };
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .plugin(navigation::init())
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
+        .manage(model_provision::ModelProvisioner::new())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--background"]),
+        ));
+    builder
         // Builder-managed state exists before configured WebViews are created,
         // so early IPC and WebView2 lifecycle callbacks cannot race setup().
         .manage(AppState::new())
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            {
+                log_dictation_step("app setup");
+                let _ = permissions::request("accessibility");
+                if let Some(overlay) = app.get_webview_window("overlay") {
+                    let _ = overlay.set_focusable(false);
+                }
+            }
             let shortcut = app
                 .state::<AppState>()
                 .active_shortcut
@@ -2639,13 +2995,19 @@ pub fn run() {
                 .snapshot()
                 .map(|settings| settings.gpu_memory_management)
                 .unwrap_or(true);
-            let engine =
-                EngineController::new(app.handle().clone(), resource_dir.clone(), gpu_memory_management);
+            let engine = EngineController::new(
+                app.handle().clone(),
+                resource_dir.clone(),
+                gpu_memory_management,
+            );
             *app.state::<AppState>()
                 .engine
                 .lock()
                 .expect("engine lock poisoned") = Some(engine);
-            #[cfg(windows)]
+            #[cfg(target_os = "macos")]
+            app.state::<model_provision::ModelProvisioner>()
+                .start(app.handle().clone())?;
+            #[cfg(any(windows, target_os = "macos"))]
             meeting_detector::start(
                 app.handle().clone(),
                 app.state::<AppState>().meetings.activity_flag(),
@@ -2654,7 +3016,7 @@ pub fn run() {
             );
             // Power resume heals sleep-related failures (dead overlay page,
             // wedged dictation state) instead of degrading silently.
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             power::start(app.handle().clone());
             let paste_shortcut = app
                 .state::<AppState>()
@@ -2668,6 +3030,17 @@ pub fn run() {
                 .lock()
                 .expect("shortcut lock poisoned")
                 .clone();
+            #[cfg(target_os = "macos")]
+            if [
+                shortcut.modifier_only(),
+                paste_shortcut.modifier_only(),
+                search_shortcut.modifier_only(),
+            ]
+            .into_iter()
+            .any(|value| value)
+            {
+                let _ = permissions::request("input-monitoring");
+            }
             app.state::<AppState>()
                 .search
                 .set_resource_dir(resource_dir.clone());
@@ -2720,7 +3093,9 @@ pub fn run() {
                         let phase = state.search.status().map(|status| status.phase).ok();
                         if matches!(
                             phase,
-                            Some(SearchPhase::Searching | SearchPhase::Complete | SearchPhase::Error)
+                            Some(
+                                SearchPhase::Searching | SearchPhase::Complete | SearchPhase::Error
+                            )
                         ) {
                             state.search_blur_dismiss.store(true, Ordering::Release);
                         }
@@ -2739,6 +3114,20 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_status,
             get_model_status,
+            #[cfg(target_os = "macos")]
+            get_model_install_status,
+            #[cfg(target_os = "macos")]
+            retry_model_install,
+            #[cfg(target_os = "macos")]
+            cancel_model_install,
+            #[cfg(target_os = "macos")]
+            get_macos_permissions,
+            #[cfg(target_os = "macos")]
+            request_macos_permission,
+            #[cfg(target_os = "macos")]
+            open_macos_permission_settings,
+            #[cfg(target_os = "macos")]
+            restart_pronto,
             start_recording,
             stop_recording,
             start_meeting_recording,
@@ -2804,6 +3193,14 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_overlay_hide_cannot_close_new_dictation_or_meeting() {
+        assert!(overlay_hide_allowed(4, 4, false, false));
+        assert!(!overlay_hide_allowed(4, 5, false, false));
+        assert!(!overlay_hide_allowed(4, 4, true, false));
+        assert!(!overlay_hide_allowed(4, 4, false, true));
+    }
 
     #[test]
     fn durations_stay_ms_below_one_second() {

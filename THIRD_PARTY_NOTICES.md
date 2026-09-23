@@ -17,6 +17,18 @@ Pronto includes these redistributable components:
 - Source: https://github.com/NVIDIA/NeMo-Speech.cpp
 - The complete runtime and transitive dependency notices are bundled under
   `runtime/nemo-speech/share/licenses/`.
+- The macOS asset preparation script fetches the project's published 0.1.0
+  Apple Silicon Metal archive and stages its runtime and license files for the
+  macOS bundle. The archive's SHA-256 is pinned in that script.
+
+## DM Sans
+
+- Copyright 2014 The DM Sans Project Authors.
+- License: SIL Open Font License 1.1.
+- Source: https://github.com/google/fonts/tree/main/ofl/dmsans
+- Pronto bundles the variable normal and italic fonts under
+  `ui/vendor/fonts/` so its UI typography is available offline. The full
+  license is `ui/vendor/fonts/OFL.txt`.
 
 Pronto communicates with DeepSeek only when the user enables cleanup and provides
 an API key, or when using voice search synthesis. DeepSeek is not redistributed

@@ -1,12 +1,32 @@
+#[cfg(target_os = "macos")]
+use core_foundation::base::TCFType;
+#[cfg(target_os = "macos")]
+use core_foundation::number::CFNumber;
+#[cfg(target_os = "macos")]
+use core_foundation::string::CFString;
+#[cfg(target_os = "macos")]
+use core_graphics::window::{
+    create_description_from_array, create_window_list, kCGNullWindowID, kCGWindowLayer,
+    kCGWindowListExcludeDesktopElements, kCGWindowListOptionOnScreenOnly, kCGWindowName,
+    kCGWindowOwnerPID,
+};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
+#[cfg(windows)]
 use windows::core::BOOL;
+#[cfg(windows)]
 use windows::Win32::Foundation::{HWND, LPARAM};
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetWindowTextLengthW, GetWindowTextW, IsWindowVisible,
 };
+
+#[cfg(windows)]
+type MeetingWindow = HWND;
+#[cfg(target_os = "macos")]
+type MeetingWindow = i32;
 
 /// Brief nag guard for connection blips that look like new sessions.
 /// Deliberate dismissals are suppressed per session instead, so genuine
@@ -82,10 +102,7 @@ pub fn start(
                     // or stopping notes would instantly re-prompt.
                     continue;
                 }
-                if !app
-                    .state::<crate::AppState>()
-                    .meeting_suggestions_enabled()
-                {
+                if !app.state::<crate::AppState>().meeting_suggestions_enabled() {
                     // Suggestions disabled in Settings: stay frozen so that
                     // re-enabling mid-meeting prompts promptly.
                     continue;
@@ -111,6 +128,7 @@ pub fn start(
                             && !control.is_suppressed(generation)
                             && cooldown_over
                         {
+                            app.state::<crate::AppState>().claim_overlay();
                             if let Some(overlay) = app.get_webview_window("overlay") {
                                 let _ = overlay.show();
                             }
@@ -170,7 +188,8 @@ fn vendor_key(lower: &str) -> Option<&'static str> {
     None
 }
 
-fn meeting_window_title() -> Option<(String, HWND)> {
+#[cfg(windows)]
+fn meeting_window_title() -> Option<(String, MeetingWindow)> {
     unsafe extern "system" fn collect(hwnd: HWND, lparam: LPARAM) -> BOOL {
         if unsafe { !IsWindowVisible(hwnd).as_bool() } {
             return BOOL(1);
@@ -200,6 +219,48 @@ fn meeting_window_title() -> Option<(String, HWND)> {
         );
     }
     result
+}
+
+#[cfg(target_os = "macos")]
+fn meeting_window_title() -> Option<(String, MeetingWindow)> {
+    let ids = create_window_list(
+        kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
+        kCGNullWindowID,
+    )?;
+    let windows = create_description_from_array(ids)?;
+    let name_key = unsafe { CFString::wrap_under_get_rule(kCGWindowName) };
+    let owner_key = unsafe { CFString::wrap_under_get_rule(kCGWindowOwnerPID) };
+    let layer_key = unsafe { CFString::wrap_under_get_rule(kCGWindowLayer) };
+    for window in windows.iter() {
+        let layer = window
+            .find(&layer_key)
+            .and_then(|value| value.downcast::<CFNumber>())
+            .and_then(|value| value.to_i32());
+        if layer != Some(0) {
+            continue;
+        }
+        let Some(title) = window
+            .find(&name_key)
+            .and_then(|value| value.downcast::<CFString>())
+            .map(|value| value.to_string())
+        else {
+            continue;
+        };
+        if vendor_key(&title.to_lowercase()).is_none() {
+            continue;
+        }
+        let Some(pid) = window
+            .find(&owner_key)
+            .and_then(|value| value.downcast::<CFNumber>())
+            .and_then(|value| value.to_i32())
+        else {
+            continue;
+        };
+        if pid > 0 && pid != std::process::id() as i32 {
+            return Some((title, pid));
+        }
+    }
+    None
 }
 
 #[cfg(test)]

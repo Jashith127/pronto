@@ -4,6 +4,7 @@
 
 use std::sync::OnceLock;
 use tauri::AppHandle;
+use windows::core::w;
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -11,7 +12,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
     PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMESUSPEND, WINDOW_EX_STYLE, WINDOW_STYLE, WM_POWERBROADCAST,
     WNDCLASSW,
 };
-use windows::core::w;
 
 static RESUME_APP: OnceLock<AppHandle> = OnceLock::new();
 

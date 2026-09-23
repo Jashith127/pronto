@@ -100,10 +100,83 @@ mod platform {
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub use platform::{GpuMemoryMonitor, MemoryInfo};
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+mod platform {
+    #[derive(Clone, Copy, Debug)]
+    pub struct MemoryInfo {
+        pub total: u64,
+        pub free: u64,
+        pub used: u64,
+    }
+
+    pub struct GpuMemoryMonitor;
+
+    unsafe extern "C" {
+        fn os_proc_available_memory() -> usize;
+    }
+
+    impl GpuMemoryMonitor {
+        pub fn new() -> Result<Self, String> {
+            let monitor = Self;
+            let _ = monitor.memory_info()?;
+            Ok(monitor)
+        }
+
+        pub fn memory_info(&self) -> Result<MemoryInfo, String> {
+            let mut total: u64 = 0;
+            let mut size = std::mem::size_of::<u64>();
+            let result = unsafe {
+                libc::sysctlbyname(
+                    c"hw.memsize".as_ptr(),
+                    (&mut total as *mut u64).cast(),
+                    &mut size,
+                    std::ptr::null_mut(),
+                    0,
+                )
+            };
+            if result != 0 || total == 0 {
+                return Err("Could not read Apple unified memory size".into());
+            }
+            let process_available = unsafe { os_proc_available_memory() } as u64;
+            let free = if process_available > 0 {
+                process_available.min(total)
+            } else {
+                let mut stats: libc::vm_statistics64_data_t = unsafe { std::mem::zeroed() };
+                let mut count = libc::HOST_VM_INFO64_COUNT;
+                let result = unsafe {
+                    libc::host_statistics64(
+                        mach2::mach_init::mach_host_self(),
+                        libc::HOST_VM_INFO64,
+                        (&mut stats as *mut libc::vm_statistics64_data_t).cast(),
+                        &mut count,
+                    )
+                };
+                if result != 0 {
+                    return Err("Could not read macOS memory statistics".into());
+                }
+                let pages = u64::from(stats.free_count) + u64::from(stats.inactive_count);
+                let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+                if page_size <= 0 {
+                    return Err("Could not read macOS memory page size".into());
+                }
+                pages.saturating_mul(page_size as u64).min(total)
+            };
+            if free == 0 {
+                return Err("Could not read available Apple unified memory".into());
+            }
+            Ok(MemoryInfo {
+                total,
+                free,
+                used: total.saturating_sub(free),
+            })
+        }
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 #[derive(Clone, Copy, Debug)]
 pub struct MemoryInfo {
     pub total: u64,
@@ -111,10 +184,10 @@ pub struct MemoryInfo {
     pub used: u64,
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub struct GpuMemoryMonitor;
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 impl GpuMemoryMonitor {
     pub fn new() -> Result<Self, String> {
         Err("GPU memory monitoring is only available on Windows".to_string())
@@ -137,5 +210,18 @@ mod tests {
         assert!(memory.total > 0);
         assert!(memory.free <= memory.total);
         assert!(memory.used <= memory.total);
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod mac_tests {
+    use super::*;
+
+    #[test]
+    fn reads_available_unified_memory() {
+        let memory = GpuMemoryMonitor::new().unwrap().memory_info().unwrap();
+        assert!(memory.total >= 4 * 1024 * 1024 * 1024);
+        assert!(memory.free > 0 && memory.free <= memory.total);
+        assert_eq!(memory.used, memory.total - memory.free);
     }
 }

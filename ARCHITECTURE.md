@@ -1,5 +1,40 @@
 # Architecture
 
+## Platform separation (Windows + Mac in one repo)
+
+* **Shared:** Tauri commands/events, Rust pipeline, static `ui/` frontend, settings/history/dictionary, search schema, meeting detector core.
+* **Windows path (`Pronto`):** `src-tauri/tauri.conf.json` (`nsis` + `installer-hooks.nsh`), `windows` crate behind `[target.'cfg(windows)'.dependencies]`, WH_KEYBOARD_LL hook, WASAPI/WinMM via CPAL, Win32 SendInput insertion, Core Audio ducking, tray + `%LOCALAPPDATA%` storage.
+* **macOS path (`Pronto for Mac`):** `src-tauri/tauri.macos.conf.json` (`.app`/`.dmg`, hardened runtime, entitlements) merged by `scripts/build-macos.sh`, `src-tauri/src/platform/macos/` (hotkeys, insertion, audio, permissions, power, startup, navigation), `platform_paths.rs` + `model_provision.rs` (Application Support model download), Metal runtime under `Contents/Resources/runtime/nemo-speech/`.
+* **Cargo separation:** `windows` is Windows-only; macOS deps (`objc2-*`, `core-graphics`, `tauri-plugin-autostart`, `tauri-plugin-single-instance`, Metal support) live under `[target.'cfg(target_os = "macos")'.dependencies]`. No `cfg` scattering through business logic where a trait/module is clearer.
+* **CI:** `.github/workflows/desktop-ci.yml` builds both (`macos-15` ARM64 + `windows-2022` x64), so a Mac DMG refresh never requires a local Mac for the Windows-side upload (`scripts/publish-macos-release.ps1` + `docs/upload-macos-release-from-windows.md`).
+
+## macOS platform path (port in progress)
+
+The same Tauri commands, events, Rust pipeline, and static UI are used on
+macOS. Target-specific modules replace the Windows keyboard hook with registered
+macOS hotkeys for key-based chords and a listen-only `CGEventTap` for modifier-only
+chords, Win32 insertion with Accessibility and a clipboard
+fallback, WASAPI/WinMM with CPAL and CoreAudio, and loopback capture with an
+in-process ScreenCaptureKit audio stream. `NSWorkspace` opens external search
+URLs and provides application metadata. A LaunchAgent handles optional login
+startup, while the Tauri single-instance plugin activates the existing app.
+
+The native Apple Silicon Metal runtime is bundled under
+`Contents/Resources/runtime/nemo-speech/`; its libraries resolve relative to
+the executable. The Parakeet model is verified against `model.sha256` and
+stored in Application Support, outside the app bundle. A dedicated download
+worker streams it over HTTPS to a `.part` file, supports resume and cancel,
+and atomically renames it only after SHA-256 verification. The engine only
+opens a verified model. Its loopback server is terminated on controller drop,
+normal process exit, or SIGTERM/SIGINT. Audio remains local; only text reaches configured
+remote cleanup/search services.
+
+This path has compiled and run local ASR on Apple Silicon. Packaged permission,
+overlay, insertion, meeting, and relocation testing remains before release.
+See `docs/macos-port-status.md` and `docs/macos-validation.md`.
+
+## Windows platform path
+
 ```text
 Configurable global shortcuts
   dictation (default Ctrl+Alt+Space)

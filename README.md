@@ -1,6 +1,18 @@
 # Pronto
 
-Pronto is a Windows push-to-talk dictation application. Hold a global shortcut, speak, and your words appear in whatever application you were typing in -- with local punctuation, cleanup, and history. It processes audio locally using an NVIDIA GPU and inserts text into the active application.
+> **Pronto for Mac (Apple Silicon):** the macOS port lives in this same
+> repository alongside Windows. The `v0.8.2-macos` release holds the
+> MAC-only `Pronto_0.8.2_aarch64.dmg` (ad hoc signed, not notarized).
+> The bundle name stays `Pronto`; "Pronto for Mac" is the docs/release name
+> for the Mac edition.
+> See [the port status and build prerequisites](docs/macos-port-status.md).
+
+Pronto is a push-to-talk dictation application. Hold a global shortcut, speak, and your words appear in whatever application you were typing in -- with local punctuation, cleanup, and history. It processes audio locally and inserts text into the active application.
+
+Two editions share one codebase with clearly separated platform paths:
+
+* **Pronto (Windows):** NVIDIA Parakeet TDT 0.6B v3 via CUDA, Win32 insertion via SendInput, NSIS installer.
+* **Pronto for Mac (Apple Silicon, macOS 13+):** Metal speech runtime, Accessibility insertion with clipboard fallback, `.app`/`.dmg` bundle. Dictation uses Control + Option + Space, Paste Last uses Control + Option + V, voice search uses Control + Option + S by default.
 
 ![Pronto Dictate screen](docs/screenshot-dictate.png)
 
@@ -53,27 +65,53 @@ On an NVIDIA RTX 4050 Laptop GPU, local transcription of an 11-second audio file
 
 ## Requirements
 
+### Windows (Pronto)
+
 * Windows 10 or 11 (64-bit)
 * NVIDIA GPU with current display driver
 * Microphone
 * Internet connection (during installation for the one-time model download, and only for DeepSeek rewriting afterwards)
 
+### macOS (Pronto for Mac)
+
+* Apple Silicon Mac, macOS 13 or newer
+* Microphone (Microphone permission granted)
+* Accessibility permission for automatic insertion (otherwise the transcript stays in History and the clipboard is left unchanged), Input Monitoring only for modifier-only shortcuts, Screen Recording only for computer-audio meeting capture
+* Internet connection (first-launch model download with progress/cancel/retry and SHA-256 verification, plus DeepSeek rewriting afterwards)
+
 ## Install
 
-1. Download `Pronto_<version>_x64-setup.exe` from the [releases page](https://github.com/Jashith127/pronto/releases).
+### Windows
+
+1. Download `Pronto_<version>_x64-setup.exe` from this repository's Releases page.
 2. Run the installer (per-user, no admin needed). Setup downloads the speech model once with progress and verification.
 3. Open **Settings** in Pronto.
 4. Optional: Enter a DeepSeek API key. Local transcription works without a key.
+
+### macOS (Pronto for Mac)
+
+1. Download `Pronto_0.8.2_aarch64.dmg` from the MAC-only [`v0.8.2-macos` release](https://github.com/Jashith127/pronto/releases/tag/v0.8.2-macos).
+2. Open the DMG and move `Pronto.app` to Applications, then launch it. The build is ad hoc signed and not Apple notarized, so macOS may ask you to allow it manually in System Settings.
+3. On first launch the speech model downloads to `~/Library/Application Support/app.pronto.dictation/models/` with progress, cancellation, retry, and checksum verification. Settings also shows macOS permission status.
+4. Optional: Enter a DeepSeek API key. Local transcription works without a key. New installations start with Clean up speech turned off; existing saved preferences are respected.
 
 ## For developers
 
 ### Repository layout
 
-* `ui/` -- static frontend (HTML/CSS/JS) embedded by Tauri. No Node.js or npm involved.
-* `src-tauri/` -- Rust/Tauri backend: global hotkeys, audio capture, transcription pipeline, overlay windows, tray, installer hooks.
-* `src-tauri/installer-hooks.nsh` -- NSIS logic that downloads and verifies the speech model at install time.
-* `ARCHITECTURE.md` -- pipeline, latency design, storage, and Windows lifecycle details.
+* `ui/` -- static frontend (HTML/CSS/JS) embedded by Tauri. No Node.js or npm involved. Shared by Windows and Mac; platform wording/shortcuts switch at runtime.
+* `src-tauri/` -- Rust/Tauri backend: global hotkeys, audio capture, transcription pipeline, overlay windows, tray/menu-bar, installer hooks.
+* `src-tauri/src/platform/macos/` -- macOS-only implementations: registered hotkeys + CGEventTap modifier chords, Accessibility insertion, CoreAudio ducking, ScreenCaptureKit computer audio, permissions, power, startup, navigation guard.
+* `src-tauri/src/platform_paths.rs` + `src-tauri/src/model_provision.rs` -- standard macOS Application Support/Logs storage and first-launch model download with resume/cancel/SHA-256 verify. Windows storage paths remain intact.
+* `src-tauri/tauri.conf.json` -- Windows bundle (`nsis`, `installer-hooks.nsh` model download at setup time).
+* `src-tauri/tauri.macos.conf.json` + `Entitlements.plist` + `Info.plist` + `icons/icon.icns` -- macOS bundle (`.app`/`.dmg`, hardened runtime, privacy strings). Merged at build time by `scripts/build-macos.sh`.
+* `src-tauri/installer-hooks.nsh` -- NSIS logic that downloads and verifies the speech model at install time (Windows only).
+* `scripts/` -- `build-macos.sh` + `prepare-macos-assets.sh` (Mac build/asset staging), `publish-macos-release.ps1` (Windows-only DMG upload: checksum-verify `release-assets/` and `gh release create` -- no Mac needed).
+* `.github/workflows/desktop-ci.yml` -- CI matrix: `macos-15` (Apple Silicon check/clippy/test + hotkey bridge) and `windows-2022` (check/test). Future Mac DMGs can be rebuilt from CI without a local Mac.
+* `ARCHITECTURE.md` -- pipeline, latency design, storage, and Windows/macOS lifecycle details (see "Windows platform path" and "macOS platform path").
 * `RELEASE_NOTES.md` -- per-version changelog.
+* `docs/macos-*.md` -- Mac port plan/status/validation, Mac release notes used for the `v0.8.2-macos` GitHub release, and [Windows-only DMG upload](docs/upload-macos-release-from-windows.md).
+* `release-assets/` -- local-only Mac DMG + `.sha256` (DMG is gitignored; uploaded as a release asset, never committed).
 
 ### How it fits together
 
@@ -91,6 +129,53 @@ cargo tauri build
 ```
 
 The installer lands at `src-tauri/target/release/bundle/nsis`.
+
+### macOS Apple Silicon development build
+
+On macOS 13 or newer with Xcode Command Line Tools and Rust installed:
+
+```sh
+scripts/prepare-macos-assets.sh
+cd src-tauri
+cargo fmt --check
+cargo test --target aarch64-apple-darwin
+cargo check --target aarch64-apple-darwin
+cd ..
+scripts/build-macos.sh local
+```
+
+The local `.app` and `.dmg` are written under
+`src-tauri/target/aarch64-apple-darwin/release/bundle/`. The model is excluded
+from the app and is downloaded on first launch to
+`~/Library/Application Support/app.pronto.dictation/models/`. Settings shows
+progress, cancellation, retry, and macOS permission status. Dictation uses
+Control + Option + Space, Paste Last uses Control + Option + V, and voice search
+uses Control + Option + S by default.
+Key-based shortcuts use macOS registered hotkeys. Modifier-only shortcuts require
+Input Monitoring. Automatic insertion into another app requires Accessibility;
+without it, Pronto keeps the transcript in History and leaves the clipboard unchanged.
+Paste Last inserts the most recent transcript into the focused field when Accessibility
+is available. Copy Transcript in History still copies on request.
+
+For a distribution build, install a Developer ID Application certificate and
+provide `APPLE_SIGNING_IDENTITY` plus either the App Store Connect API key
+variables (`APPLE_API_ISSUER`, `APPLE_API_KEY`, `APPLE_API_KEY_PATH`) or Apple ID
+notarization variables (`APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`) through
+the environment. Then run `scripts/build-macos.sh signed`. The script checks
+the signed app and stapled notarization ticket. No credentials are stored in
+the repository. See [the macOS port status](docs/macos-port-status.md) for
+remaining acceptance work.
+
+To refresh the Mac DMG later without touching a Mac, rebuild via CI or on a Mac once, copy the new `release-assets/Pronto_*_aarch64.dmg` + `.sha256` to this Windows checkout, and re-run the publish script for the new tag:
+
+```powershell
+.\scripts\publish-macos-release.ps1 -Repo Jashith127/pronto -Tag v0.8.2-macos
+```
+
+No macOS build tools are needed on the Windows laptop for the upload. The DMG itself stays out of Git (`release-assets/*.dmg` is gitignored); only code, docs, scripts, and the `.sha256` are committed. See
+[Upload the macOS DMG from Windows](docs/upload-macos-release-from-windows.md).
+The ready asset and SHA-256 checksum are in `release-assets/`. New installations start with Clean up speech
+turned off; existing saved preferences are respected.
 
 *Note: Frontend files are static and embedded by Tauri. Do not run Node.js or npm.*
 

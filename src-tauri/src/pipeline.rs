@@ -40,18 +40,10 @@ impl Default for EngineStatus {
     }
 }
 
+#[derive(Default)]
 pub struct Pipeline {
     pub status: EngineStatus,
     started_at: Option<Instant>,
-}
-
-impl Default for Pipeline {
-    fn default() -> Self {
-        Self {
-            status: EngineStatus::default(),
-            started_at: None,
-        }
-    }
 }
 
 impl Pipeline {

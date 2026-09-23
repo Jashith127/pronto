@@ -1,6 +1,8 @@
 /target
 /src-tauri/target
+/release-assets/*.dmg
 *.pdb
 # Local-only model distribution spec — never commit or push.
 docs/MODEL_DISTRIBUTION.md
-
+runtime/nemo-speech-macos/
+/src-tauri/gen/schemas/macOS-schema.json

@@ -3,5 +3,10 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 fn main() {
+    #[cfg(target_os = "macos")]
+    if std::env::args().any(|argument| argument == "--diagnose") {
+        pronto_lib::diagnose();
+        return;
+    }
     pronto_lib::run();
 }

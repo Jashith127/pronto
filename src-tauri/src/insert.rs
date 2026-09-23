@@ -192,6 +192,10 @@ pub fn insert_text(target: isize, text: &str) -> Result<(), String> {
     }
 }
 
+pub fn insert_dictation_text(target: isize, text: &str) -> Result<(), String> {
+    insert_text(target, text)
+}
+
 /// Copies a transcript and, when Windows permits foreground activation, pastes
 /// it into the remembered target. `false` means the clipboard fallback worked.
 pub fn copy_and_paste(target: isize, text: &str) -> Result<bool, String> {

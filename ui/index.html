@@ -56,6 +56,11 @@
             <article class="stat-card"><span class="stat-label">Average response</span><strong id="average-latency">—</strong><p>Transcription and cleanup</p></article>
           </section>
 
+          <section class="permission-alert" id="mac-permission-alert" hidden>
+            <div><strong id="mac-permission-alert-title">Finish macOS setup</strong><p id="mac-permission-alert-message"></p></div>
+            <div class="permission-alert-actions"><button id="mac-permission-alert-action" type="button">Open Settings</button><button class="mac-restart-action" type="button" hidden>Restart Pronto</button></div>
+          </section>
+
           <section class="transcripts-panel">
             <div class="import-card" id="import-card">
               <div class="import-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 3.5h7l4 4V20H7zM14 3.5v4h4"/></svg></div>
@@ -140,7 +145,7 @@
         </div>
 
         <div class="view" id="settings">
-          <div class="page-title"><div><h1>Settings</h1><p>Choose how Pronto listens, writes, and behaves on Windows.</p></div></div>
+          <div class="page-title"><div><h1>Settings</h1><p id="settings-subtitle">Choose how Pronto listens, writes, and behaves on Windows.</p></div></div>
           <div class="settings-stack">
             <section class="settings-section">
               <h2>Appearance</h2>
@@ -164,7 +169,7 @@
               <h2>Dictation</h2>
               <div class="settings-card">
                 <div class="setting-row hotkey-row">
-                  <div><strong>Dictation shortcut</strong><p>Works globally, including modifier-only combinations such as Win + Ctrl.</p></div>
+                  <div><strong>Dictation shortcut</strong><p id="dictation-shortcut-help">Works globally, including modifier-only combinations such as Win + Ctrl.</p></div>
                   <div class="setting-control"><div class="shortcut-keys" id="settings-hotkey"></div><button class="change-button" id="change-hotkey">Change</button></div>
                 </div>
                 <div class="setting-row hotkey-row">
@@ -174,7 +179,7 @@
                 <div class="setting-row hotkey-row">
                   <div>
                     <strong>Voice search</strong>
-                    <p>Default Win + Space. Windows also uses this chord for keyboard layout switching; Pronto’s low-level hook calls CallNextHookEx, so the OS may switch layouts as well. The Fn key cannot be bound (no virtual-key code).</p>
+                    <p id="shortcut-help">Default Win + Space. Windows also uses this chord for keyboard layout switching; Pronto’s low-level hook calls CallNextHookEx, so the OS may switch layouts as well. The Fn key cannot be bound (no virtual-key code).</p>
                   </div>
                   <div class="setting-control"><div class="shortcut-keys" id="settings-search-hotkey"></div><button class="change-button" id="change-search-hotkey">Change</button></div>
                 </div>
@@ -190,7 +195,7 @@
                 </div>
                 <div class="setting-row">
                   <div><strong>Microphone</strong><p id="microphone-status">Loading available microphones…</p></div>
-                  <select id="microphone" aria-label="Microphone"><option>Loading…</option></select>
+                  <div class="setting-control"><select id="microphone" aria-label="Microphone" disabled><option>Loading…</option></select><button class="change-button" id="microphone-retry" type="button" hidden>Retry</button></div>
                 </div>
                 <div class="setting-row">
                   <div><strong>Language</strong><p>Choose a language or let Parakeet detect it.</p></div>
@@ -209,7 +214,7 @@
             </section>
 
             <section class="settings-section">
-              <h2>Windows</h2>
+              <h2 id="platform-settings-heading">Windows</h2>
               <div class="settings-card">
                 <div class="setting-row"><div><strong>Launch at startup</strong><p>Starts Pronto silently in the system tray without opening this window.</p></div><label class="toggle"><input type="checkbox" id="launch-at-startup" /><span></span></label></div>
               </div>
@@ -223,10 +228,20 @@
               </div>
             </section>
 
+            <section class="settings-section" id="mac-permissions" hidden>
+              <h2>macOS permissions</h2>
+              <div class="settings-card">
+                <div class="setting-row"><div><strong>Microphone</strong><p id="permission-microphone">Needed for dictation and meeting notes.</p></div><button type="button" class="change-button permission-action" data-permission="microphone">Set up</button></div>
+                <div class="setting-row"><div><strong>Accessibility</strong><p id="permission-accessibility">Needed to insert text into the app you were using.</p></div><div class="setting-control"><button type="button" class="change-button permission-action" data-permission="accessibility">Set up</button><button type="button" class="change-button mac-restart-action" hidden>Restart Pronto</button></div></div>
+                <div class="setting-row"><div><strong>Input Monitoring</strong><p id="permission-input-monitoring">Needed only for shortcuts made of modifier keys alone.</p></div><button type="button" class="change-button permission-action" data-permission="input-monitoring">Set up</button></div>
+                <div class="setting-row"><div><strong>Screen Recording</strong><p id="permission-screen-recording">Needed only to record computer audio for meeting notes. Pronto does not save video.</p></div><button type="button" class="change-button permission-action" data-permission="screen-recording">Set up</button></div>
+              </div>
+            </section>
+
             <section class="settings-section">
               <h2>Performance</h2>
               <div class="settings-card">
-                <div class="setting-row"><div><strong>Release model under GPU pressure</strong><p>Frees Parakeet's VRAM after sustained pressure. The next dictation may briefly warm the model.</p></div><label class="toggle"><input type="checkbox" id="gpu-memory-management" /><span></span></label></div>
+                <div class="setting-row" id="gpu-memory-row"><div><strong>Release model under GPU pressure</strong><p>Frees Parakeet's VRAM after sustained pressure. The next dictation may briefly warm the model.</p></div><label class="toggle"><input type="checkbox" id="gpu-memory-management" /><span></span></label></div>
               </div>
             </section>
 
@@ -246,6 +261,7 @@
                   <div class="prompt-meta"><span id="cleanup-prompt-status">Built-in prompt</span><span id="cleanup-prompt-count"></span></div>
                 </div>
                 <div class="setting-row engine-row"><div><strong>Local speech engine</strong><p id="engine-message">Starting NVIDIA Parakeet…</p></div><span class="private-badge">Local</span></div>
+                <div class="setting-row" id="model-install-row" hidden><div><strong>Speech model</strong><p id="model-install-message">Checking local model…</p><progress id="model-install-progress" max="100" value="0" hidden></progress></div><button type="button" class="change-button" id="model-install-action" hidden>Cancel</button></div>
               </div>
             </section>
           </div>
@@ -262,7 +278,7 @@
           <span class="capture-prompt">Press your shortcut</span>
           <div class="shortcut-keys" id="capture-keys"></div>
         </div>
-        <p class="capture-note">Use two modifiers, or Ctrl, Alt, or Win with another key. Known Windows-reserved combinations are rejected.</p>
+        <p class="capture-note" id="capture-note">Use two modifiers, or Ctrl, Alt, or Win with another key. Known Windows-reserved combinations are rejected.</p>
         <div class="dialog-error" id="hotkey-error" role="alert"></div>
         <div class="dialog-actions"><button type="button" class="change-button" id="cancel-hotkey">Cancel</button><button type="button" id="save-hotkey" disabled>Save shortcut</button></div>
       </form>

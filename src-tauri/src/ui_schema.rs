@@ -310,9 +310,7 @@ pub fn favicon_for_url(url: &str) -> Option<String> {
 }
 
 fn is_derived_favicon(url: &str, allowed_urls: &HashSet<String>) -> bool {
-    if !(url.starts_with("https://icons.duckduckgo.com/ip3/")
-        && url.ends_with(".ico"))
-    {
+    if !(url.starts_with("https://icons.duckduckgo.com/ip3/") && url.ends_with(".ico")) {
         return false;
     }
     let host = url
@@ -354,9 +352,8 @@ fn is_same_host_image(url: &str, allowed_urls: &HashSet<String>) -> bool {
         return false;
     };
     allowed_urls.iter().any(|allowed| {
-        host_of_url(allowed).is_some_and(|allowed_host| {
-            allowed_host.eq_ignore_ascii_case(&image_host)
-        })
+        host_of_url(allowed)
+            .is_some_and(|allowed_host| allowed_host.eq_ignore_ascii_case(&image_host))
     })
 }
 
@@ -422,7 +419,10 @@ fn looks_like_html(value: &str) -> bool {
 }
 
 #[allow(dead_code)]
-pub fn fallback_document(query: &str, sources: &[(u32, String, String, String)]) -> SearchUiDocument {
+pub fn fallback_document(
+    query: &str,
+    sources: &[(u32, String, String, String)],
+) -> SearchUiDocument {
     fallback_document_with_images(query, sources, &[])
 }
 
@@ -559,11 +559,25 @@ mod tests {
 
     #[test]
     fn fallback_with_images_includes_visual() {
-        let sources = vec![(1, "A".to_string(), "https://example.com/a".to_string(), "snip".to_string())];
-        let images = vec![("https://icons.duckduckgo.com/ip3/example.com.ico".to_string(), "A".to_string())];
+        let sources = vec![(
+            1,
+            "A".to_string(),
+            "https://example.com/a".to_string(),
+            "snip".to_string(),
+        )];
+        let images = vec![(
+            "https://icons.duckduckgo.com/ip3/example.com.ico".to_string(),
+            "A".to_string(),
+        )];
         let doc = fallback_document_with_images("test", &sources, &images);
-        assert!(doc.nodes.iter().any(|n| matches!(n, UiNode::ImageFrame { .. })));
+        assert!(doc
+            .nodes
+            .iter()
+            .any(|n| matches!(n, UiNode::ImageFrame { .. })));
         let plain = fallback_document("test", &sources);
-        assert!(!plain.nodes.iter().any(|n| matches!(n, UiNode::ImageFrame { .. })));
+        assert!(!plain
+            .nodes
+            .iter()
+            .any(|n| matches!(n, UiNode::ImageFrame { .. })));
     }
 }

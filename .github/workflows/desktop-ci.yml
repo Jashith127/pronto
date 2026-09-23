@@ -1,0 +1,47 @@
+name: Desktop CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  macos-arm64:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Apple Silicon runner
+        run: test "$(uname -m)" = arm64
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+          components: rustfmt, clippy
+      - name: Stage checked Metal runtime
+        run: scripts/prepare-macos-assets.sh
+      - name: Format
+        working-directory: src-tauri
+        run: cargo fmt --check
+      - name: Clippy
+        working-directory: src-tauri
+        run: cargo clippy --target aarch64-apple-darwin --all-targets -- -D warnings
+      - name: Check Apple Silicon build
+        working-directory: src-tauri
+        run: cargo check --target aarch64-apple-darwin
+      - name: Test Apple Silicon build
+        working-directory: src-tauri
+        run: cargo test --target aarch64-apple-darwin
+      - name: Check native hotkey bridge
+        run: scripts/check-macos-hotkey-bridge.sh
+
+  windows-x64:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Check Windows build
+        working-directory: src-tauri
+        run: cargo check --target x86_64-pc-windows-msvc
+      - name: Test Windows build
+        working-directory: src-tauri
+        run: cargo test --target x86_64-pc-windows-msvc
