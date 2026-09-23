@@ -6,6 +6,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $false
 $root = Split-Path -Parent $PSScriptRoot
 $asset = Join-Path $root 'release-assets/Pronto_0.8.2_aarch64.dmg'
 $checksumFile = Join-Path $root 'release-assets/Pronto_0.8.2_aarch64.dmg.sha256'
@@ -31,8 +32,8 @@ if ($LASTEXITCODE -ne 0 -or $repoName.Trim() -ne $Repo) {
     throw "GitHub CLI cannot access $Repo. Check the account with gh auth status and create the repository first."
 }
 
-gh release view $Tag --repo $Repo --json tagName --jq .tagName 2>$null | Out-Null
-if ($LASTEXITCODE -eq 0) {
+$existing = gh release list --repo $Repo --limit 100 --json tagName --jq '.[].tagName' 2>$null
+if ($LASTEXITCODE -eq 0 -and ($existing -split "`r?`n" | Where-Object { $_ -eq $Tag }).Count -gt 0) {
     throw "Release $Tag already exists in $Repo. Open it on GitHub to add or replace assets manually."
 }
 
