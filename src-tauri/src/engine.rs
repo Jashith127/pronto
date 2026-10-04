@@ -7,6 +7,7 @@ use crate::settings::{
 use reqwest::blocking::{multipart, Client};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use speech_packs::AsrModel;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
 use std::net::TcpListener;
@@ -14,7 +15,7 @@ use std::net::TcpListener;
 use std::os::windows::{io::AsRawHandle, process::CommandExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -29,6 +30,48 @@ const MODEL_TRANSITION_COOLDOWN: Duration = Duration::from_secs(60);
 const GPU_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 const WARM_RETRY_COOLDOWN: Duration = Duration::from_secs(30);
 const ENGINE_LOG_LIMIT: u64 = 1024 * 1024;
+const PHONON_MODEL_DIR: &str = "models/phonon-2";
+const PHONON_PYTHON: &str = "runtimes/phonon-cpu/python/python.exe";
+const CUDA_RUNTIME_PACK_EXE: &str = "runtimes/nemo-speech-cuda/bin/nemo-speech.exe";
+
+/// The backend the engine thread is running, for status labels.
+static ACTIVE_BACKEND: AtomicU8 = AtomicU8::new(0);
+
+fn active_backend() -> AsrModel {
+    match ACTIVE_BACKEND.load(Ordering::Acquire) {
+        1 => AsrModel::Phonon,
+        _ => AsrModel::Parakeet,
+    }
+}
+
+fn set_active_backend(model: AsrModel) {
+    ACTIVE_BACKEND.store(
+        match model {
+            AsrModel::Parakeet => 0,
+            AsrModel::Phonon => 1,
+        },
+        Ordering::Release,
+    );
+}
+
+/// Where the active backend runs, for status text ("Warming Phonon on the CPU…").
+fn device_phrase(model: AsrModel) -> &'static str {
+    match model {
+        AsrModel::Phonon => "the CPU",
+        AsrModel::Parakeet if cfg!(target_os = "macos") => "Metal",
+        AsrModel::Parakeet => "the GPU",
+    }
+}
+
+/// Phonon's packed CPU engine competes with itself when requests run in
+/// parallel, so meeting chunks go one at a time there.
+fn meeting_workers(model: AsrModel) -> usize {
+    if model.uses_gpu() {
+        3
+    } else {
+        1
+    }
+}
 pub struct TranscriptionJob {
     pub recording: Recording,
     pub settings: UserSettings,
@@ -106,11 +149,16 @@ pub struct EngineController {
 }
 
 impl EngineController {
-    pub fn new(app: AppHandle, resource_dir: Option<PathBuf>, gpu_memory_management: bool) -> Self {
+    pub fn new(
+        app: AppHandle,
+        resource_dir: Option<PathBuf>,
+        gpu_memory_management: bool,
+        model: AsrModel,
+    ) -> Self {
         let (commands, receiver) = mpsc::channel();
         std::thread::Builder::new()
             .name("pronto-engine".into())
-            .spawn(move || engine_worker(app, resource_dir, gpu_memory_management, receiver))
+            .spawn(move || engine_worker(app, resource_dir, gpu_memory_management, model, receiver))
             .expect("failed to start transcription engine thread");
         Self { commands }
     }
@@ -142,6 +190,12 @@ impl EngineController {
         let _ = self.commands.send(EngineCommand::ModelInstalled);
     }
 
+    /// Stop the running backend and warm `model` instead. Its packs must
+    /// already be installed.
+    pub fn switch_model(&self, model: AsrModel) {
+        let _ = self.commands.send(EngineCommand::SwitchModel(model));
+    }
+
     pub fn set_gpu_memory_management(&self, enabled: bool) {
         let _ = self
             .commands
@@ -157,6 +211,7 @@ enum EngineCommand {
     #[cfg(target_os = "macos")]
     ModelInstalled,
     ConfigureGpuMemory(bool),
+    SwitchModel(AsrModel),
 }
 
 struct GpuPressurePolicy {
@@ -217,28 +272,32 @@ fn engine_worker(
     app: AppHandle,
     resource_dir: Option<PathBuf>,
     gpu_memory_management: bool,
+    initial_model: AsrModel,
     receiver: mpsc::Receiver<EngineCommand>,
 ) {
+    let mut backend = initial_model;
+    set_active_backend(backend);
     let gpu = GpuMemoryMonitor::new().ok();
     let before_load = gpu.as_ref().and_then(|gpu| gpu.memory_info().ok());
     emit_model_status(
         &app,
         false,
-        if cfg!(target_os = "macos") {
-            "Checking Parakeet for Metal…"
+        &if cfg!(target_os = "macos") {
+            "Checking Parakeet for Metal…".to_string()
         } else {
-            "Loading Parakeet on the GPU…"
+            format!(
+                "Loading {} on {}…",
+                backend.short_name(),
+                device_phrase(backend)
+            )
         },
     );
-    let mut runtime = locate_runtime(resource_dir.as_deref());
-    let minimum_model_bytes = runtime
-        .as_ref()
-        .ok()
-        .and_then(|runtime| runtime.model.metadata().ok())
-        .map(|metadata| metadata.len().saturating_mul(3) / 2)
-        .unwrap_or(1024 * MIB);
-    let mut policy =
-        GpuPressurePolicy::new(gpu_memory_management, Instant::now(), minimum_model_bytes);
+    let mut runtime = locate_runtime(resource_dir.as_deref(), backend);
+    let mut policy = GpuPressurePolicy::new(
+        gpu_memory_management,
+        Instant::now(),
+        minimum_model_bytes(runtime.as_ref().ok()),
+    );
     let mut server = match runtime.as_ref() {
         Ok(runtime) => match SpeechServer::start(runtime) {
             Ok(server) => {
@@ -250,7 +309,7 @@ fn engine_worker(
                     policy.model_bytes = policy.model_bytes.max(observed);
                 }
                 policy.note_transition(Instant::now());
-                emit_model_status(&app, true, "Parakeet is warm and ready");
+                emit_model_status(&app, true, &ready_message(backend));
                 Some(server)
             }
             Err(error) => {
@@ -274,7 +333,7 @@ fn engine_worker(
         .expect("failed to build HTTP client");
 
     loop {
-        let command = if server.is_some() && policy.enabled && gpu.is_some() {
+        let command = if server.is_some() && policy.enabled && gpu.is_some() && backend.uses_gpu() {
             match receiver.recv_timeout(GPU_POLL_INTERVAL) {
                 Ok(command) => Some(command),
                 Err(RecvTimeoutError::Timeout) => {
@@ -310,13 +369,25 @@ fn engine_worker(
         match command.expect("received engine command") {
             #[cfg(target_os = "macos")]
             EngineCommand::ModelInstalled => {
-                runtime = locate_runtime(resource_dir.as_deref());
+                runtime = locate_runtime(resource_dir.as_deref(), backend);
                 last_start_failure = None;
                 if server.is_none() {
                     server =
                         warm_server(&app, runtime.as_ref().map_err(String::as_str), &mut policy);
                     last_start_failure = server.is_none().then(Instant::now);
                 }
+            }
+            EngineCommand::SwitchModel(model) => {
+                if let Some(mut previous) = server.take() {
+                    previous.stop();
+                }
+                backend = model;
+                set_active_backend(backend);
+                runtime = locate_runtime(resource_dir.as_deref(), backend);
+                policy.model_bytes = minimum_model_bytes(runtime.as_ref().ok());
+                policy.note_transition(Instant::now());
+                server = warm_server(&app, runtime.as_ref().map_err(String::as_str), &mut policy);
+                last_start_failure = server.is_none().then(Instant::now);
             }
             EngineCommand::ConfigureGpuMemory(enabled) => {
                 policy.enabled = enabled;
@@ -331,14 +402,17 @@ fn engine_worker(
                         emit_model_status(
                             &app,
                             false,
-                            "Parakeet could not start; retrying shortly…",
+                            &format!(
+                                "{} could not start; retrying shortly…",
+                                backend.short_name()
+                            ),
                         );
                         continue;
                     }
                     let can_load = gpu
                         .as_ref()
                         .and_then(|gpu| gpu.memory_info().ok())
-                        .is_none_or(|memory| policy.can_load(memory));
+                        .is_none_or(|memory| !backend.uses_gpu() || policy.can_load(memory));
                     if can_load {
                         server = warm_server(
                             &app,
@@ -371,7 +445,7 @@ fn engine_worker(
                         let can_load = gpu
                             .as_ref()
                             .and_then(|gpu| gpu.memory_info().ok())
-                            .is_none_or(|memory| policy.can_load(memory));
+                            .is_none_or(|memory| !backend.uses_gpu() || policy.can_load(memory));
                         if can_load {
                             server = warm_server(
                                 &app,
@@ -403,15 +477,18 @@ fn engine_worker(
                     last_start_failure.is_some_and(|failed| failed.elapsed() < WARM_RETRY_COOLDOWN);
                 let result = match server.as_mut() {
                     Some(server) => process_job(&client, server, job, started),
+                    // A missing install explains itself better than engine.log.
+                    None if runtime.is_err() => Err(runtime.as_ref().err().cloned().unwrap_or_default()),
                     None if recent_start_failure => Err(
-                        "Parakeet failed to start. See engine.log in Pronto's local data folder, then try again shortly."
-                            .into(),
+                        format!("{} failed to start. See engine.log in Pronto's local data folder, then try again shortly.", backend.short_name()),
                     ),
                     None => Err(if cfg!(target_os = "macos") {
-                        "Not enough available memory to load Parakeet. Dictation was not transcribed."
+                        "Not enough available memory to load Parakeet. Dictation was not transcribed.".to_string()
+                    } else if backend.uses_gpu() {
+                        "Not enough GPU memory to load Parakeet. Dictation was not transcribed.".to_string()
                     } else {
-                        "Not enough GPU memory to load Parakeet. Dictation was not transcribed."
-                    }.into()),
+                        "Phonon could not start. Dictation was not transcribed.".to_string()
+                    }),
                 };
                 crate::complete_transcription(&app, result);
             }
@@ -426,7 +503,10 @@ fn engine_worker(
                 }
                 let result = match server.as_mut() {
                     Some(server) => process_meeting_job(&client, server, job, &app),
-                    None => Err("Parakeet could not start to process the meeting".into()),
+                    None => Err(format!(
+                        "{} could not start to process the meeting",
+                        backend.short_name()
+                    )),
                 };
                 match result {
                     Ok(completed) => crate::complete_meeting_transcription(&app, Ok(completed)),
@@ -443,7 +523,10 @@ fn engine_worker(
                 }
                 let result = match server.as_mut() {
                     Some(server) => process_search_asr(&client, server, job),
-                    None => Err("Parakeet could not start for voice search".into()),
+                    None => Err(format!(
+                        "{} could not start for voice search",
+                        backend.short_name()
+                    )),
                 };
                 crate::complete_search_asr(&app, result);
             }
@@ -470,16 +553,16 @@ fn warm_server(
     emit_model_status(
         app,
         false,
-        if cfg!(target_os = "macos") {
-            "Warming Parakeet on Metal…"
-        } else {
-            "Warming Parakeet on the GPU…"
-        },
+        &format!(
+            "Warming {} on {}…",
+            runtime.backend.short_name(),
+            device_phrase(runtime.backend)
+        ),
     );
     match SpeechServer::start(runtime) {
         Ok(server) => {
             policy.note_transition(Instant::now());
-            emit_model_status(app, true, "Parakeet is warm and ready");
+            emit_model_status(app, true, &ready_message(runtime.backend));
             Some(server)
         }
         Err(error) => {
@@ -487,6 +570,19 @@ fn warm_server(
             None
         }
     }
+}
+
+fn ready_message(model: AsrModel) -> String {
+    format!("{} is warm and ready", model.short_name())
+}
+
+/// Free GPU memory required before (re)loading: 1.5x the model on disk.
+fn minimum_model_bytes(runtime: Option<&RuntimePaths>) -> u64 {
+    runtime
+        .and_then(|runtime| runtime.model.metadata().ok())
+        .filter(|metadata| metadata.is_file())
+        .map(|metadata| metadata.len().saturating_mul(3) / 2)
+        .unwrap_or(1024 * MIB)
 }
 
 fn process_job(
@@ -588,12 +684,19 @@ fn transcribe_recording(
     recording: &Recording,
     language: &str,
 ) -> Result<String, String> {
-    transcribe_recording_url(client, &server.base_url, recording, language)
+    transcribe_recording_url(
+        client,
+        &server.base_url,
+        server.backend,
+        recording,
+        language,
+    )
 }
 
 fn transcribe_recording_url(
     client: &Client,
     base_url: &str,
+    backend: AsrModel,
     recording: &Recording,
     language: &str,
 ) -> Result<String, String> {
@@ -608,9 +711,13 @@ fn transcribe_recording_url(
                 .mime_str("audio/wav")
                 .map_err(|e| e.to_string())?,
         )
-        .text("model", "parakeet")
         .text("response_format", "json");
-    if language != "auto" {
+    // Phonon's server checks `model` against its own id and is English-only,
+    // so both fields are Parakeet-only.
+    if backend == AsrModel::Parakeet {
+        form = form.text("model", "parakeet");
+    }
+    if backend == AsrModel::Parakeet && language != "auto" {
         form = form.text("language", language.to_string());
     }
     let response = client
@@ -624,11 +731,14 @@ fn transcribe_recording_url(
     if !response.status().is_success() {
         let status = response.status();
         let detail = response.text().unwrap_or_default();
-        return Err(format!("Parakeet returned {status}: {detail}"));
+        return Err(format!(
+            "{} returned {status}: {detail}",
+            backend.short_name()
+        ));
     }
     Ok(response
         .json::<AsrResponse>()
-        .map_err(|e| format!("Invalid Parakeet response: {e}"))?
+        .map_err(|e| format!("Invalid {} response: {e}", backend.short_name()))?
         .text
         .trim()
         .to_string())
@@ -653,13 +763,14 @@ fn process_meeting_job(
     // Bounded parallel transcription, order preserved. Any chunk failure
     // fails the whole job. Each worker loads only its current chunk, so a
     // two-hour recording does not sit in memory beside the warmed model.
-    const WORKERS: usize = 3;
+    let workers = meeting_workers(server.backend);
     let slots: Vec<Mutex<Option<Result<String, String>>>> =
         (0..total).map(|_| Mutex::new(None)).collect();
     let done = AtomicUsize::new(0);
     let base_url = server.base_url.clone();
+    let backend = server.backend;
     std::thread::scope(|scope| {
-        for worker in 0..WORKERS.min(total.max(1)) {
+        for worker in 0..workers.min(total.max(1)) {
             // Fresh shared references per worker: the `move` closure takes
             // copies of these while the owned values stay put for later use.
             let start = worker;
@@ -685,6 +796,7 @@ fn process_meeting_job(
                             transcribe_recording_url(
                                 http,
                                 url,
+                                backend,
                                 &Recording {
                                     samples,
                                     sample_rate: 16_000,
@@ -706,7 +818,7 @@ fn process_meeting_job(
                             "total": total,
                         }),
                     );
-                    index += WORKERS;
+                    index += workers;
                 }
             });
         }
@@ -915,13 +1027,16 @@ pub struct CompletedTranscription {
 }
 
 struct RuntimePaths {
+    backend: AsrModel,
     executable: PathBuf,
+    /// Parakeet: the GGUF file. Phonon: the unpacked model folder.
     model: PathBuf,
 }
 
 struct SpeechServer {
     child: Child,
     base_url: String,
+    backend: AsrModel,
     #[cfg(windows)]
     _job: ProcessJob,
 }
@@ -989,10 +1104,6 @@ impl SpeechServer {
             .port();
         drop(listener);
 
-        let bin_dir = runtime
-            .executable
-            .parent()
-            .ok_or_else(|| "Invalid NeMo Speech runtime path".to_string())?;
         let log_path = engine_log_path();
         if fs::metadata(&log_path).is_ok_and(|metadata| metadata.len() > ENGINE_LOG_LIMIT) {
             let _ = fs::rename(&log_path, log_path.with_extension("old.log"));
@@ -1009,33 +1120,14 @@ impl SpeechServer {
         let stderr_log = log
             .try_clone()
             .map_err(|error| format!("Could not prepare engine log: {error}"))?;
-        let mut command = Command::new(&runtime.executable);
+        let mut command = server_command(runtime, port)?;
         command
-            .args([
-                "serve",
-                "--host",
-                "127.0.0.1",
-                "--port",
-                &port.to_string(),
-                "--threads",
-                "1",
-                "--no-ui",
-                "--device",
-                if cfg!(target_os = "macos") {
-                    "metal"
-                } else {
-                    "cuda:0"
-                },
-                "--asr-model",
-            ])
-            .arg(&runtime.model)
-            .current_dir(bin_dir)
             .stdin(Stdio::null())
             .stdout(Stdio::from(
                 log.try_clone().map_err(|error| error.to_string())?,
             ))
             .stderr(Stdio::from(stderr_log));
-        // NeMo Speech is a console-subsystem executable. Redirecting its
+        // Both runtimes are console-subsystem executables. Redirecting their
         // streams does not suppress the console host; CREATE_NO_WINDOW does.
         #[cfg(windows)]
         command.creation_flags(0x0800_0000);
@@ -1059,16 +1151,18 @@ impl SpeechServer {
             .timeout(Duration::from_secs(2))
             .build()
             .map_err(|error| error.to_string())?;
-        let deadline = Instant::now() + Duration::from_secs(90);
+        let backend = runtime.backend;
+        let name = backend.short_name();
+        // Phonon imports Python + torch and expands its weights on load.
+        let startup_limit = if backend == AsrModel::Phonon { 180 } else { 90 };
+        let deadline = Instant::now() + Duration::from_secs(startup_limit);
         while Instant::now() < deadline {
             if let Some(status) = child
                 .try_wait()
                 .map_err(|error| format!("Could not inspect speech runtime: {error}"))?
             {
                 let detail = log_tail(&mut log);
-                return Err(format!(
-                    "Parakeet exited during startup ({status}).{detail}"
-                ));
+                return Err(format!("{name} exited during startup ({status}).{detail}"));
             }
             if health_client
                 .get(format!("{base_url}/health"))
@@ -1079,6 +1173,7 @@ impl SpeechServer {
                 return Ok(Self {
                     child,
                     base_url,
+                    backend,
                     #[cfg(windows)]
                     _job: job,
                 });
@@ -1089,7 +1184,7 @@ impl SpeechServer {
         let _ = child.kill();
         let detail = log_tail(&mut log);
         Err(format!(
-            "Parakeet did not finish loading within 90 seconds.{detail}"
+            "{name} did not finish loading within {startup_limit} seconds.{detail}"
         ))
     }
 }
@@ -1171,7 +1266,77 @@ fn log_tail(log: &mut fs::File) -> String {
         .unwrap_or_default()
 }
 
-fn locate_runtime(resource_dir: Option<&Path>) -> Result<RuntimePaths, String> {
+fn server_command(runtime: &RuntimePaths, port: u16) -> Result<Command, String> {
+    let port = port.to_string();
+    match runtime.backend {
+        AsrModel::Parakeet => {
+            let bin_dir = runtime
+                .executable
+                .parent()
+                .ok_or_else(|| "Invalid NeMo Speech runtime path".to_string())?;
+            let mut command = Command::new(&runtime.executable);
+            command
+                .args([
+                    "serve",
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    &port,
+                    "--threads",
+                    "1",
+                    "--no-ui",
+                    "--device",
+                    if cfg!(target_os = "macos") {
+                        "metal"
+                    } else {
+                        "cuda:0"
+                    },
+                    "--asr-model",
+                ])
+                .arg(&runtime.model)
+                .current_dir(bin_dir);
+            Ok(command)
+        }
+        AsrModel::Phonon => {
+            // `fermion serve <dir>` serves an unpacked local Phonon profile;
+            // the environment pins the CPU engine and forbids any network
+            // lookup, so the runtime only ever reads the verified pack.
+            let pack_root = runtime
+                .executable
+                .parent()
+                .and_then(Path::parent)
+                .ok_or_else(|| "Invalid Phonon runtime path".to_string())?;
+            let mut command = Command::new(&runtime.executable);
+            command
+                // -I isolates from user site-packages and PYTHON* variables.
+                .args(["-I", "-B", "-X", "utf8", "-m", "fermion.cli", "serve"])
+                .arg(&runtime.model)
+                .args(["--host", "127.0.0.1", "--port", &port])
+                .env("FERMION_DEVICE", "cpu")
+                .env("FERMION_CACHE_DIR", pack_root.join("cache"))
+                .env("HF_HUB_OFFLINE", "1")
+                .env("HF_HUB_DISABLE_TELEMETRY", "1")
+                .env("TRANSFORMERS_OFFLINE", "1")
+                .current_dir(pack_root);
+            Ok(command)
+        }
+    }
+}
+
+/// True when an older NSIS install shipped the CUDA runtime beside the
+/// executable, which satisfies the `nemo-speech-cuda` pack.
+pub fn bundled_cuda_runtime(resource_dir: Option<&Path>) -> bool {
+    runtime_roots(resource_dir)
+        .iter()
+        .any(|root| root.join(NEMO_SPEECH_EXE).is_file())
+}
+
+#[cfg(target_os = "macos")]
+const NEMO_SPEECH_EXE: &str = "runtime/nemo-speech/bin/nemo-speech";
+#[cfg(not(target_os = "macos"))]
+const NEMO_SPEECH_EXE: &str = "runtime/nemo-speech/bin/nemo-speech.exe";
+
+fn runtime_roots(resource_dir: Option<&Path>) -> Vec<PathBuf> {
     let mut roots = Vec::new();
     if let Some(home) = std::env::var_os("PRONTO_HOME") {
         roots.push(PathBuf::from(home));
@@ -1190,32 +1355,79 @@ fn locate_runtime(resource_dir: Option<&Path>) -> Result<RuntimePaths, String> {
             roots.push(parent.to_path_buf());
         }
     }
+    roots
+}
 
-    for root in roots {
-        #[cfg(target_os = "macos")]
-        let executable = root.join("runtime/nemo-speech/bin/nemo-speech");
-        #[cfg(not(target_os = "macos"))]
-        let executable = root.join("runtime/nemo-speech/bin/nemo-speech.exe");
-        #[cfg(target_os = "macos")]
-        let model = crate::platform_paths::data_dir()
-            .join("models")
-            .join(PARAKEET_MODEL);
-        #[cfg(not(target_os = "macos"))]
-        let model = root.join("models").join(PARAKEET_MODEL);
-        #[cfg(target_os = "macos")]
-        let model_ready = crate::model_provision::verified_model(&model);
-        #[cfg(not(target_os = "macos"))]
-        let model_ready = model.is_file();
-        if executable.is_file() && model_ready {
-            return Ok(RuntimePaths { executable, model });
-        }
+fn locate_runtime(resource_dir: Option<&Path>, backend: AsrModel) -> Result<RuntimePaths, String> {
+    match backend {
+        AsrModel::Parakeet => locate_parakeet(resource_dir),
+        AsrModel::Phonon => locate_phonon(),
+    }
+}
+
+fn locate_parakeet(resource_dir: Option<&Path>) -> Result<RuntimePaths, String> {
+    let data = crate::platform_paths::data_dir();
+    let roots = runtime_roots(resource_dir);
+    // Bundled runtime first (NSIS installs, dev checkouts), then the
+    // downloadable CUDA runtime pack.
+    let mut executables: Vec<PathBuf> = roots
+        .iter()
+        .map(|root| root.join(NEMO_SPEECH_EXE))
+        .collect();
+    if cfg!(windows) {
+        executables.push(data.join(CUDA_RUNTIME_PACK_EXE));
+    }
+    #[cfg(target_os = "macos")]
+    let models = vec![data.join("models").join(PARAKEET_MODEL)];
+    #[cfg(not(target_os = "macos"))]
+    let models: Vec<PathBuf> = std::iter::once(data.join("models").join(PARAKEET_MODEL))
+        .chain(
+            roots
+                .iter()
+                .map(|root| root.join("models").join(PARAKEET_MODEL)),
+        )
+        .collect();
+    #[cfg(target_os = "macos")]
+    let model_ready = |model: &Path| crate::model_provision::verified_model(model);
+    #[cfg(not(target_os = "macos"))]
+    let model_ready = |model: &Path| model.is_file();
+
+    let executable = executables.into_iter().find(|path| path.is_file());
+    let model = models.into_iter().find(|path| model_ready(path));
+    if let (Some(executable), Some(model)) = (executable, model) {
+        return Ok(RuntimePaths {
+            backend: AsrModel::Parakeet,
+            executable,
+            model,
+        });
     }
     #[cfg(target_os = "macos")]
     return Err(format!("Parakeet runtime or verified model ({PARAKEET_MODEL}) is unavailable. Check the model download in Settings."));
     #[cfg(not(target_os = "macos"))]
-    Err(format!(
-        "Missing Parakeet runtime or model ({PARAKEET_MODEL}). Reinstall Pronto or set PRONTO_HOME."
-    ))
+    Err("Parakeet isn't installed yet. Download it from Settings, Advanced.".into())
+}
+
+fn locate_phonon() -> Result<RuntimePaths, String> {
+    if cfg!(target_os = "macos") {
+        return Err("Phonon is available on Windows only.".into());
+    }
+    let data = crate::platform_paths::data_dir();
+    // Developers can point at any Python with fermion-research installed.
+    let executable = std::env::var_os("PRONTO_PHONON_PYTHON")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| data.join(PHONON_PYTHON));
+    let model = data.join(PHONON_MODEL_DIR);
+    // fermion accepts a local folder holding both files side by side.
+    let model_ready =
+        model.join("config.json").is_file() && model.join("packed_manifest.json").is_file();
+    if executable.is_file() && model_ready {
+        return Ok(RuntimePaths {
+            backend: AsrModel::Phonon,
+            executable,
+            model,
+        });
+    }
+    Err("Phonon isn't installed yet. Download it from Settings, Advanced.".into())
 }
 
 #[derive(Deserialize)]
@@ -1634,7 +1846,7 @@ fn emit_model_status(app: &AppHandle, ready: bool, message: &str) {
         ModelStatus {
             ready,
             message: message.into(),
-            backend: "NVIDIA Parakeet TDT 0.6B v3 · CUDA".into(),
+            backend: active_backend().backend_label().into(),
         },
     );
     if !ready {
@@ -1692,8 +1904,8 @@ mod tests {
         assert_eq!(u32::from_le_bytes(wav[24..28].try_into().unwrap()), 16_000);
     }
 
-    #[test]
-    fn local_asr_request_sends_wav_and_reads_transcript() {
+    /// Answer one transcription request with `text` and return the raw request.
+    fn transcribe_against_fake_server(backend: AsrModel, language: &str) -> (String, Vec<u8>) {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let address = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
@@ -1722,17 +1934,9 @@ mod tests {
                     }
                 }
             }
-            let headers_end = request
-                .windows(4)
-                .position(|part| part == b"\r\n\r\n")
-                .unwrap();
-            let headers = String::from_utf8_lossy(&request[..headers_end]);
-            assert!(headers.starts_with("POST /v1/audio/transcriptions HTTP/1.1"));
-            assert!(headers.to_ascii_lowercase().contains("multipart/form-data"));
-            assert!(request.windows(4).any(|part| part == b"RIFF"));
-            assert!(request.windows(8).any(|part| part == b"parakeet"));
             let body = r#"{"text":"Pronto works on this Mac."}"#;
             write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+            request
         });
         let recording = Recording {
             samples: vec![0.25; 1_600],
@@ -1743,11 +1947,55 @@ mod tests {
             .timeout(Duration::from_secs(3))
             .build()
             .unwrap();
-        let text =
-            transcribe_recording_url(&client, &format!("http://{address}"), &recording, "auto")
-                .unwrap();
+        let text = transcribe_recording_url(
+            &client,
+            &format!("http://{address}"),
+            backend,
+            &recording,
+            language,
+        )
+        .unwrap();
+        (text, server.join().unwrap())
+    }
+
+    fn has_field(request: &[u8], name: &str) -> bool {
+        let needle = format!("name=\"{name}\"");
+        request
+            .windows(needle.len())
+            .any(|part| part == needle.as_bytes())
+    }
+
+    #[test]
+    fn local_asr_request_sends_wav_and_reads_transcript() {
+        let (text, request) = transcribe_against_fake_server(AsrModel::Parakeet, "de");
+        let headers_end = request
+            .windows(4)
+            .position(|part| part == b"\r\n\r\n")
+            .unwrap();
+        let headers = String::from_utf8_lossy(&request[..headers_end]);
+        assert!(headers.starts_with("POST /v1/audio/transcriptions HTTP/1.1"));
+        assert!(headers.to_ascii_lowercase().contains("multipart/form-data"));
+        assert!(request.windows(4).any(|part| part == b"RIFF"));
+        assert!(request.windows(8).any(|part| part == b"parakeet"));
+        assert!(has_field(&request, "language"));
         assert_eq!(text, "Pronto works on this Mac.");
-        server.join().unwrap();
+    }
+
+    #[test]
+    fn phonon_request_omits_parakeet_model_and_language() {
+        // Phonon's server 404s an unknown `model` and is English-only.
+        let (text, request) = transcribe_against_fake_server(AsrModel::Phonon, "de");
+        assert!(request.windows(4).any(|part| part == b"RIFF"));
+        assert!(!has_field(&request, "model"));
+        assert!(!has_field(&request, "language"));
+        assert!(has_field(&request, "response_format"));
+        assert_eq!(text, "Pronto works on this Mac.");
+    }
+
+    #[test]
+    fn meeting_chunks_run_one_at_a_time_on_the_cpu_backend() {
+        assert_eq!(meeting_workers(AsrModel::Phonon), 1);
+        assert_eq!(meeting_workers(AsrModel::Parakeet), 3);
     }
 
     #[test]
@@ -2018,7 +2266,7 @@ mod tests {
             sample_rate,
             channels,
         };
-        let runtime = locate_runtime(None).unwrap();
+        let runtime = locate_runtime(None, AsrModel::Parakeet).unwrap();
         let mut server = SpeechServer::start(&runtime).unwrap();
         let client = Client::builder()
             .timeout(Duration::from_secs(10))

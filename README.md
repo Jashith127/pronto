@@ -11,7 +11,7 @@ Pronto is a push-to-talk dictation application. Hold a global shortcut, speak, a
 
 Two editions share one codebase with clearly separated platform paths:
 
-* **Pronto (Windows):** NVIDIA Parakeet TDT 0.6B v3 via CUDA, Win32 insertion via SendInput, NSIS installer.
+* **Pronto (Windows):** a choice of speech engine (NVIDIA Parakeet TDT 0.6B v3 on CUDA, or Fermion Phonon-2 on the CPU for PCs without an NVIDIA GPU), Win32 insertion via SendInput, and Pronto Setup, a custom installer.
 * **Pronto for Mac (Apple Silicon, macOS 13+):** Metal speech runtime, Accessibility insertion with clipboard fallback, `.app`/`.dmg` bundle. Dictation uses Control + Option + Space, Paste Last uses Control + Option + V, voice search uses Control + Option + S by default.
 
 ![Pronto Dictate screen](docs/screenshot-dictate.png)
@@ -51,6 +51,12 @@ Two editions share one codebase with clearly separated platform paths:
 * **Light and dark mode.** Choose System, Light, or Dark under Settings -- Appearance. Listening pills and dictation overlays keep their dark look so they stay readable on top of any app.
 * **Note Taker in dark mode.** Recording libraries, transcripts, and meeting notes all follow the app theme at full panel width.
 
+### Speech engines and setup
+
+* **Pronto Setup.** A custom installer in Pronto's own look. It checks your graphics, recommends Parakeet when an NVIDIA GPU is present and Phonon otherwise, and downloads only the engine you pick, with live size, speed, and time remaining. Downloads resume after a cancel or a dropped connection and are checksum-verified.
+* **Switch engines any time.** Settings → Advanced → Speech model downloads the other engine in the app and switches as soon as it is ready.
+* **Parakeet** runs only on NVIDIA GPUs and is the fastest, with 25 languages. **Phonon** runs on any PC's CPU, is considerably slower, and understands English only.
+
 ### Windows integration
 
 * **System tray operation.** Lives in the tray with dictation status, meeting controls, and Paste Last Transcript. Closing the main window keeps background dictation active.
@@ -68,7 +74,7 @@ On an NVIDIA RTX 4050 Laptop GPU, local transcription of an 11-second audio file
 ### Windows (Pronto)
 
 * Windows 10 or 11 (64-bit)
-* NVIDIA GPU with current display driver
+* NVIDIA GPU with current display driver for Parakeet (Phonon runs on the CPU of any x64 PC)
 * Microphone
 * Internet connection (during installation for the one-time model download, and only for DeepSeek rewriting afterwards)
 
@@ -105,7 +111,10 @@ On an NVIDIA RTX 4050 Laptop GPU, local transcription of an 11-second audio file
 * `src-tauri/src/platform_paths.rs` + `src-tauri/src/model_provision.rs` -- standard macOS Application Support/Logs storage and first-launch model download with resume/cancel/SHA-256 verify. Windows storage paths remain intact.
 * `src-tauri/tauri.conf.json` -- Windows bundle (`nsis`, `installer-hooks.nsh` model download at setup time).
 * `src-tauri/tauri.macos.conf.json` + `Entitlements.plist` + `Info.plist` + `icons/icon.icns` -- macOS bundle (`.app`/`.dmg`, hardened runtime, privacy strings). Merged at build time by `scripts/build-macos.sh`.
-* `src-tauri/installer-hooks.nsh` -- NSIS logic that downloads and verifies the speech model at install time (Windows only).
+* `src-tauri/installer-hooks.nsh` -- NSIS logic that downloads and verifies the speech model at install time (legacy Windows installer, kept as a fallback).
+* `installer/` + `ui/setup.*` -- Pronto Setup, the custom Windows installer (a small Tauri app). It embeds the app payload, detects the GPU, downloads the chosen engine's packs, and registers the per-user install and uninstaller.
+* `crates/speech-packs/` -- shared by the app and Pronto Setup: the pinned pack manifest (`speech-packs.manifest`), resumable SHA-256-verified downloads with speed/ETA, safe zip unpacking, and DXGI GPU detection.
+* `src-tauri/src/speech_models.rs` -- Settings → Advanced → Speech model: lists engines and downloads/switches between Parakeet and Phonon.
 * `scripts/` -- `build-macos.sh` + `prepare-macos-assets.sh` (Mac build/asset staging), `publish-macos-release.ps1` (Windows-only DMG upload: checksum-verify `release-assets/` and `gh release create` -- no Mac needed).
 * `.github/workflows/desktop-ci.yml` -- CI matrix: `macos-15` (Apple Silicon check/clippy/test + hotkey bridge) and `windows-2022` (check/test). Future Mac DMGs can be rebuilt from CI without a local Mac.
 * `ARCHITECTURE.md` -- pipeline, latency design, storage, and Windows/macOS lifecycle details (see "Windows platform path" and "macOS platform path").
@@ -119,7 +128,20 @@ A global shortcut wakes a Rust coordinator that captures prewarmed microphone au
 
 ### Build
 
-The installer is slim (~100 MB): the ~681 MB speech model is excluded from bundle resources and fetched with hash verification during setup. Run these commands in PowerShell to test and build:
+**Pronto Setup (recommended).** Build the speech packs once per runtime/model change, then the installer. Both also run in CI through the manual *Windows release artifacts* workflow:
+
+```powershell
+# 1. Packs: CUDA runtime, Phonon CPU runtime, Phonon-2 model (needs Git LFS + Python 3.12)
+scripts/build-speech-packs.ps1
+#    Upload dist/speech-packs/*.zip to the `speech-packs-v1` release and paste the printed
+#    size/sha256 values into crates/speech-packs/speech-packs.manifest.
+# 2. Installer: dist/Pronto_Setup_<version>_x64.exe (needs Node.js for the Tauri CLI)
+scripts/build-installer.ps1
+```
+
+Silent install: `Pronto_Setup_<version>_x64.exe /S --model=auto|parakeet|phonon`. Silent uninstall: `uninstall.exe --uninstall --silent [--remove-data]`.
+
+**Legacy NSIS installer.** The ~681 MB speech model is excluded from bundle resources and fetched with hash verification during setup. Run these commands in PowerShell to test and build:
 
 ```powershell
 cd src-tauri

@@ -43,3 +43,22 @@ configured DuckDuckGo HTML endpoint.
 - Pronto vendors `ui/vendor/uPlot.iife.min.js`, `ui/vendor/uPlot.min.css`, and
   `ui/vendor/UPLOT_LICENSE` for local chart rendering in the search window.
   No CDN is used at runtime.
+
+## Fermion Research Phonon-2 and `fermion-research`
+
+- Copyright Fermion Research.
+- Package: `fermion-research` (PyPI), License: Apache License 2.0.
+- Model: `FermionResearch/Phonon-2`, a quantization-aware retrain of
+  NVIDIA Parakeet-TDT 0.6B v3 (CC BY 4.0). See the model card for its license:
+  https://huggingface.co/FermionResearch/Phonon-2
+- Not bundled with Pronto. When the Phonon speech engine is chosen, Pronto
+  downloads a pinned, checksummed runtime pack (embedded CPython, CPU-only
+  PyTorch, `fermion-research` and their dependencies, each under its own
+  license; the exact versions are listed in `requirements.lock.txt` inside the
+  pack) and the unpacked Phonon-2 model.
+
+## Python (embeddable distribution) and PyTorch
+
+- Python: Copyright Python Software Foundation, PSF License Agreement.
+- PyTorch: Copyright Facebook, Inc. and its affiliates, BSD-style license.
+- Both ship only inside the downloadable Phonon runtime pack.

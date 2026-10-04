@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+pub use speech_packs::AsrModel;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -59,6 +60,10 @@ pub struct UserSettings {
     pub meeting_suggestions: bool,
     #[serde(default)]
     pub theme: ThemeMode,
+    /// Speech backend. Changed only through `switch_speech_model`, which
+    /// installs its packs first. Older settings default to Parakeet.
+    #[serde(default)]
+    pub asr_model: AsrModel,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -112,6 +117,7 @@ impl Default for UserSettings {
             cleanup_prompt: None,
             meeting_suggestions: true,
             theme: ThemeMode::System,
+            asr_model: AsrModel::Parakeet,
         }
     }
 }
@@ -240,6 +246,15 @@ impl SettingsStore {
         *settings = next.clone();
         drop(settings);
         self.preferences()
+    }
+
+    pub fn set_asr_model(&self, model: AsrModel) -> Result<(), String> {
+        let mut settings = self.settings.lock().map_err(|_| "settings lock poisoned")?;
+        let mut next = settings.clone();
+        next.asr_model = model;
+        write_json(self.data_dir.join("settings.json"), &next)?;
+        *settings = next;
+        Ok(())
     }
 
     pub fn add_dictionary_term(&self, term: String) -> Result<UserSettings, String> {
@@ -489,6 +504,16 @@ mod tests {
         let settings: UserSettings =
             serde_json::from_str(r#"{"meetingSuggestions":false}"#).unwrap();
         assert!(!settings.meeting_suggestions);
+    }
+
+    #[test]
+    fn speech_model_defaults_to_parakeet_and_reads_installer_choice() {
+        let settings: UserSettings = serde_json::from_str(r#"{"language":"en"}"#).unwrap();
+        assert_eq!(settings.asr_model, AsrModel::Parakeet);
+        // The installer writes only this key on a fresh install.
+        let settings: UserSettings = serde_json::from_str(r#"{"asrModel":"phonon"}"#).unwrap();
+        assert_eq!(settings.asr_model, AsrModel::Phonon);
+        assert!(settings.auto_insert);
     }
 
     #[test]

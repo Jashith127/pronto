@@ -1,0 +1,36 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Pronto Setup",
+  "version": "0.8.2",
+  "identifier": "app.pronto.setup",
+  "build": {
+    "frontendDist": "../ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "setup",
+        "title": "Pronto Setup",
+        "url": "setup.html",
+        "width": 760,
+        "height": 500,
+        "resizable": false,
+        "maximizable": false,
+        "fullscreen": false,
+        "center": true,
+        "decorations": false,
+        "transparent": true,
+        "shadow": true,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false,
+    "icon": ["../src-tauri/icons/icon.ico", "../src-tauri/icons/icon.png"]
+  }
+}

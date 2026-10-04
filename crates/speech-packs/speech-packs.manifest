@@ -1,0 +1,51 @@
+# Pronto speech packs: the single source of truth for what the installer and
+# the in-app model switcher download. Every pack is pinned by size + SHA-256
+# and fetched over HTTPS from this repository's GitHub releases.
+#
+# kind=file  -> the download is stored at `dest` as-is.
+# kind=zip   -> the download is verified, then unpacked into `dest`.
+#
+# `sha256=pending` marks a pack whose release asset has not been published yet;
+# it is listed (so the UI can show it) but never downloaded. Fill in size and
+# sha256 from scripts/build-speech-packs.ps1 output after publishing.
+# `approx_mb` is only a display hint used while a pack is pending.
+
+[parakeet-model]
+model=parakeet
+platform=any
+kind=file
+dest=models/parakeet-tdt-0.6b-v3.q8_0.gguf
+url=https://github.com/Jashith127/pronto/releases/download/parakeet-model-v1/parakeet-tdt-0.6b-v3.q8_0.gguf
+sha256=e3880d0aaaaf2c308ea2c35016b2b895c423eb3fda924c1b463d1c19b7f4d32e
+size=713975456
+approx_mb=681
+
+[nemo-speech-cuda]
+model=parakeet
+platform=windows
+kind=zip
+dest=runtimes/nemo-speech-cuda
+url=https://github.com/Jashith127/pronto/releases/download/speech-packs-v1/nemo-speech-cuda-win-x64.zip
+sha256=pending
+size=0
+approx_mb=60
+
+[phonon-model]
+model=phonon
+platform=windows
+kind=zip
+dest=models/phonon-2
+url=https://github.com/Jashith127/pronto/releases/download/speech-packs-v1/phonon-2-model.zip
+sha256=pending
+size=0
+approx_mb=164
+
+[phonon-runtime]
+model=phonon
+platform=windows
+kind=zip
+dest=runtimes/phonon-cpu
+url=https://github.com/Jashith127/pronto/releases/download/speech-packs-v1/phonon-cpu-runtime-win-x64.zip
+sha256=pending
+size=0
+approx_mb=300

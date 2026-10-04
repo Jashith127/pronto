@@ -89,6 +89,43 @@ Rust/Tauri coordinator ---------------------> overlay + dashboard + search overl
   browser. The WebView never navigates to search results. YouTube links are
   rewritten to youtube-nocookie embeds.
 
+## Speech engines (Windows)
+
+Pronto runs one of two local backends behind the same loopback
+`/v1/audio/transcriptions` contract, chosen in Pronto Setup and switchable in
+Settings → Advanced:
+
+| Engine | Runtime | Device | Languages | Notes |
+|---|---|---|---|---|
+| Parakeet TDT 0.6B v3 (Q8 GGUF) | NeMo-Speech.cpp `nemo-speech.exe` | CUDA | 25 | Default with an NVIDIA GPU; ~128x realtime on an RTX 4050 laptop. |
+| Phonon-2 (Fermion Research) | embedded Python + `fermion-research` (`python -m fermion.cli serve <dir>`) | CPU | English | For PCs without NVIDIA; ~21x realtime on 8 vCPU per Fermion's numbers, WER 5.21 vs 4.96. |
+
+Phonon-2's CUDA path ships only as a Linux container, and on NVIDIA hardware
+Parakeet is both faster and more accurate, so Pronto offers Phonon on the CPU
+only. The engine thread owns one server at a time; a switch stops it, records
+the choice, and warms the other. Phonon's server omits Parakeet's `model` and
+`language` form fields, takes up to 180 s to load, and processes meeting chunks
+one at a time. GPU-pressure release applies only to Parakeet.
+
+Both engines arrive as *packs* (`crates/speech-packs/speech-packs.manifest`):
+pinned HTTPS release assets, verified by size and SHA-256, resumable after a
+cancel, and unpacked to a staging folder that is swapped in only when complete.
+Packs live under `%LOCALAPPDATA%\Pronto` (`models/`, `runtimes/`). A CUDA
+runtime bundled by the legacy NSIS installer satisfies the CUDA pack.
+
+## Pronto Setup
+
+`installer/` is a separate Tauri app whose UI is `ui/setup.html` (same tokens
+and fonts as Pronto). It embeds a zip of `pronto.exe` and its resources at
+build time, detects display adapters through DXGI (NVIDIA → Parakeet
+recommended, anything else → Phonon), downloads the chosen packs first (the
+only slow, cancellable step), then closes Pronto, writes the app files,
+records `asrModel` in `settings.json`, creates Start menu and desktop
+shortcuts, and registers `HKCU\…\Uninstall\Pronto` with `uninstall.exe` (a
+copy of itself). The uninstaller reruns from a temporary copy so it can remove
+its own folder, and can keep history and settings. Missing WebView2 is
+detected before any window opens and installed on request.
+
 ## Why Parakeet
 
 Parakeet TDT 0.6B v3 is a better fit than Whisper for this RTX 4050 laptop: it is

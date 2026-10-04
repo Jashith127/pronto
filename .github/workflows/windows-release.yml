@@ -1,0 +1,58 @@
+name: Windows release artifacts
+
+# Builds the speech packs and Pronto Setup. Run it manually; upload the packs
+# to the `speech-packs-v1` release, paste their size/sha256 into
+# crates/speech-packs/speech-packs.manifest, then run it again with
+# `packs: false` to build the installer that pins them.
+on:
+  workflow_dispatch:
+    inputs:
+      packs:
+        description: Build speech packs
+        type: boolean
+        default: true
+      installer:
+        description: Build Pronto Setup
+        type: boolean
+        default: true
+
+jobs:
+  speech-packs:
+    if: ${{ inputs.packs }}
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch the CUDA runtime from Git LFS
+        run: git lfs pull --include "runtime/nemo-speech/**"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build packs
+        shell: pwsh
+        run: scripts/build-speech-packs.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: speech-packs
+          path: |
+            dist/speech-packs/*.zip
+            dist/speech-packs/manifest-values.txt
+          compression-level: 0
+
+  installer:
+    if: ${{ inputs.installer }}
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build Pronto Setup
+        shell: pwsh
+        run: scripts/build-installer.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pronto-setup
+          path: |
+            dist/Pronto_Setup_*_x64.exe
+            dist/Pronto_Setup_*_x64.exe.sha256

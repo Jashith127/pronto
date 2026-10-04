@@ -198,7 +198,7 @@
                   <div class="setting-control"><select id="microphone" aria-label="Microphone" disabled><option>Loading…</option></select><button class="change-button" id="microphone-retry" type="button" hidden>Retry</button></div>
                 </div>
                 <div class="setting-row">
-                  <div><strong>Language</strong><p>Choose a language or let Parakeet detect it.</p></div>
+                  <div><strong>Language</strong><p id="language-help">Choose a language or let Parakeet detect it.</p></div>
                   <select id="language"><option value="auto">Auto detect</option><option value="en">English</option><option value="de">German</option><option value="es">Spanish</option><option value="fr">French</option><option value="it">Italian</option><option value="pt">Portuguese</option><option value="nl">Dutch</option><option value="pl">Polish</option></select>
                 </div>
                 <div class="setting-row"><div><strong>Insert automatically</strong><p>Type the result where dictation began.</p></div><label class="toggle"><input type="checkbox" id="auto-insert" /><span></span></label></div>
@@ -245,6 +245,36 @@
               </div>
             </section>
 
+            <section class="settings-section" id="speech-model-section" hidden>
+              <h2>Advanced</h2>
+              <div class="settings-card">
+                <div class="setting-row speech-model-head">
+                  <div><strong>Speech model</strong><p id="speech-model-hardware">Checking your graphics…</p></div>
+                </div>
+                <div class="model-options" role="radiogroup" aria-label="Speech model">
+                  <button type="button" class="model-option" data-model="parakeet" role="radio" aria-checked="false">
+                    <span class="model-option-head"><strong>Parakeet</strong><span class="model-badge" hidden>Recommended</span></span>
+                    <span class="model-option-meta">Fastest · 25 languages</span>
+                    <span class="model-option-warning">Runs only on NVIDIA GPUs.</span>
+                    <span class="model-option-state"></span>
+                  </button>
+                  <button type="button" class="model-option" data-model="phonon" role="radio" aria-checked="false">
+                    <span class="model-option-head"><strong>Phonon</strong><span class="model-badge" hidden>Recommended</span></span>
+                    <span class="model-option-meta">Any PC · English only</span>
+                    <span class="model-option-warning">For PCs without an NVIDIA GPU. Considerably slower.</span>
+                    <span class="model-option-state"></span>
+                  </button>
+                </div>
+                <div class="model-switch" id="model-switch" hidden>
+                  <div class="model-switch-bar"><i id="model-switch-fill"></i></div>
+                  <div class="model-switch-meta">
+                    <span><strong id="model-switch-message"></strong><small id="model-switch-detail"></small></span>
+                    <button type="button" class="change-button" id="model-switch-action">Cancel</button>
+                  </div>
+                </div>
+              </div>
+            </section>
+
             <section class="settings-section">
               <h2>Cleanup service</h2>
               <div class="settings-card api-card">
@@ -260,7 +290,7 @@
                   <textarea id="cleanup-prompt" maxlength="16000" spellcheck="false" aria-label="Cleanup system prompt"></textarea>
                   <div class="prompt-meta"><span id="cleanup-prompt-status">Built-in prompt</span><span id="cleanup-prompt-count"></span></div>
                 </div>
-                <div class="setting-row engine-row"><div><strong>Local speech engine</strong><p id="engine-message">Starting NVIDIA Parakeet…</p></div><span class="private-badge">Local</span></div>
+                <div class="setting-row engine-row"><div><strong>Local speech engine</strong><p id="engine-message">Starting the speech engine…</p></div><span class="private-badge">Local</span></div>
                 <div class="setting-row" id="model-install-row" hidden><div><strong>Speech model</strong><p id="model-install-message">Checking local model…</p><progress id="model-install-progress" max="100" value="0" hidden></progress></div><button type="button" class="change-button" id="model-install-action" hidden>Cancel</button></div>
               </div>
             </section>
@@ -287,6 +317,7 @@
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
         <h2 id="modal-title"></h2>
         <p id="modal-desc"></p>
+        <p id="modal-warning" class="modal-warning" hidden></p>
         <input id="modal-input" maxlength="120" autocomplete="off" hidden />
         <div class="modal-actions">
           <button type="button" class="change-button" id="modal-cancel">Cancel</button>
