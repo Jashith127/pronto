@@ -387,4 +387,13 @@ async function syncOverlayStatusOnLoad() {
 }
 sendOverlayHeartbeat();
 setInterval(sendOverlayHeartbeat, 5000);
+// A beat that follows a real animation frame proves the renderer can paint,
+// not just run timers. The backend waits for it right after showing the
+// window and reloads the page if it never arrives.
+function beatAfterPaint() {
+  requestAnimationFrame(() => sendOverlayHeartbeat());
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') beatAfterPaint();
+});
 syncOverlayStatusOnLoad();

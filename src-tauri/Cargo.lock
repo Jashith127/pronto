@@ -3286,7 +3286,7 @@ dependencies = [
 
 [[package]]
 name = "pronto"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "cc",
  "core-foundation 0.10.1",

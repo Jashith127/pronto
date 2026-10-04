@@ -86,12 +86,23 @@
 
         <!-- Uninstall -->
         <section class="screen" data-screen="uninstall">
-          <div class="voice still" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
-          <h2>Remove Pronto?</h2>
-          <label class="keep"><input type="checkbox" id="keep-data" checked /><span></span>Keep my history and settings</label>
-          <div class="actions centered">
+          <h2>Remove Pronto</h2>
+          <p class="lede">Choose what happens to your data.</p>
+          <div class="choices" role="radiogroup" aria-label="Your data">
+            <label class="choice">
+              <input type="radio" name="data" id="keep-data" checked />
+              <span class="choice-mark" aria-hidden="true"></span>
+              <span class="choice-text"><strong>Keep my data</strong><span>History and settings stay, ready if you reinstall.</span></span>
+            </label>
+            <label class="choice">
+              <input type="radio" name="data" id="erase-data" />
+              <span class="choice-mark" aria-hidden="true"></span>
+              <span class="choice-text"><strong>Remove everything</strong><span>Delete history, settings and downloaded speech engines.</span></span>
+            </label>
+          </div>
+          <div class="actions uninstall-actions">
             <button type="button" class="quiet" id="uninstall-cancel">Cancel</button>
-            <button type="button" class="primary danger" id="uninstall">Remove</button>
+            <button type="button" class="primary danger" id="uninstall">Remove Pronto</button>
           </div>
         </section>
       </div>

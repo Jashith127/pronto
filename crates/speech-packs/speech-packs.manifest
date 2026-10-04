@@ -28,7 +28,7 @@ dest=runtimes/nemo-speech-cuda
 url=https://github.com/Jashith127/pronto/releases/download/speech-packs-v1/nemo-speech-cuda-win-x64.zip
 sha256=dba110f25665d4416f88f3d1a6dae6470b0f11baa209d09fbe9f10959fc1872a
 size=105715690
-approx_mb=101
+approx_mb=60
 
 [phonon-model]
 model=phonon
@@ -38,7 +38,7 @@ dest=models/phonon-2
 url=https://github.com/Jashith127/pronto/releases/download/speech-packs-v1/phonon-2-model.zip
 sha256=fffb517b76c3efaf2cddabc9504891b97c7b442cc804655b2c12784fdb0fc742
 size=164065920
-approx_mb=157
+approx_mb=164
 
 [phonon-runtime]
 model=phonon
@@ -48,4 +48,4 @@ dest=runtimes/phonon-cpu
 url=https://github.com/Jashith127/pronto/releases/download/speech-packs-v1/phonon-cpu-runtime-win-x64.zip
 sha256=1d6812663527f8fc4c85dda91c7488f6589c754fbeaddd28c904559925cfdbd6
 size=198806432
-approx_mb=190
+approx_mb=300
