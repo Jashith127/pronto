@@ -578,6 +578,17 @@ mod tests {
     }
 
     #[test]
+    fn every_shipped_pack_is_published() {
+        // A `pending` pack makes the app refuse that engine at runtime.
+        for pack in parse_manifest(MANIFEST).unwrap() {
+            assert!(pack.is_published(), "{} is not published", pack.id);
+            assert!(pack
+                .url
+                .starts_with("https://github.com/Jashith127/pronto/releases/download/"));
+        }
+    }
+
+    #[test]
     fn manifest_rejects_unsafe_entries() {
         let base = "[x]\nmodel=phonon\nplatform=any\nkind=zip\nurl=https://e.test/a\nsha256=pending\nsize=0\napprox_mb=1\n";
         assert!(parse_manifest(&format!("{base}dest=models/x\n")).is_ok());
