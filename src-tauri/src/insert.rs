@@ -181,6 +181,12 @@ pub fn foreground_window() -> isize {
     unsafe { GetForegroundWindow().0 as isize }
 }
 
+/// Window dictation should write into: the foreground window when it starts
+/// (the macOS module tracks the last editor instead).
+pub fn preferred_target() -> isize {
+    foreground_window()
+}
+
 pub fn insert_text(target: isize, text: &str) -> Result<(), String> {
     if text.is_empty() {
         return Ok(());

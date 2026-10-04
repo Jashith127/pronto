@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pronto Setup</title>
+    <link rel="stylesheet" href="fonts.css" />
+    <link rel="stylesheet" href="theme.css" />
+    <link rel="stylesheet" href="setup.css" />
+    <script>
+      try {
+        document.documentElement.dataset.theme = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      } catch (_) {}
+    </script>
+  </head>
+  <body>
+    <main class="frame">
+      <header class="chrome" data-tauri-drag-region>
+        <span class="chrome-title" data-tauri-drag-region>Pronto Setup</span>
+        <div class="chrome-actions">
+          <button type="button" id="minimize" aria-label="Minimize"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12"/></svg></button>
+          <button type="button" id="close" aria-label="Close"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7 7 17"/></svg></button>
+        </div>
+      </header>
+
+      <div class="stage">
+        <!-- 1. Welcome -->
+        <section class="screen" data-screen="welcome">
+          <div class="voice" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+          <h1 class="wordmark">Pronto</h1>
+          <p class="lede" id="welcome-lede">Speak anywhere. Your words appear.</p>
+          <button type="button" class="primary" id="get-started">Get started</button>
+          <span class="fineprint" id="version"></span>
+        </section>
+
+        <!-- 2. Choose a speech engine -->
+        <section class="screen" data-screen="choose">
+          <h2>Choose your speech engine</h2>
+          <p class="gpu" id="gpu"><span class="dot"></span><span id="gpu-name">Checking your graphics…</span></p>
+          <div class="engines" role="radiogroup" aria-label="Speech engine">
+            <button type="button" class="engine" data-model="parakeet" role="radio" aria-checked="false">
+              <span class="engine-top"><strong>Parakeet</strong><span class="badge" hidden>Recommended</span></span>
+              <span class="engine-tags"><span>Fastest</span><span>25 languages</span></span>
+              <span class="engine-note">Needs an NVIDIA GPU</span>
+              <span class="engine-size"></span>
+            </button>
+            <button type="button" class="engine" data-model="phonon" role="radio" aria-checked="false">
+              <span class="engine-top"><strong>Phonon</strong><span class="badge" hidden>Recommended</span></span>
+              <span class="engine-tags"><span>Any PC</span><span>English</span></span>
+              <span class="engine-note">Slower than Parakeet</span>
+              <span class="engine-size"></span>
+            </button>
+          </div>
+          <p class="warning quiet-hint" id="choice-warning"></p>
+          <div class="actions">
+            <span class="fineprint">You can switch later in Settings.</span>
+            <button type="button" class="primary" id="install">Install</button>
+          </div>
+        </section>
+
+        <!-- 3. Installing -->
+        <section class="screen" data-screen="progress">
+          <div class="voice live" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+          <div class="percent" id="percent" aria-live="polite">0%</div>
+          <p class="stage-label" id="stage-label">Getting ready</p>
+          <div class="bar" role="progressbar" aria-labelledby="stage-label" aria-valuemin="0" aria-valuemax="100"><i id="bar-fill"></i></div>
+          <p class="detail" id="detail">&nbsp;</p>
+          <p class="tip" id="tip"></p>
+          <div class="actions centered progress-actions" id="progress-actions">
+            <button type="button" class="quiet" id="cancel">Cancel</button>
+          </div>
+          <div class="actions centered" id="error-actions" hidden>
+            <button type="button" class="quiet" id="error-close">Close</button>
+            <button type="button" class="primary" id="retry">Try again</button>
+          </div>
+        </section>
+
+        <!-- 4. Done -->
+        <section class="screen" data-screen="done">
+          <svg class="check" viewBox="0 0 52 52" aria-hidden="true"><circle cx="26" cy="26" r="24"/><path d="M15 27l7 7 15-16"/></svg>
+          <h2 id="done-title">You're all set</h2>
+          <div class="keys" id="done-keys"><kbd>Ctrl</kbd><span>+</span><kbd>Alt</kbd><span>+</span><kbd>Space</kbd></div>
+          <p class="lede" id="done-lede">Hold to dictate in any app.</p>
+          <button type="button" class="primary" id="launch">Open Pronto</button>
+        </section>
+
+        <!-- Uninstall -->
+        <section class="screen" data-screen="uninstall">
+          <div class="voice still" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+          <h2>Remove Pronto?</h2>
+          <label class="keep"><input type="checkbox" id="keep-data" checked /><span></span>Keep my history and settings</label>
+          <div class="actions centered">
+            <button type="button" class="quiet" id="uninstall-cancel">Cancel</button>
+            <button type="button" class="primary danger" id="uninstall">Remove</button>
+          </div>
+        </section>
+      </div>
+    </main>
+    <script src="setup.js"></script>
+  </body>
+</html>

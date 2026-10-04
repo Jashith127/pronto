@@ -41,6 +41,7 @@ mod settings;
 #[cfg(windows)]
 mod single_instance;
 mod sound;
+mod speech_models;
 #[cfg(windows)]
 mod startup;
 #[cfg(target_os = "macos")]
@@ -2151,6 +2152,9 @@ fn save_settings(
     settings.search_shortcut = previous.search_shortcut;
     settings.microphone_id = previous.microphone_id;
     settings.microphone_name = previous.microphone_name;
+    // The speech model changes only through switch_speech_model, after its
+    // packs are installed.
+    settings.asr_model = previous.asr_model;
     settings.gpu_memory_management_configured = true;
     if settings.launch_at_startup != previous.launch_at_startup {
         startup::set_enabled(&app, settings.launch_at_startup)?;
@@ -2973,6 +2977,7 @@ pub fn run() {
         // Builder-managed state exists before configured WebViews are created,
         // so early IPC and WebView2 lifecycle callbacks cannot race setup().
         .manage(AppState::new())
+        .manage(speech_models::SpeechModelManager::default())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             {
@@ -2989,16 +2994,20 @@ pub fn run() {
                 .expect("shortcut lock poisoned")
                 .clone();
             let resource_dir = app.path().resource_dir().ok();
-            let gpu_memory_management = app
-                .state::<AppState>()
-                .settings
-                .snapshot()
+            let startup_settings = app.state::<AppState>().settings.snapshot().ok();
+            let gpu_memory_management = startup_settings
+                .as_ref()
                 .map(|settings| settings.gpu_memory_management)
                 .unwrap_or(true);
+            let asr_model = startup_settings
+                .map(|settings| settings.asr_model)
+                .filter(|_| speech_models::supported())
+                .unwrap_or_default();
             let engine = EngineController::new(
                 app.handle().clone(),
                 resource_dir.clone(),
                 gpu_memory_management,
+                asr_model,
             );
             *app.state::<AppState>()
                 .engine
@@ -3114,6 +3123,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_status,
             get_model_status,
+            speech_models::get_speech_models,
+            speech_models::switch_speech_model,
+            speech_models::cancel_speech_model_switch,
             #[cfg(target_os = "macos")]
             get_model_install_status,
             #[cfg(target_os = "macos")]

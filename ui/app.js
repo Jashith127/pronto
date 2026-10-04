@@ -166,6 +166,124 @@ if (isMac) {
   listen('model-install-status', event => renderModelInstall(event.payload));
 }
 
+// ---- Settings → Advanced → Speech model ----
+let speechModels = null;
+const languageHelp = document.querySelector('#language-help').textContent;
+
+function formatBytes(bytes) {
+  const mb = Number(bytes) / (1024 * 1024);
+  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
+  return `${Math.max(1, Math.round(mb))} MB`;
+}
+
+function formatEta(seconds) {
+  if (seconds == null) return 'estimating time…';
+  if (seconds < 5) return 'almost done';
+  if (seconds < 60) return `about ${Math.ceil(seconds / 5) * 5} s left`;
+  const minutes = Math.round(seconds / 60);
+  return `about ${minutes} min left`;
+}
+
+function modelName(id) {
+  return id === 'phonon' ? 'Phonon' : 'Parakeet';
+}
+
+function renderSpeechModels(view) {
+  speechModels = view;
+  const section = document.querySelector('#speech-model-section');
+  section.hidden = !view.supported;
+  if (!view.supported) return;
+  document.querySelector('#speech-model-hardware').textContent = view.gpuName
+    ? `${view.gpuName} detected${view.hasNvidia ? '' : ' · no NVIDIA GPU'}`
+    : 'No dedicated GPU detected';
+  const busy = Boolean(view.switching && ['preparing', 'downloading', 'verifying', 'unpacking'].includes(view.switching.phase));
+  for (const model of view.models) {
+    const card = document.querySelector(`.model-option[data-model="${model.id}"]`);
+    const active = model.id === view.active;
+    card.classList.toggle('active', active);
+    card.setAttribute('aria-checked', String(active));
+    card.disabled = busy;
+    card.querySelector('.model-badge').hidden = !model.recommended;
+    card.querySelector('.model-option-state').textContent = active
+      ? 'In use'
+      : model.installed ? 'Downloaded' : `${formatBytes(model.downloadBytes)} download`;
+  }
+  const phonon = view.active === 'phonon';
+  const language = document.querySelector('#language');
+  language.disabled = phonon;
+  document.querySelector('#language-help').textContent = phonon ? 'Phonon understands English only.' : languageHelp;
+  if (view.switching) renderModelSwitch(view.switching);
+}
+
+function renderModelSwitch(status) {
+  const panel = document.querySelector('#model-switch');
+  const working = ['preparing', 'downloading', 'verifying', 'unpacking', 'starting'].includes(status.phase);
+  const failed = ['error', 'cancelled'].includes(status.phase);
+  panel.hidden = !(working || failed);
+  panel.classList.toggle('failed', failed);
+  const percent = status.totalBytes ? Math.min(100, status.downloadedBytes * 100 / status.totalBytes) : 0;
+  const fill = document.querySelector('#model-switch-fill');
+  fill.style.width = `${status.phase === 'downloading' ? percent : working ? 100 : percent}%`;
+  panel.classList.toggle('indeterminate', ['preparing', 'verifying', 'unpacking', 'starting'].includes(status.phase));
+  document.querySelector('#model-switch-message').textContent = status.message;
+  let detail = '';
+  if (status.phase === 'downloading' && status.totalBytes) {
+    const speed = status.bytesPerSec ? ` · ${formatBytes(status.bytesPerSec)}/s` : '';
+    detail = `${formatBytes(status.downloadedBytes)} of ${formatBytes(status.totalBytes)}${speed} · ${formatEta(status.etaSecs)}`;
+  } else if (status.phase === 'cancelled') {
+    detail = 'Progress is saved. Try again to resume.';
+  }
+  document.querySelector('#model-switch-detail').textContent = detail;
+  const action = document.querySelector('#model-switch-action');
+  action.hidden = status.phase === 'starting' || status.phase === 'verifying' || status.phase === 'unpacking';
+  action.textContent = failed ? 'Try again' : 'Cancel';
+  action.dataset.action = failed ? 'retry' : 'cancel';
+  action.dataset.model = status.model;
+  document.querySelectorAll('.model-option').forEach(card => { card.disabled = working; });
+}
+
+async function refreshSpeechModels() {
+  try { renderSpeechModels(await invoke('get_speech_models')); } catch (_) { /* older backend */ }
+}
+
+async function requestModelSwitch(id) {
+  if (!speechModels || id === speechModels.active) return;
+  const model = speechModels.models.find(entry => entry.id === id);
+  const download = model.installed ? '' : `Downloads ${formatBytes(model.downloadBytes)}. `;
+  const warning = id === 'phonon'
+    ? 'Phonon is meant for PCs without an NVIDIA GPU. It is considerably slower than Parakeet and understands English only.'
+    : speechModels.hasNvidia
+      ? 'Parakeet runs only on NVIDIA GPUs.'
+      : 'Parakeet runs only on NVIDIA GPUs, and none was detected on this PC. Dictation will likely stop working.';
+  const confirmed = await confirmDialog({
+    title: `Switch to ${modelName(id)}?`,
+    message: `${download}Pronto switches as soon as it is ready.`,
+    warning,
+    confirmLabel: model.installed ? 'Switch' : 'Download and switch',
+    danger: false
+  });
+  if (!confirmed) return;
+  await call('switch_speech_model', { model: id });
+}
+
+document.querySelectorAll('.model-option').forEach(card => {
+  card.addEventListener('click', () => requestModelSwitch(card.dataset.model));
+});
+document.querySelector('#model-switch-action').addEventListener('click', async event => {
+  const { action, model } = event.currentTarget.dataset;
+  if (action === 'cancel') await call('cancel_speech_model_switch');
+  else await call('switch_speech_model', { model });
+});
+listen('speech-model-status', event => {
+  renderModelSwitch(event.payload);
+  if (['done', 'error', 'cancelled'].includes(event.payload.phase)) refreshSpeechModels();
+  if (event.payload.phase === 'done') {
+    showToast(event.payload.message);
+    setTimeout(() => { document.querySelector('#model-switch').hidden = true; }, 1200);
+  }
+});
+refreshSpeechModels();
+
 function historyMarkup(entries) {
   if (!entries.length) return '<div class="history-empty">Your transcripts will appear here after your first dictation.</div>';
   return entries.map(entry => {
@@ -364,7 +482,7 @@ function modalKeyHandler(event) {
   }
 }
 let modalCancelled = null;
-function openModal({ title, message, confirmLabel, danger, inputValue, maxLength }) {
+function openModal({ title, message, warning, confirmLabel, danger, inputValue, maxLength }) {
   if (modalResolve) closeModal(modalCancelled);
   modalCancelled = inputValue == null ? false : null;
   return new Promise(resolve => {
@@ -372,6 +490,8 @@ function openModal({ title, message, confirmLabel, danger, inputValue, maxLength
     document.querySelector('#modal-title').textContent = title;
     document.querySelector('#modal-desc').textContent = message || '';
     document.querySelector('#modal-desc').hidden = !message;
+    document.querySelector('#modal-warning').textContent = warning || '';
+    document.querySelector('#modal-warning').hidden = !warning;
     const confirmBtn = document.querySelector('#modal-confirm');
     confirmBtn.textContent = confirmLabel;
     confirmBtn.classList.toggle('danger', Boolean(danger));
@@ -391,8 +511,8 @@ function openModal({ title, message, confirmLabel, danger, inputValue, maxLength
     }, 0);
   });
 }
-function confirmDialog({ title, message, confirmLabel = 'Delete', danger = true }) {
-  return openModal({ title, message, confirmLabel, danger, inputValue: null }).then(result => result === true);
+function confirmDialog({ title, message, warning, confirmLabel = 'Delete', danger = true }) {
+  return openModal({ title, message, warning, confirmLabel, danger, inputValue: null }).then(result => result === true);
 }
 function promptDialog({ title, message = '', initial = '', confirmLabel = 'Save', maxLength = 120 }) {
   return openModal({ title, message, confirmLabel, danger: false, inputValue: initial, maxLength });

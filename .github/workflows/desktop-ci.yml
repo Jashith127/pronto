@@ -45,3 +45,15 @@ jobs:
       - name: Test Windows build
         working-directory: src-tauri
         run: cargo test --target x86_64-pc-windows-msvc
+      - name: Test speech packs
+        working-directory: crates/speech-packs
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test
+      - name: Test Pronto Setup
+        working-directory: installer
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test
