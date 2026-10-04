@@ -85,6 +85,12 @@ if (isMac) {
   refreshPermissions().catch(() => {});
 }
 const toast = document.querySelector('#toast');
+// Safety net: the shell must never scroll (only .view scrolls internally).
+// If focus or layout ever shifts it, snap back instead of leaving the UI
+// stranded off-viewport.
+for (const node of [document.documentElement, document.body, document.querySelector('.app'), document.querySelector('.shell')]) {
+  node?.addEventListener('scroll', () => { if (node.scrollTop || node.scrollLeft) node.scrollTo(0, 0); });
+}
 const hotkeyDialog = document.querySelector('#hotkey-dialog');
 const hotkeyCapture = document.querySelector('#hotkey-capture');
 let preferences = null;

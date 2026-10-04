@@ -489,7 +489,9 @@ fn begin_recording(app: &AppHandle) -> Result<EngineStatus, String> {
                 let microphone_width = show_microphone
                     .then(|| (microphone_name.chars().count() as f64 * 6.2 + 24.0).max(96.0));
                 position_overlay(&overlay, microphone_width);
+                let show_marker = Instant::now();
                 let shown = overlay.show();
+                verify_overlay_painted(app, show_marker);
                 #[cfg(target_os = "macos")]
                 log_dictation_step(&format!(
                     "overlay show: {shown:?}; visible: {:?}; position: {:?}",
@@ -652,6 +654,65 @@ fn ensure_overlay_page(app: &AppHandle) {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// Right after the overlay is shown, waits for a paint-proven heartbeat. If
+/// the renderer is alive but cannot paint (lost surface after sleep, GPU
+/// reset), none arrives: reload the page and show again. Runs off-thread so
+/// dictation start is never delayed.
+fn verify_overlay_painted(app: &AppHandle, marker: Instant) {
+    let app = app.clone();
+    let _ = std::thread::Builder::new()
+        .name("pronto-overlay-verify".into())
+        .spawn(move || {
+            let deadline = Instant::now() + Duration::from_millis(1500);
+            while Instant::now() < deadline {
+                if overlay_beat_newer_than(&app, marker) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            let still_active = app
+                .state::<AppState>()
+                .pipeline
+                .lock()
+                .map(|pipeline| {
+                    matches!(pipeline.status.phase, Phase::Listening | Phase::Processing)
+                })
+                .unwrap_or(false);
+            if !still_active {
+                return;
+            }
+            if let Some(overlay) = app.get_webview_window("overlay") {
+                let _ = overlay.reload();
+                std::thread::sleep(Duration::from_millis(400));
+                let _ = overlay.show();
+            }
+        });
+}
+
+/// Platform-independent sleep detector. Power notifications can be missed
+/// (hibernate, fast startup, display or session transitions), so a ticking
+/// thread compares wall-clock time against its tick: a large jump means the
+/// machine was suspended and the same recovery runs.
+pub(crate) fn start_resume_watchdog(app: AppHandle) {
+    let _ = std::thread::Builder::new()
+        .name("pronto-resume-watchdog".into())
+        .spawn(move || {
+            let tick = Duration::from_secs(5);
+            let mut last_wall = std::time::SystemTime::now();
+            loop {
+                std::thread::sleep(tick);
+                let now = std::time::SystemTime::now();
+                let wall = now.duration_since(last_wall).unwrap_or_default();
+                last_wall = now;
+                if wall > tick + Duration::from_secs(20) {
+                    // Give audio devices and the compositor a moment to return.
+                    std::thread::sleep(Duration::from_secs(2));
+                    handle_system_resume(&app);
+                }
+            }
+        });
 }
 
 /// Recovery after sleep/hibernate. The overlay pages are hidden at idle, so
@@ -3018,6 +3079,7 @@ pub fn run() {
             // wedged dictation state) instead of degrading silently.
             #[cfg(any(windows, target_os = "macos"))]
             power::start(app.handle().clone());
+            start_resume_watchdog(app.handle().clone());
             let paste_shortcut = app
                 .state::<AppState>()
                 .paste_shortcut
