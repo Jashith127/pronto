@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="theme.css" />
     <link rel="stylesheet" href="styles.css" />
     <link rel="stylesheet" href="app-polish.css" />
+    <link rel="stylesheet" href="notes.css" />
   </head>
   <body>
     <main class="app">
@@ -85,50 +86,80 @@
         </div>
 
         <div class="view" id="notetaker">
-          <section id="notetaker-explorer" class="notes-explorer-view">
-            <div class="page-title notes-page-title">
-              <div><h1>Note Taker</h1><p>Record a meeting or add audio to a folder. Transcription continues quietly in the background.</p></div>
-              <div class="notes-top-actions">
-                <button class="meeting-start-action" id="meeting-toggle" type="button"><span class="record-glyph" aria-hidden="true"><i></i></span><b>Start meeting</b></button>
-                <button class="notes-upload-action" id="notetaker-upload" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4m0 0 4 4m-4-4-4 4M5 20h14"/></svg><b>Upload audio</b></button>
+          <section id="notetaker-explorer" class="nt-library">
+            <div class="page-title nt-title">
+              <div><h1>Note Taker</h1><p>Record a meeting or transcribe an audio file, then keep everything organized in folders.</p></div>
+              <div class="nt-actions">
+                <button class="nt-upload" id="notetaker-upload" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4m0 0 4 4m-4-4-4 4M5 20h14"/></svg><b>Upload audio</b></button>
+                <button class="nt-record" id="meeting-toggle" type="button"><span class="record-glyph" aria-hidden="true"><i></i></span><b>Start meeting</b></button>
                 <input id="notetaker-file" type="file" accept="audio/*,video/*,.m4a,.mkv,.mov,.webm" hidden />
               </div>
             </div>
-            <div class="notes-live-row"><span id="meeting-live-status" role="status"></span><span id="notetaker-background-status" role="status"></span></div>
-            <div class="notes-explorer">
-              <aside class="notes-folders" aria-label="Folders">
-                <div class="notes-sidebar-head"><span>Folders</span><button id="notetaker-sidebar-plus" type="button" aria-label="Create a new folder" title="New folder"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button></div>
-                <form class="notes-new-folder" id="notetaker-new-folder" hidden>
+
+            <section class="nt-live" id="meeting-live" role="status" aria-live="polite" hidden>
+              <span class="nt-live-dot" aria-hidden="true"></span>
+              <div class="nt-live-copy"><strong>Recording meeting</strong><p>Your microphone and computer audio are saved on this computer. Notes are written when you stop.</p></div>
+              <span class="nt-live-timer" id="meeting-live-timer">0:00</span>
+              <button type="button" class="nt-live-stop" id="meeting-stop"><span aria-hidden="true"></span>Stop and create notes</button>
+            </section>
+
+            <div class="nt-jobs" id="notetaker-jobs" role="status" hidden><span class="nt-spinner" aria-hidden="true"></span><span id="notetaker-background-status"></span></div>
+
+            <div class="nt-explorer">
+              <aside class="nt-folders" aria-label="Folders">
+                <div class="nt-folders-head"><span>Folders</span><button id="notetaker-sidebar-plus" type="button" aria-label="Create a new folder" title="New folder"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button></div>
+                <form class="nt-new-folder" id="notetaker-new-folder" hidden>
                   <input id="notetaker-folder-input" maxlength="60" placeholder="Folder name" aria-label="Folder name" autocomplete="off" />
                   <button type="submit">Add</button>
                 </form>
-                <div id="notetaker-folder-list" class="notes-folder-list"></div>
+                <div id="notetaker-folder-list" class="nt-folder-list"></div>
+                <p class="nt-folders-hint">Drag a note onto a folder to move it.</p>
               </aside>
-              <section class="notes-files" aria-label="Transcripts">
-                <div class="notes-files-head"><div><h2 id="notetaker-files-title">My recordings</h2><p>Audio and meeting transcripts</p></div><small id="notetaker-files-count"></small></div>
-                <div class="notes-file-columns" aria-hidden="true"><div class="notes-file-columns-main"><span>Name</span><span>Status</span><span class="notes-file-columns-date">Date</span></div><span></span></div>
-                <div id="notetaker-file-list" class="notes-file-list"></div>
+              <section class="nt-files" aria-label="Notes">
+                <header class="nt-files-head">
+                  <div class="nt-files-title"><h2 id="notetaker-files-title">My recordings</h2><small id="notetaker-files-count"></small></div>
+                  <label class="nt-search">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg>
+                    <input type="search" id="notetaker-search" placeholder="Search all notes" aria-label="Search all notes" autocomplete="off" spellcheck="false" />
+                  </label>
+                </header>
+                <div id="notetaker-file-list" class="nt-file-list"></div>
               </section>
             </div>
           </section>
-          <article id="notetaker-detail" class="notes-detail-view" aria-label="Full transcript" hidden>
-            <header class="notes-detail-head">
-              <button class="notes-back" id="notetaker-back" type="button" aria-label="Back to recordings" title="Back"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12H5m0 0 6-6m-6 6 6 6"/></svg></button>
-              <div class="notes-detail-title"><h1 id="notetaker-viewer-title">Transcript</h1><p id="notetaker-viewer-meta"></p></div>
-              <div class="notes-viewer-actions">
-                <button class="secondary-action" id="notetaker-copy" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>Copy</button>
-                <button id="notetaker-cleanup" type="button">Clean Up Speech</button>
+
+          <article id="notetaker-detail" class="nt-reader" aria-labelledby="notetaker-viewer-title" hidden>
+            <header class="nt-reader-head">
+              <button class="nt-icon-button" id="notetaker-back" type="button" aria-label="Back to folder" title="Back (Esc)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12H5m0 0 6-6m-6 6 6 6"/></svg></button>
+              <nav class="nt-crumbs" aria-label="Location"><button type="button" id="notetaker-crumb-folder"></button><span aria-hidden="true">/</span><span id="notetaker-crumb-title"></span></nav>
+              <div class="nt-reader-actions">
+                <button class="secondary-action" id="notetaker-copy" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg><span id="notetaker-copy-label">Copy</span></button>
+                <button class="nt-cleanup" id="notetaker-cleanup" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5 13.6 8 18 9.6l-4.4 1.6L12 15.5l-1.6-4.3L6 9.6 10.4 8 12 3.5ZM18.5 15l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8.8-2Z"/></svg>Clean up speech</button>
+                <button class="nt-icon-button" id="notetaker-more" type="button" aria-label="More actions" title="More actions"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg></button>
               </div>
             </header>
-            <audio id="notetaker-audio" controls hidden></audio>
-            <div id="notetaker-cleanup-status" class="notes-status" role="status"></div>
-            <div class="notes-tabs" id="notetaker-tabs" hidden role="tablist" aria-label="Meeting content">
-              <button type="button" data-notetaker-tab="notes" role="tab">Meeting notes</button><button type="button" data-notetaker-tab="transcript" role="tab">Transcript</button>
+            <div class="nt-reader-scroll" id="notetaker-reader-scroll">
+              <div class="nt-reader-inner">
+                <span class="nt-kind" id="notetaker-kind"></span>
+                <h1 id="notetaker-viewer-title"></h1>
+                <div class="nt-meta" id="notetaker-viewer-meta"></div>
+                <audio id="notetaker-audio" controls hidden></audio>
+                <div class="nt-tabbar">
+                  <div class="nt-tabs" id="notetaker-tabs" role="tablist" aria-label="Meeting content" hidden>
+                    <button type="button" data-notetaker-tab="notes" role="tab">Notes</button><button type="button" data-notetaker-tab="transcript" role="tab">Transcript</button>
+                  </div>
+                  <div class="nt-version" id="notetaker-version" role="group" aria-label="Transcript version" hidden>
+                    <button type="button" data-notetaker-version="cleaned">Cleaned</button><button type="button" data-notetaker-version="original">Original</button>
+                  </div>
+                </div>
+                <div id="notetaker-cleanup-status" class="nt-status" role="status"></div>
+                <section id="notetaker-meeting-notes" class="nt-notes notes-markdown" hidden></section>
+                <div id="notetaker-viewer-body" class="nt-transcript"></div>
+              </div>
             </div>
-            <section id="notetaker-meeting-notes" class="notes-summary" hidden><h2>Meeting notes</h2><div class="notes-markdown"></div></section>
-            <div id="notetaker-viewer-body" class="notes-viewer-body"></div>
           </article>
-          <div class="notes-menu-layer" id="notetaker-menu-layer" hidden><div class="notes-menu" id="notetaker-menu" role="menu"></div></div>
+          <div class="nt-menu-layer" id="notetaker-menu-layer" hidden><div class="nt-menu" id="notetaker-menu" role="menu"></div></div>
+          <div class="nt-drag-ghost" id="notetaker-drag-ghost" aria-hidden="true" hidden></div>
         </div>
 
         <div class="view" id="dictionary">
@@ -145,155 +176,172 @@
         </div>
 
         <div class="view" id="settings">
-          <div class="page-title"><div><h1>Settings</h1><p id="settings-subtitle">Choose how Pronto listens, writes, and behaves on Windows.</p></div></div>
-          <div class="settings-stack">
-            <section class="settings-section">
-              <h2>Appearance</h2>
-              <div class="settings-card">
-                <div class="setting-row">
-                  <div>
-                    <strong>Theme</strong>
-                    <p>Applies to the main window and search results panel. Listening pills stay dark.</p>
-                    <span class="theme-preview" id="theme-preview">Matching system</span>
+          <div class="page-title settings-title">
+            <div><h1>Settings</h1><p id="settings-subtitle">Choose how Pronto listens, writes, and behaves on Windows.</p></div>
+            <label class="settings-search">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg>
+              <input type="search" id="settings-search" placeholder="Search settings" aria-label="Search settings" autocomplete="off" spellcheck="false" />
+              <kbd id="settings-search-hint" aria-hidden="true">Ctrl F</kbd>
+            </label>
+          </div>
+
+          <div class="settings-layout">
+            <nav class="settings-nav" id="settings-nav" aria-label="Settings sections">
+              <button type="button" data-settings-target="settings-general"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h8m5 0h3M4 17h3m5 0h8"/><circle cx="14.5" cy="7" r="2.5"/><circle cx="9.5" cy="17" r="2.5"/></svg><span>General</span></button>
+              <button type="button" data-settings-target="settings-shortcuts"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="18" height="12" rx="2.5"/><path d="M7 10h.01M10.5 10h.01M14 10h.01M17 10h.01M8 14h8"/></svg><span>Shortcuts</span></button>
+              <button type="button" data-settings-target="settings-dictation"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></svg><span>Dictation</span></button>
+              <button type="button" data-settings-target="settings-sound"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5v5h3.5L12 19V5L7.5 9.5H4Z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/></svg><span>Sound</span></button>
+              <button type="button" data-settings-target="mac-permissions"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 19 6v5.5c0 4.4-2.9 7.9-7 9.5-4.1-1.6-7-5.1-7-9.5V6l7-3Z"/><path d="m9 12 2 2 4-4"/></svg><span>Permissions</span></button>
+              <button type="button" data-settings-target="settings-engine"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/></svg><span>Speech engine</span></button>
+              <button type="button" data-settings-target="settings-online"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 18.5a4.5 4.5 0 0 1-.6-8.96A6 6 0 0 1 17.8 8.6 5 5 0 0 1 17 18.5H7Z"/></svg><span>Online services</span></button>
+            </nav>
+
+            <div class="settings-stack" id="settings-stack">
+              <section class="settings-section" id="settings-general" aria-labelledby="settings-general-title">
+                <header class="settings-section-head"><h2 id="settings-general-title">General</h2><p>How Pronto looks and when it runs.</p></header>
+                <div class="settings-card">
+                  <div class="setting-row" data-keywords="appearance dark mode light mode color colour">
+                    <div><strong>Theme</strong><p>Applies to this window and search results. Listening pills always stay dark.</p></div>
+                    <div class="setting-control setting-control--stack">
+                      <div class="segmented" role="group" aria-label="Theme">
+                        <button type="button" data-theme-pref="system">System</button>
+                        <button type="button" data-theme-pref="light">Light</button>
+                        <button type="button" data-theme-pref="dark">Dark</button>
+                      </div>
+                      <span class="theme-preview" id="theme-preview">Matching system</span>
+                    </div>
                   </div>
-                  <div class="segmented" role="group" aria-label="Theme">
-                    <button type="button" data-theme-pref="system">System</button>
-                    <button type="button" data-theme-pref="light">Light</button>
-                    <button type="button" data-theme-pref="dark">Dark</button>
+                  <div class="setting-row" data-keywords="startup boot login autostart tray menu bar"><div><strong>Launch at startup</strong><p>Starts Pronto silently in the system tray without opening this window.</p></div><label class="toggle"><input type="checkbox" id="launch-at-startup" /><span></span></label></div>
+                  <div class="setting-row" data-keywords="meeting note taker zoom teams call prompt popup notification"><div><strong>Suggest meeting notes</strong><p>Offer to take notes when a meeting app starts using your microphone.</p></div><label class="toggle"><input type="checkbox" id="meeting-suggestions" /><span></span></label></div>
+                </div>
+              </section>
+
+              <section class="settings-section" id="settings-shortcuts" aria-labelledby="settings-shortcuts-title">
+                <header class="settings-section-head"><h2 id="settings-shortcuts-title">Shortcuts</h2><p>Global keys that work in any app.</p></header>
+                <div class="settings-card">
+                  <div class="setting-row hotkey-row" data-keywords="hotkey keybinding key combination record start dictation shortcut">
+                    <div><strong>Start dictation</strong><p id="dictation-shortcut-help">Works globally, including modifier-only combinations such as Win + Ctrl.</p></div>
+                    <div class="setting-control"><div class="shortcut-keys" id="settings-hotkey"></div><button class="change-button" id="change-hotkey">Change</button></div>
                   </div>
-                </div>
-              </div>
-            </section>
-
-            <section class="settings-section">
-              <h2>Dictation</h2>
-              <div class="settings-card">
-                <div class="setting-row hotkey-row">
-                  <div><strong>Dictation shortcut</strong><p id="dictation-shortcut-help">Works globally, including modifier-only combinations such as Win + Ctrl.</p></div>
-                  <div class="setting-control"><div class="shortcut-keys" id="settings-hotkey"></div><button class="change-button" id="change-hotkey">Change</button></div>
-                </div>
-                <div class="setting-row hotkey-row">
-                  <div><strong>Paste last transcript</strong><p>Works globally. Pastes your most recent transcript where you are typing.</p></div>
-                  <div class="setting-control"><div class="shortcut-keys" id="settings-paste-hotkey"></div><button class="change-button" id="change-paste-hotkey">Change</button></div>
-                </div>
-                <div class="setting-row hotkey-row">
-                  <div>
-                    <strong>Voice search</strong>
-                    <p id="shortcut-help">Default Win + Space. Windows also uses this chord for keyboard layout switching; Pronto’s low-level hook calls CallNextHookEx, so the OS may switch layouts as well. The Fn key cannot be bound (no virtual-key code).</p>
+                  <div class="setting-row" data-keywords="hold push to talk toggle press once activation behavior mode">
+                    <div><strong>How the shortcut works</strong><p>Hold to talk, or press once to start and again to stop.</p></div>
+                    <div class="segmented" role="group" aria-label="Activation behavior">
+                      <button type="button" data-activation="hold">Hold</button><button type="button" data-activation="toggle">Toggle</button>
+                    </div>
                   </div>
-                  <div class="setting-control"><div class="shortcut-keys" id="settings-search-hotkey"></div><button class="change-button" id="change-search-hotkey">Change</button></div>
-                </div>
-                <div class="setting-row">
-                  <div><strong>Search provider URL</strong><p>DuckDuckGo HTML endpoint used for retrieval. Query text and snippets are sent to this provider and to DeepSeek.</p></div>
-                  <input type="url" id="search-provider-url" aria-label="Search provider URL" />
-                </div>
-                <div class="setting-row">
-                  <div><strong>Activation behavior</strong><p>Hold to talk, or press once to start and again to stop.</p></div>
-                  <div class="segmented" role="group" aria-label="Activation behavior">
-                    <button type="button" data-activation="hold">Hold</button><button type="button" data-activation="toggle">Toggle</button>
+                  <div class="setting-row hotkey-row" data-keywords="hotkey keybinding paste last transcript again">
+                    <div><strong>Paste last transcript</strong><p>Pastes your most recent transcript where you are typing.</p></div>
+                    <div class="setting-control"><div class="shortcut-keys" id="settings-paste-hotkey"></div><button class="change-button" id="change-paste-hotkey">Change</button></div>
                   </div>
-                </div>
-                <div class="setting-row">
-                  <div><strong>Microphone</strong><p id="microphone-status">Loading available microphones…</p></div>
-                  <div class="setting-control"><select id="microphone" aria-label="Microphone" disabled><option>Loading…</option></select><button class="change-button" id="microphone-retry" type="button" hidden>Retry</button></div>
-                </div>
-                <div class="setting-row">
-                  <div><strong>Language</strong><p id="language-help">Choose a language or let Parakeet detect it.</p></div>
-                  <select id="language"><option value="auto">Auto detect</option><option value="en">English</option><option value="de">German</option><option value="es">Spanish</option><option value="fr">French</option><option value="it">Italian</option><option value="pt">Portuguese</option><option value="nl">Dutch</option><option value="pl">Polish</option></select>
-                </div>
-                <div class="setting-row"><div><strong>Insert automatically</strong><p>Type the result where dictation began.</p></div><label class="toggle"><input type="checkbox" id="auto-insert" /><span></span></label></div>
-                <div class="setting-row"><div><strong>Clean up speech</strong><p>Remove fillers and false starts, then repair punctuation.</p></div><label class="toggle"><input type="checkbox" id="cleanup-enabled" /><span></span></label></div>
-              </div>
-            </section>
-
-            <section class="settings-section">
-              <h2>Meeting notes</h2>
-              <div class="settings-card">
-                <div class="setting-row"><div><strong>Suggest meeting notes</strong><p>Show the note taker prompt when a meeting call is detected. Turn off to never be interrupted.</p></div><label class="toggle"><input type="checkbox" id="meeting-suggestions" /><span></span></label></div>
-              </div>
-            </section>
-
-            <section class="settings-section">
-              <h2 id="platform-settings-heading">Windows</h2>
-              <div class="settings-card">
-                <div class="setting-row"><div><strong>Launch at startup</strong><p>Starts Pronto silently in the system tray without opening this window.</p></div><label class="toggle"><input type="checkbox" id="launch-at-startup" /><span></span></label></div>
-              </div>
-            </section>
-
-            <section class="settings-section">
-              <h2>System audio</h2>
-              <div class="settings-card">
-                <div class="setting-row"><div><strong>Dictation sounds</strong><p>Play short cues when recording starts and stops.</p></div><label class="toggle"><input type="checkbox" id="dictation-sounds" /><span></span></label></div>
-                <div class="setting-row"><div><strong>Duck other audio while dictating or searching</strong><p>Temporarily lowers playback and restores its exact prior state when the listening pill ends.</p></div><label class="toggle"><input type="checkbox" id="duck-audio" /><span></span></label></div>
-              </div>
-            </section>
-
-            <section class="settings-section" id="mac-permissions" hidden>
-              <h2>macOS permissions</h2>
-              <div class="settings-card">
-                <div class="setting-row"><div><strong>Microphone</strong><p id="permission-microphone">Needed for dictation and meeting notes.</p></div><button type="button" class="change-button permission-action" data-permission="microphone">Set up</button></div>
-                <div class="setting-row"><div><strong>Accessibility</strong><p id="permission-accessibility">Needed to insert text into the app you were using.</p></div><div class="setting-control"><button type="button" class="change-button permission-action" data-permission="accessibility">Set up</button><button type="button" class="change-button mac-restart-action" hidden>Restart Pronto</button></div></div>
-                <div class="setting-row"><div><strong>Input Monitoring</strong><p id="permission-input-monitoring">Needed only for shortcuts made of modifier keys alone.</p></div><button type="button" class="change-button permission-action" data-permission="input-monitoring">Set up</button></div>
-                <div class="setting-row"><div><strong>Screen Recording</strong><p id="permission-screen-recording">Needed only to record computer audio for meeting notes. Pronto does not save video.</p></div><button type="button" class="change-button permission-action" data-permission="screen-recording">Set up</button></div>
-              </div>
-            </section>
-
-            <section class="settings-section">
-              <h2>Performance</h2>
-              <div class="settings-card">
-                <div class="setting-row" id="gpu-memory-row"><div><strong>Release model under GPU pressure</strong><p>Frees Parakeet's VRAM after sustained pressure. The next dictation may briefly warm the model.</p></div><label class="toggle"><input type="checkbox" id="gpu-memory-management" /><span></span></label></div>
-              </div>
-            </section>
-
-            <section class="settings-section" id="speech-model-section" hidden>
-              <h2>Advanced</h2>
-              <div class="settings-card">
-                <div class="setting-row speech-model-head">
-                  <div><strong>Speech model</strong><p id="speech-model-hardware">Checking your graphics…</p></div>
-                </div>
-                <div class="model-options" role="radiogroup" aria-label="Speech model">
-                  <button type="button" class="model-option" data-model="parakeet" role="radio" aria-checked="false">
-                    <span class="model-option-head"><strong>Parakeet</strong><span class="model-badge" hidden>Recommended</span></span>
-                    <span class="model-option-meta">Fastest · 25 languages</span>
-                    <span class="model-option-warning">Runs only on NVIDIA GPUs.</span>
-                    <span class="model-option-state"></span>
-                  </button>
-                  <button type="button" class="model-option" data-model="phonon" role="radio" aria-checked="false">
-                    <span class="model-option-head"><strong>Phonon</strong><span class="model-badge" hidden>Recommended</span></span>
-                    <span class="model-option-meta">Any PC · English only</span>
-                    <span class="model-option-warning">For PCs without an NVIDIA GPU. Considerably slower.</span>
-                    <span class="model-option-state"></span>
-                  </button>
-                </div>
-                <div class="model-switch" id="model-switch" hidden>
-                  <div class="model-switch-bar"><i id="model-switch-fill"></i></div>
-                  <div class="model-switch-meta">
-                    <span><strong id="model-switch-message"></strong><small id="model-switch-detail"></small></span>
-                    <button type="button" class="change-button" id="model-switch-action">Cancel</button>
+                  <div class="setting-row hotkey-row" data-keywords="hotkey keybinding voice search ask question web">
+                    <div><strong>Voice search</strong><p id="shortcut-help">Default Win + Space. Windows may also switch keyboard layouts with this chord.</p></div>
+                    <div class="setting-control"><div class="shortcut-keys" id="settings-search-hotkey"></div><button class="change-button" id="change-search-hotkey">Change</button></div>
                   </div>
                 </div>
-              </div>
-            </section>
+              </section>
 
-            <section class="settings-section">
-              <h2>Cleanup service</h2>
-              <div class="settings-card api-card">
-                <div class="setting-row api-row">
-                  <div><strong>DeepSeek API key</strong><p id="api-status">Not configured</p></div>
-                  <div class="api-form"><input type="password" id="api-key" placeholder="Enter API key" autocomplete="off" /><button id="save-key">Save</button></div>
-                </div>
-                <div class="setting-row prompt-row">
-                  <div class="prompt-heading">
-                    <div><strong>Cleanup system prompt</strong><p>Edit the instructions Pronto sends with every cleanup request.</p></div>
-                    <div class="prompt-actions"><button type="button" class="change-button" id="reset-cleanup-prompt">Reset default</button><button type="button" id="save-cleanup-prompt">Save prompt</button></div>
+              <section class="settings-section" id="settings-dictation" aria-labelledby="settings-dictation-title">
+                <header class="settings-section-head"><h2 id="settings-dictation-title">Dictation</h2><p>What Pronto listens to and what it does with your words.</p></header>
+                <div class="settings-card">
+                  <div class="setting-row" data-keywords="mic input device audio headset">
+                    <div><strong>Microphone</strong><p id="microphone-status">Loading available microphones…</p></div>
+                    <div class="setting-control"><select id="microphone" aria-label="Microphone" disabled><option>Loading…</option></select><button class="change-button" id="microphone-retry" type="button" hidden>Retry</button></div>
                   </div>
-                  <textarea id="cleanup-prompt" maxlength="16000" spellcheck="false" aria-label="Cleanup system prompt"></textarea>
-                  <div class="prompt-meta"><span id="cleanup-prompt-status">Built-in prompt</span><span id="cleanup-prompt-count"></span></div>
+                  <div class="setting-row" data-keywords="language english german spanish french italian portuguese dutch polish auto detect">
+                    <div><strong>Language</strong><p id="language-help">Choose a language or let Parakeet detect it.</p></div>
+                    <select id="language" aria-label="Language"><option value="auto">Auto detect</option><option value="en">English</option><option value="de">German</option><option value="es">Spanish</option><option value="fr">French</option><option value="it">Italian</option><option value="pt">Portuguese</option><option value="nl">Dutch</option><option value="pl">Polish</option></select>
+                  </div>
+                  <div class="setting-row" data-keywords="type paste auto insert automatic output"><div><strong>Insert automatically</strong><p>Type the result where dictation began.</p></div><label class="toggle"><input type="checkbox" id="auto-insert" /><span></span></label></div>
+                  <div class="setting-row" data-keywords="filler um uh punctuation cleanup polish format deepseek"><div><strong>Clean up speech</strong><p>Remove fillers and false starts, then repair punctuation.</p></div><label class="toggle"><input type="checkbox" id="cleanup-enabled" /><span></span></label></div>
                 </div>
-                <div class="setting-row engine-row"><div><strong>Local speech engine</strong><p id="engine-message">Starting the speech engine…</p></div><span class="private-badge">Local</span></div>
-                <div class="setting-row" id="model-install-row" hidden><div><strong>Speech model</strong><p id="model-install-message">Checking local model…</p><progress id="model-install-progress" max="100" value="0" hidden></progress></div><button type="button" class="change-button" id="model-install-action" hidden>Cancel</button></div>
+              </section>
+
+              <section class="settings-section" id="settings-sound" aria-labelledby="settings-sound-title">
+                <header class="settings-section-head"><h2 id="settings-sound-title">Sound</h2><p>Audio cues, and what happens to other playback while you speak.</p></header>
+                <div class="settings-card">
+                  <div class="setting-row" data-keywords="beep chime cue sound effects audio feedback"><div><strong>Dictation sounds</strong><p>Play short cues when recording starts and stops.</p></div><label class="toggle"><input type="checkbox" id="dictation-sounds" /><span></span></label></div>
+                  <div class="setting-row" data-keywords="duck lower volume music mute playback system audio"><div><strong>Lower other audio while listening</strong><p>Quiets music and videos during dictation or voice search, then restores them exactly.</p></div><label class="toggle"><input type="checkbox" id="duck-audio" /><span></span></label></div>
+                </div>
+              </section>
+
+              <section class="settings-section" id="mac-permissions" aria-labelledby="mac-permissions-title" hidden>
+                <header class="settings-section-head"><h2 id="mac-permissions-title">Permissions</h2><p>macOS access Pronto needs to listen and type for you.</p></header>
+                <div class="settings-card">
+                  <div class="setting-row" data-keywords="macos mic privacy permission"><div><strong>Microphone</strong><p id="permission-microphone">Needed for dictation and meeting notes.</p></div><button type="button" class="change-button permission-action" data-permission="microphone">Set up</button></div>
+                  <div class="setting-row" data-keywords="macos privacy insert type permission"><div><strong>Accessibility</strong><p id="permission-accessibility">Needed to insert text into the app you were using.</p></div><div class="setting-control"><button type="button" class="change-button permission-action" data-permission="accessibility">Set up</button><button type="button" class="change-button mac-restart-action" hidden>Restart Pronto</button></div></div>
+                  <div class="setting-row" data-keywords="macos privacy keyboard modifier permission"><div><strong>Input Monitoring</strong><p id="permission-input-monitoring">Needed only for shortcuts made of modifier keys alone.</p></div><button type="button" class="change-button permission-action" data-permission="input-monitoring">Set up</button></div>
+                  <div class="setting-row" data-keywords="macos privacy system audio meeting permission"><div><strong>Screen Recording</strong><p id="permission-screen-recording">Needed only to record computer audio for meeting notes. Pronto does not save video.</p></div><button type="button" class="change-button permission-action" data-permission="screen-recording">Set up</button></div>
+                </div>
+              </section>
+
+              <section class="settings-section" id="settings-engine" aria-labelledby="settings-engine-title">
+                <header class="settings-section-head"><h2 id="settings-engine-title">Speech engine</h2><p>Transcription runs entirely on this computer.</p></header>
+                <div class="settings-card">
+                  <div class="setting-row engine-row" data-keywords="status local offline parakeet engine"><div><strong>Local speech engine</strong><p id="engine-message">Starting the speech engine…</p></div><span class="private-badge">On device</span></div>
+                  <div class="setting-row" id="model-install-row" data-keywords="download model install" hidden><div><strong>Speech model</strong><p id="model-install-message">Checking local model…</p><progress id="model-install-progress" max="100" value="0" hidden></progress></div><button type="button" class="change-button" id="model-install-action" hidden>Cancel</button></div>
+                  <div class="setting-block" id="speech-model-section" data-keywords="speech model parakeet phonon nvidia gpu cpu download" hidden>
+                    <div class="setting-row speech-model-head">
+                      <div><strong>Speech model</strong><p id="speech-model-hardware">Checking your graphics…</p></div>
+                    </div>
+                    <div class="model-options" role="radiogroup" aria-label="Speech model">
+                      <button type="button" class="model-option" data-model="parakeet" role="radio" aria-checked="false">
+                        <span class="model-option-head"><strong>Parakeet</strong><span class="model-badge" hidden>Recommended</span></span>
+                        <span class="model-option-meta">Fastest · 25 languages</span>
+                        <span class="model-option-warning">Runs only on NVIDIA GPUs.</span>
+                        <span class="model-option-state"></span>
+                      </button>
+                      <button type="button" class="model-option" data-model="phonon" role="radio" aria-checked="false">
+                        <span class="model-option-head"><strong>Phonon</strong><span class="model-badge" hidden>Recommended</span></span>
+                        <span class="model-option-meta">Any PC · English only</span>
+                        <span class="model-option-warning">For PCs without an NVIDIA GPU. Considerably slower.</span>
+                        <span class="model-option-state"></span>
+                      </button>
+                    </div>
+                    <div class="model-switch" id="model-switch" hidden>
+                      <div class="model-switch-bar"><i id="model-switch-fill"></i></div>
+                      <div class="model-switch-meta">
+                        <span><strong id="model-switch-message"></strong><small id="model-switch-detail"></small></span>
+                        <button type="button" class="change-button" id="model-switch-action">Cancel</button>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="setting-row" id="gpu-memory-row" data-keywords="vram memory performance games release unload"><div><strong>Release model under GPU pressure</strong><p>Frees Parakeet's VRAM when games or other apps need it. The next dictation may take a moment to warm up.</p></div><label class="toggle"><input type="checkbox" id="gpu-memory-management" /><span></span></label></div>
+                </div>
+              </section>
+
+              <section class="settings-section" id="settings-online" aria-labelledby="settings-online-title">
+                <header class="settings-section-head"><h2 id="settings-online-title">Online services</h2><p>Optional. Used only for speech cleanup and voice search answers.</p></header>
+                <div class="settings-card api-card">
+                  <div class="setting-row api-row" data-keywords="deepseek api key token cleanup llm ai credential">
+                    <div><strong>DeepSeek API key</strong><p id="api-status">Not configured</p></div>
+                    <div class="api-form"><input type="password" id="api-key" placeholder="Enter API key" autocomplete="off" aria-label="DeepSeek API key" /><button id="save-key">Save</button></div>
+                  </div>
+                  <details class="setting-disclosure" id="cleanup-prompt-details" data-keywords="cleanup system prompt instructions deepseek custom">
+                    <summary>
+                      <div><strong>Cleanup instructions</strong><p>The system prompt Pronto sends with every cleanup request.</p></div>
+                      <span class="setting-disclosure-end"><span class="prompt-badge" id="cleanup-prompt-status">Built-in prompt</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></span>
+                    </summary>
+                    <div class="prompt-row">
+                      <textarea id="cleanup-prompt" maxlength="16000" spellcheck="false" aria-label="Cleanup system prompt"></textarea>
+                      <div class="prompt-meta">
+                        <span id="cleanup-prompt-count"></span>
+                        <div class="prompt-actions"><button type="button" class="change-button" id="reset-cleanup-prompt">Reset default</button><button type="button" id="save-cleanup-prompt">Save prompt</button></div>
+                      </div>
+                    </div>
+                  </details>
+                  <div class="setting-row" data-keywords="voice search provider url duckduckgo web retrieval">
+                    <div><strong>Search provider URL</strong><p>DuckDuckGo HTML endpoint for voice search. Queries and snippets go to this provider and to DeepSeek.</p></div>
+                    <input type="url" id="search-provider-url" aria-label="Search provider URL" spellcheck="false" />
+                  </div>
+                </div>
+              </section>
+
+              <div class="settings-empty" id="settings-empty" hidden>
+                <strong>No settings match “<span id="settings-empty-query"></span>”</strong>
+                <p>Try a different word, such as “microphone”, “shortcut”, or “theme”.</p>
+                <button type="button" class="change-button" id="settings-search-clear">Clear search</button>
               </div>
-            </section>
+            </div>
           </div>
         </div>
       </section>

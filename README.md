@@ -89,8 +89,8 @@ On an NVIDIA RTX 4050 Laptop GPU, local transcription of an 11-second audio file
 
 ### Windows
 
-1. Download `Pronto_<version>_x64-setup.exe` from this repository's Releases page.
-2. Run the installer (per-user, no admin needed). Setup downloads the speech model once with progress and verification.
+1. Download `Pronto_Setup_<version>_x64.exe` from this repository's Releases page.
+2. Run Pronto Setup (per-user, no admin needed). It recommends Parakeet on PCs with an NVIDIA GPU and Phonon otherwise, then downloads the chosen engine once with progress and verification.
 3. Open **Settings** in Pronto.
 4. Optional: Enter a DeepSeek API key. Local transcription works without a key.
 

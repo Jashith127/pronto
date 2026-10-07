@@ -39,8 +39,6 @@
 .history-list,
 .dictionary-table,
 .settings-card,
-.notes-explorer,
-.notes-menu,
 .modal,
 .hotkey-dialog,
 .toast {
@@ -93,7 +91,7 @@
 .dictionary-form input,
 .api-form input,
 .modal input,
-.notes-new-folder input,
+.nt-new-folder input,
 .setting-row select,
 .prompt-row textarea {
   border-color: var(--input-border);
@@ -113,7 +111,7 @@
 .api-form button,
 #modal-confirm,
 .prompt-actions button:not(.change-button),
-.notes-new-folder button {
+.nt-new-folder button {
   color: var(--canvas);
   background: var(--btn-primary-bg);
 }
@@ -121,7 +119,7 @@
 [data-theme="light"] .api-form button,
 [data-theme="light"] #modal-confirm,
 [data-theme="light"] .prompt-actions button:not(.change-button),
-[data-theme="light"] .notes-new-folder button {
+[data-theme="light"] .nt-new-folder button {
   color: #fff;
   background: var(--ink);
 }
@@ -132,8 +130,6 @@
 }
 .dictionary-item { border-bottom-color: var(--line-soft); }
 
-.settings-section h2 { color: var(--muted); }
-.settings-card { background: var(--surface-muted); }
 .setting-row { border-bottom-color: var(--line-soft); }
 .setting-row strong { color: var(--ink); }
 .setting-row p { color: var(--muted); }
@@ -149,8 +145,7 @@
 [data-theme="light"] .segmented button.active { color: #fff; }
 .toggle span { background: var(--toggle-track); }
 .toggle input:checked + span { background: var(--sage); }
-.private-badge,
-.processing-badge {
+.private-badge {
   color: var(--sage);
   background: var(--sage-soft);
 }
@@ -194,7 +189,8 @@
 }
 
 #search-provider-url {
-  min-width: min(360px, 100%);
+  width: min(320px, 100%);
+  flex: 0 1 auto;
   height: 36px;
   padding: 0 12px;
   border: 1px solid var(--input-border);
@@ -203,131 +199,25 @@
   color: var(--ink-soft);
 }
 
-.notes-explorer { background: var(--surface); }
-.notes-folders {
-  border-right-color: var(--line-soft);
-  background: var(--surface-muted);
-}
-.notes-sidebar-head,
-.notes-files-head,
-.notes-file-columns,
-.notes-new-folder {
-  border-color: var(--line-soft);
-  color: var(--muted);
-  background: var(--surface-muted);
-}
-.notes-files-head { background: var(--surface); }
-.notes-files-head h2 { color: var(--ink); }
-.notes-folder { color: var(--ink-soft); }
-.notes-folder:hover { background: var(--surface-hover); }
-.notes-folder.active {
-  color: var(--sage-strong);
-  background: var(--sage-soft);
-}
-.notes-file-row { border-bottom-color: var(--line-soft); }
-.notes-file-row:hover { background: var(--surface-hover); }
-.notes-menu {
-  border-color: var(--line);
-  background: var(--surface);
-  box-shadow: var(--shadow-md);
-}
-.notes-menu button { color: var(--ink-soft); }
-.notes-menu button:hover { background: var(--sage-soft); }
-.notes-menu button.danger:hover { background: var(--danger-soft); }
-
-/* Note Taker detail view: recording title, tabs, transcript, notes */
-.notes-detail-view {
-  border-color: var(--line);
-  background: var(--surface);
-}
-.notes-detail-head {
-  border-bottom-color: var(--line-soft);
-  background: var(--surface-muted);
-}
-.notes-back { color: var(--ink-soft); }
-.notes-back:hover { background: var(--surface-hover); }
-.notes-detail-title h1 { color: var(--ink); }
-.notes-detail-title p { color: var(--muted); }
-.notes-status { color: var(--muted); }
-.notes-tabs {
-  border-color: var(--line);
-  background: var(--surface-muted);
-}
-.notes-tabs button { color: var(--muted); }
-.notes-tabs button:hover:not(.active) {
-  color: var(--ink);
-  background: var(--surface-hover);
-}
-.notes-tabs button.active {
-  color: var(--canvas);
-  background: var(--segmented-active);
-}
-[data-theme="light"] .notes-tabs button.active { color: #fff; }
-.notes-summary {
-  border-color: var(--line);
-  background: var(--surface-muted);
-}
-.notes-summary h2 { color: var(--sage-strong); }
-.notes-summary .notes-markdown { color: var(--ink-soft); }
-.notes-markdown h1,
-.notes-markdown h2,
-.notes-markdown h3 { color: var(--sage-strong); }
-.notes-viewer-body { color: var(--ink-soft); }
-.notes-viewer-body .cleaned-label { background: var(--sage-soft); }
-
-/* Note Taker explorer leftovers with hardcoded light colors */
-.notes-file-row { color: var(--ink-soft); }
-.notes-file-icon {
-  color: var(--sage);
-  background: var(--sage-soft);
-}
-.notes-file-open em { color: var(--muted); }
-.notes-file-status,
-.notes-file-date { color: var(--muted); }
-.notes-folder svg { stroke: var(--faint); }
-.notes-folder small { color: var(--faint); }
-.notes-folder:hover { background: var(--surface-hover); }
-.notes-folder-delete { color: var(--faint); }
-.notes-folder-delete:hover {
-  color: var(--danger);
-  background: var(--danger-soft);
-}
-.notes-row-menu-btn { color: var(--muted); }
-.notes-row-menu-btn:hover {
-  color: var(--ink);
-  background: var(--surface-hover);
-}
-.notes-sidebar-head button { color: var(--muted); }
-.notes-sidebar-head button:hover {
-  color: var(--ink);
-  background: var(--surface-hover);
-}
-.notes-upload-action {
-  border-color: var(--line);
-  color: var(--ink-soft);
-  background: var(--surface);
-}
-.notes-upload-action:hover { background: var(--surface-hover); }
-.notes-live-row { color: var(--muted); }
-.processing-badge { background: var(--sage-soft); }
 
 .theme-preview {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  margin-top: 6px;
   color: var(--faint);
   font-size: 11px;
 }
 
-/* Settings → Advanced → Speech model */
+/* Settings → Speech engine → Speech model */
 .speech-model-head { min-height: 0; padding-bottom: 6px; border-bottom: 0; }
-.model-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 6px 18px 16px; }
+.model-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 6px 20px 16px; }
 .model-option { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-height: 108px; padding: 14px 14px 12px; border: 1px solid var(--line); border-radius: var(--radius-md); color: var(--ink); background: var(--surface); text-align: left; cursor: pointer; transition: border-color .14s ease, box-shadow .14s ease, transform .08s ease; }
 .model-option:hover:not(:disabled) { border-color: var(--input-border); box-shadow: var(--shadow-sm); }
 .model-option:active:not(:disabled) { transform: translateY(1px); }
 .model-option:disabled { cursor: default; opacity: .62; }
-.model-option.active { border-color: var(--sage); box-shadow: 0 0 0 3px var(--sage-soft); opacity: 1; }
+/* Selected card: one solid 2px green border (1px border + 1px inset), no outer halo. */
+.model-option.active, .model-option.active:hover:not(:disabled) { border-color: var(--sage); box-shadow: inset 0 0 0 1px var(--sage); opacity: 1; }
+.model-option:focus-visible { outline: none; border-color: var(--sage); }
 .model-option-head { display: flex; align-items: center; gap: 8px; }
 .model-option-head strong { font-size: 13.5px; font-weight: 680; letter-spacing: -.01em; }
 .model-badge { padding: 2px 8px; border-radius: 20px; color: var(--sage); background: var(--sage-soft); font-size: 10.5px; font-weight: 650; }
@@ -335,7 +225,7 @@
 .model-option-warning { color: var(--danger); font-size: 11.5px; line-height: 1.45; }
 .model-option-state { margin-top: auto; padding-top: 6px; color: var(--faint); font-size: 11px; font-weight: 600; letter-spacing: .01em; }
 .model-option.active .model-option-state { color: var(--sage); }
-.model-switch { padding: 0 18px 16px; }
+.model-switch { padding: 0 20px 16px; }
 .model-switch-bar { position: relative; height: 6px; overflow: hidden; border-radius: 6px; background: var(--surface-inset); }
 .model-switch-bar i { position: absolute; inset: 0 auto 0 0; width: 0; border-radius: 6px; background: var(--sage); transition: width .3s ease; }
 .model-switch.indeterminate .model-switch-bar i { width: 34% !important; animation: model-switch-sweep 1.2s ease-in-out infinite; }

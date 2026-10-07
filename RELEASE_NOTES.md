@@ -1,3 +1,66 @@
+# Pronto 0.8.3
+
+Pronto now runs on any Windows PC, not just ones with an NVIDIA graphics card. This release brings a brand-new installer, a second speech engine called **Phonon** that runs entirely on the CPU, an in-app engine switcher, redesigned Settings and Note Taker screens, and smarter meeting detection.
+
+## Added
+
+### Pronto Setup, a brand-new installer
+- **Pronto's own installer** replaces the old generic setup wizard, in the same look as the app.
+- **Picks the right engine for your PC.** Setup checks your graphics hardware and recommends Parakeet when it finds an NVIDIA GPU, and Phonon otherwise.
+- **Downloads only what you need.** Only the engine you choose is downloaded: about 780 MB for Parakeet or about 350 MB for Phonon, instead of always fetching the GPU model.
+- **Live progress** with download size, speed and time remaining. Downloads resume after a cancel or a dropped connection, and every file is checked against a pinned SHA-256 checksum before it is installed.
+- **Per-user install, no administrator rights needed.** Creates Start menu and desktop shortcuts and an entry in Settings → Apps → Installed apps, and installs Microsoft WebView2 if it is missing.
+- **Clearer uninstall.** Choose between keeping your history and settings or removing everything.
+- **Silent installs for IT:** `Pronto_Setup_0.8.3_x64.exe /S --model=auto|parakeet|phonon`.
+
+### Phonon, a speech engine that runs on the CPU
+- **No graphics card required.** Phonon (Fermion Phonon-2) runs on the processor of any 64-bit PC, so Pronto now works on laptops and desktops without an NVIDIA GPU.
+- **AMD computers are now supported.** PCs with AMD Ryzen processors, AMD Radeon graphics, Intel integrated graphics, or no dedicated GPU at all can dictate, take meeting notes and transcribe files with Phonon. Phonon does its work on the CPU, so it runs the same way whichever graphics card you have.
+- **Fully local, like Parakeet.** Audio never leaves your computer.
+- Phonon understands **English only**, and is slower than Parakeet on a GPU. On a modern laptop CPU it transcribes about 9× faster than real time and takes around 20 seconds to load when Pronto starts. Parakeet still offers 25 languages and the fastest results on NVIDIA GPUs.
+
+### Switch speech engines in the app
+- **Settings → Speech engine** lists Parakeet and Phonon with their hardware requirements. Pick one and Pronto downloads it if needed (with the same progress, resume and verification as Setup) and switches over as soon as it is ready. No reinstall needed.
+
+### Redesigned Settings
+- **Sections in a sidebar:** General, Shortcuts, Dictation, Sound, Permissions, Speech engine and Online services.
+- **Search settings** with Ctrl + F. Matching settings are filtered as you type, with a clear message when nothing matches.
+
+### Redesigned Note Taker
+- **Folders and recordings side by side**, with a search box across all notes, breadcrumbs, and drag-and-drop to move recordings between folders.
+- **A focused reader** for each recording, with tabs for meeting notes and transcript, a switch between the original and cleaned-up transcript, and a menu for more actions.
+- **A live recording banner** with a running timer and a single "Stop and create notes" button.
+
+## Fixed
+
+- **Switching engines no longer leaves dictation stuck on loading.** Dictating right after switching to Phonon, or switching back to Parakeet while Phonon was still loading, could leave dictation stuck on "processing" until Pronto was restarted. Switching now takes effect immediately, and a dictation recorded during the switch is transcribed by the engine you picked.
+- **Window controls stay responsive.** Minimize, maximize and close no longer stop responding while a microphone change, meeting stop, file import or DeepSeek cleanup is in progress, and a delayed close can no longer fire after a later click.
+- **Dragging the window** no longer starts two drags at once, which could swallow the next click or toggle maximize twice.
+- **Settings toggles no longer scroll the app off-screen.** Turning on a setting near the bottom of Settings could push the whole app out of view.
+- **Games get their graphics memory back sooner.** With "Free GPU memory under pressure" on, Pronto now notices a game claiming video memory within a few seconds and releases Parakeet, instead of waiting for a long idle period. It no longer leaves a notice on top of the game.
+- **The dictation pill recovers more reliably after sleep**, including when Windows misses the wake-up notification.
+- **The engine downloads are published and verified.** Setup and the in-app switcher no longer report an engine as "not published yet".
+
+## Changed
+
+- **Meeting suggestions are much more accurate.** Pronto now suggests meeting notes only while a meeting app (Zoom, Teams, Google Meet in your browser, Slack, Discord and others) is actually using your microphone for about 10 seconds. An open Discord window, a Teams chat, the Google Meet home page or a document titled "Meeting agenda" no longer trigger a suggestion.
+- **Phonon loads about 3× faster** than in the first preview builds (around 20 seconds instead of over a minute), and its first transcription after loading is as fast as later ones.
+- **Setup and uninstall screens** use a flatter, calmer design.
+
+## Known issues
+
+- **Long audio files on Phonon:** importing a single audio or video file longer than about 15 minutes may fail with Phonon. Meeting recordings of any length are not affected, and Parakeet handles long files as before.
+
+## Requirements
+
+- Windows 10 or 11, 64-bit.
+- **Parakeet:** an NVIDIA GPU with a current driver.
+- **Phonon:** any 64-bit Intel or AMD processor with AVX2 (most PCs from 2015 onwards). No graphics card needed.
+- A microphone, and an internet connection during setup for the one-time engine download.
+- A DeepSeek API key remains optional, for AI cleanup, meeting notes and voice search answers.
+
+---
+
 # macOS port development (unreleased)
 
 Pronto 0.8.2 is being ported to Apple Silicon macOS 13+. The shared interface
