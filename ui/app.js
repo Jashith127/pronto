@@ -606,10 +606,13 @@ try {
   };
   mainWindow.onResized(() => syncMaximized());
   syncMaximized();
-  // Reliable dragging for the frameless main window. The titlebar/brand also
-  // declare data-tauri-drag-region, but attribute-only dragging is finicky on
-  // Windows, so start drags manually from chrome areas. Interactive elements
-  // opt out so their clicks still work. Pill/search overlays are untouched.
+  // Dragging for the frameless main window. This is the only drag path: the
+  // titlebar/brand must not also carry data-tauri-drag-region, or Tauri's own
+  // handler starts a second drag (and a second maximize on double-click).
+  // On Windows a drag is a modal move loop; the duplicate one could begin
+  // after the button was already released and swallow the next click, so the
+  // window buttons appeared dead. Interactive elements opt out so their
+  // clicks still work. Pill/search overlays are untouched.
   const startManualDrag = event => {
     if (event.button !== 0 || event.detail > 1) return; // let dblclick maximize through
     if (event.target.closest('button, input, select, textarea, a, dialog, .window-actions')) return;
@@ -621,10 +624,12 @@ try {
   document.querySelector('.titlebar')?.addEventListener('mousedown', startManualDrag);
   document.querySelector('.sidebar .brand')?.addEventListener('mousedown', startManualDrag);
 } catch (_) { /* non-Tauri preview */ }
-document.querySelector('.titlebar')?.addEventListener('dblclick', event => {
-  if (event.target.closest('.window-actions')) return;
-  call('toggle_maximize_main_window');
-});
+for (const region of [document.querySelector('.titlebar'), document.querySelector('.sidebar .brand')]) {
+  region?.addEventListener('dblclick', event => {
+    if (event.target.closest('button, input, select, textarea, a, .window-actions')) return;
+    call('toggle_maximize_main_window');
+  });
+}
 
 const yieldToUI = () => new Promise(resolve => setTimeout(resolve, 0));
 

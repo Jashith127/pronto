@@ -969,18 +969,15 @@ fn restart_pronto(app: AppHandle) {
     app.request_restart();
 }
 
-#[tauri::command]
-fn start_recording(app: AppHandle) -> Result<EngineStatus, String> {
+fn start_recording_blocking(app: AppHandle) -> Result<EngineStatus, String> {
     begin_recording(&app)
 }
 
-#[tauri::command]
-fn stop_recording(app: AppHandle) -> Result<EngineStatus, String> {
+fn stop_recording_blocking(app: AppHandle) -> Result<EngineStatus, String> {
     finish_recording(&app)
 }
 
-#[tauri::command]
-fn start_meeting_recording(
+fn start_meeting_recording_blocking(
     app: AppHandle,
     title: String,
 ) -> Result<meeting::MeetingRecord, String> {
@@ -1093,8 +1090,7 @@ fn finish_meeting_recording(app: &AppHandle) -> Result<meeting::MeetingRecord, S
     Ok(record)
 }
 
-#[tauri::command]
-fn stop_meeting_recording(app: AppHandle) -> Result<meeting::MeetingRecord, String> {
+fn stop_meeting_recording_blocking(app: AppHandle) -> Result<meeting::MeetingRecord, String> {
     finish_meeting_recording(&app)
 }
 
@@ -1171,8 +1167,7 @@ fn queue_file_import(
     Ok(status)
 }
 
-#[tauri::command]
-fn transcribe_media_file(
+fn transcribe_media_file_blocking(
     app: AppHandle,
     file_name: String,
     wav_bytes: Vec<u8>,
@@ -1249,8 +1244,7 @@ fn abort_media_upload(state: tauri::State<'_, AppState>, upload_id: String) -> R
     Ok(())
 }
 
-#[tauri::command]
-fn finish_media_upload(
+fn finish_media_upload_blocking(
     app: AppHandle,
     upload_id: String,
     skip_history: Option<bool>,
@@ -1325,8 +1319,7 @@ fn delete_notetaker_audio(_app: AppHandle, item_id: String) -> Result<(), String
     meeting::delete_notetaker_audio(&item_id)
 }
 
-#[tauri::command]
-fn cancel_recording(app: AppHandle) -> Result<EngineStatus, String> {
+fn cancel_recording_blocking(app: AppHandle) -> Result<EngineStatus, String> {
     let state = app.state::<AppState>();
     let _ = state.audio.stop();
     state.insertion_target.cancel();
@@ -2247,16 +2240,15 @@ fn save_settings(
     }
 }
 
-#[tauri::command]
-fn get_microphones(state: tauri::State<'_, AppState>) -> Result<MicrophoneStatus, String> {
-    state.audio.status()
+fn get_microphones_blocking(app: AppHandle) -> Result<MicrophoneStatus, String> {
+    app.state::<AppState>().audio.status()
 }
 
-#[tauri::command]
-fn set_microphone(
-    state: tauri::State<'_, AppState>,
+fn set_microphone_blocking(
+    app: AppHandle,
     device_id: Option<String>,
 ) -> Result<MicrophoneStatus, String> {
+    let state = app.state::<AppState>();
     let previous = state.settings.snapshot()?;
     let status = state.audio.select(device_id.clone())?;
     let mut next = previous.clone();
@@ -2699,8 +2691,7 @@ struct SearchImagePayload {
     data: Vec<u8>,
 }
 
-#[tauri::command]
-fn fetch_search_image(app: AppHandle, url: String) -> Result<SearchImagePayload, String> {
+fn fetch_search_image_blocking(app: AppHandle, url: String) -> Result<SearchImagePayload, String> {
     let state = app.state::<AppState>();
     if !state.search.is_allowed_url(&url) && !search::is_trusted_search_image_url(&url) {
         return Err("That image is not part of the current search results".into());
@@ -2800,11 +2791,8 @@ fn copy_transcript(state: tauri::State<'_, AppState>, id: String) -> Result<(), 
     insert::copy_to_clipboard(&text)
 }
 
-#[tauri::command]
-fn cleanup_notetaker_transcript(
-    state: tauri::State<'_, AppState>,
-    text: String,
-) -> Result<String, String> {
+fn cleanup_notetaker_transcript_blocking(app: AppHandle, text: String) -> Result<String, String> {
+    let state = app.state::<AppState>();
     let transcript = text.trim().to_string();
     if transcript.is_empty() {
         return Err("There is no transcript text to clean up yet.".into());
@@ -2826,6 +2814,95 @@ fn cleanup_notetaker_transcript(
         &cleaned,
         &settings.dictionary,
     ))
+}
+
+/// Sync Tauri commands run on the main thread, which also pumps the window's
+/// messages. A slow body there (audio-thread waits, network calls) freezes
+/// the title-bar buttons and queues their clicks, so a minimize pressed after
+/// an unanswered close then "closes" the window. Slow commands run their
+/// body on the blocking pool instead.
+async fn off_main_thread<T, F>(work: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|error| format!("Background task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn get_microphones(app: AppHandle) -> Result<MicrophoneStatus, String> {
+    off_main_thread(move || get_microphones_blocking(app)).await
+}
+
+#[tauri::command]
+async fn set_microphone(
+    app: AppHandle,
+    device_id: Option<String>,
+) -> Result<MicrophoneStatus, String> {
+    off_main_thread(move || set_microphone_blocking(app, device_id)).await
+}
+
+#[tauri::command]
+async fn start_recording(app: AppHandle) -> Result<EngineStatus, String> {
+    off_main_thread(move || start_recording_blocking(app)).await
+}
+
+#[tauri::command]
+async fn stop_recording(app: AppHandle) -> Result<EngineStatus, String> {
+    off_main_thread(move || stop_recording_blocking(app)).await
+}
+
+#[tauri::command]
+async fn cancel_recording(app: AppHandle) -> Result<EngineStatus, String> {
+    off_main_thread(move || cancel_recording_blocking(app)).await
+}
+
+#[tauri::command]
+async fn start_meeting_recording(
+    app: AppHandle,
+    title: String,
+) -> Result<meeting::MeetingRecord, String> {
+    off_main_thread(move || start_meeting_recording_blocking(app, title)).await
+}
+
+#[tauri::command]
+async fn stop_meeting_recording(app: AppHandle) -> Result<meeting::MeetingRecord, String> {
+    off_main_thread(move || stop_meeting_recording_blocking(app)).await
+}
+
+#[tauri::command]
+async fn transcribe_media_file(
+    app: AppHandle,
+    file_name: String,
+    wav_bytes: Vec<u8>,
+    skip_history: Option<bool>,
+    upload_id: Option<String>,
+) -> Result<EngineStatus, String> {
+    off_main_thread(move || {
+        transcribe_media_file_blocking(app, file_name, wav_bytes, skip_history, upload_id)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn finish_media_upload(
+    app: AppHandle,
+    upload_id: String,
+    skip_history: Option<bool>,
+) -> Result<EngineStatus, String> {
+    off_main_thread(move || finish_media_upload_blocking(app, upload_id, skip_history)).await
+}
+
+#[tauri::command]
+async fn fetch_search_image(app: AppHandle, url: String) -> Result<SearchImagePayload, String> {
+    off_main_thread(move || fetch_search_image_blocking(app, url)).await
+}
+
+#[tauri::command]
+async fn cleanup_notetaker_transcript(app: AppHandle, text: String) -> Result<String, String> {
+    off_main_thread(move || cleanup_notetaker_transcript_blocking(app, text)).await
 }
 
 #[tauri::command]
