@@ -162,8 +162,13 @@ nav { display: flex; flex-direction: column; gap: 4px; margin-top: 34px; }
 .segmented { display: flex; padding: 3px; border: 1px solid #d6d3ca; border-radius: 10px; background: #efede7; }
 .segmented button { min-width: 68px; height: 30px; padding: 0 14px; border: 0; border-radius: 7px; color: #74756f; background: transparent; font-size: 12px; font-weight: 600; transition: background .12s ease, color .12s ease; }
 .segmented button.active { color: #fff; background: #383a34; box-shadow: 0 1px 3px rgba(0,0,0,.15); }
-.toggle { display: inline-flex; flex: 0 0 auto; }
-.toggle input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+/* position:relative anchors the hidden checkbox inside its toggle. Without
+   it the input's containing block is the viewport, so it sits at its
+   unscrolled offset (far below the window when Settings is scrolled) and
+   focusing it on click scrolls the whole document up, exposing the
+   transparent window. */
+.toggle { position: relative; display: inline-flex; flex: 0 0 auto; }
+.toggle input { position: absolute; top: 0; left: 0; margin: 0; opacity: 0; width: 1px; height: 1px; }
 .toggle span { position: relative; display: block; width: 40px; height: 23px; border-radius: 30px; background: #cbc8bf; transition: .18s ease; cursor: pointer; }
 .toggle span::after { content: ""; position: absolute; top: 3px; left: 3px; width: 17px; height: 17px; border-radius: 50%; background: white; box-shadow: 0 1px 3px rgba(0,0,0,.2); transition: .18s ease; }
 .toggle input:checked + span { background: var(--sage); }
