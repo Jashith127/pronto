@@ -88,7 +88,12 @@ const toast = document.querySelector('#toast');
 // Safety net: the shell must never scroll (only .view scrolls internally).
 // If focus or layout ever shifts it, snap back instead of leaving the UI
 // stranded off-viewport.
-for (const node of [document.documentElement, document.body, document.querySelector('.app'), document.querySelector('.shell')]) {
+// Viewport scrolls fire on document (not documentElement), so watch it too.
+document.addEventListener('scroll', () => {
+  const root = document.scrollingElement;
+  if (root && (root.scrollTop || root.scrollLeft)) root.scrollTo(0, 0);
+});
+for (const node of [document.body, document.querySelector('.app'), document.querySelector('.shell')]) {
   node?.addEventListener('scroll', () => { if (node.scrollTop || node.scrollLeft) node.scrollTo(0, 0); });
 }
 const hotkeyDialog = document.querySelector('#hotkey-dialog');

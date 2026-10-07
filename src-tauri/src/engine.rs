@@ -23,10 +23,16 @@ use tauri::AppHandle;
 
 const PARAKEET_MODEL: &str = "parakeet-tdt-0.6b-v3.q8_0.gguf";
 const MIB: u64 = 1024 * 1024;
-const GPU_POLL_INTERVAL: Duration = Duration::from_secs(2);
-const GPU_PRESSURE_SAMPLES: u8 = 4;
-const MODEL_IDLE_BEFORE_UNLOAD: Duration = Duration::from_secs(30);
-const MODEL_TRANSITION_COOLDOWN: Duration = Duration::from_secs(60);
+// Pressure detection must beat the stutter a game launch causes: poll every
+// second and release after a few mostly-low readings (~3 s), not after a
+// minute of unbroken lows.
+const GPU_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const GPU_PRESSURE_SAMPLES: u8 = 3;
+const MODEL_IDLE_BEFORE_UNLOAD: Duration = Duration::from_secs(10);
+const MODEL_TRANSITION_COOLDOWN: Duration = Duration::from_secs(20);
+/// VRAM another app must claim, beyond what it held when the model loaded,
+/// to count as a new heavy GPU workload (a game starting).
+const GPU_EXTERNAL_GROWTH: u64 = 1536 * MIB;
 const GPU_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 const WARM_RETRY_COOLDOWN: Duration = Duration::from_secs(30);
 const ENGINE_LOG_LIMIT: u64 = 1024 * 1024;
@@ -220,6 +226,8 @@ struct GpuPressurePolicy {
     last_activity: Instant,
     last_transition: Instant,
     model_bytes: u64,
+    /// VRAM used by everything except the model, sampled right after it loaded.
+    others_at_load: Option<u64>,
 }
 
 impl GpuPressurePolicy {
@@ -230,7 +238,34 @@ impl GpuPressurePolicy {
             last_activity: now,
             last_transition: now,
             model_bytes,
+            others_at_load: None,
         }
+    }
+
+    /// Record a successful load: learn the model's real footprint and the
+    /// VRAM other apps were using, so later growth can be attributed to them.
+    fn note_loaded(&mut self, before: Option<MemoryInfo>, after: Option<MemoryInfo>, now: Instant) {
+        if let (Some(before), Some(after)) = (before, after) {
+            self.model_bytes = self.model_bytes.max(after.used.saturating_sub(before.used));
+        }
+        self.others_at_load = after.map(|after| after.used.saturating_sub(self.model_bytes));
+        self.note_transition(now);
+    }
+
+    fn under_pressure(&self, memory: MemoryInfo) -> bool {
+        if memory.free < Self::reserve_bytes(memory) {
+            return true;
+        }
+        // A game reserves VRAM up to its budget and WDDM pages everything
+        // else out instead of failing, so free memory rarely reaches zero
+        // even while the whole system stutters. Treat a large jump in other
+        // apps' usage as pressure once the model is what stands between them
+        // and a comfortable reserve.
+        let others = memory.used.saturating_sub(self.model_bytes);
+        let grew = self
+            .others_at_load
+            .is_some_and(|baseline| others >= baseline.saturating_add(GPU_EXTERNAL_GROWTH));
+        grew && memory.free < self.model_bytes.saturating_add(Self::reserve_bytes(memory))
     }
 
     fn note_activity(&mut self, now: Instant) {
@@ -259,10 +294,12 @@ impl GpuPressurePolicy {
             self.low_readings = 0;
             return false;
         }
-        if memory.free < Self::reserve_bytes(memory) {
+        // Game loading makes VRAM bounce, so one healthy reading only backs
+        // the count off instead of restarting it.
+        if self.under_pressure(memory) {
             self.low_readings = self.low_readings.saturating_add(1);
         } else {
-            self.low_readings = 0;
+            self.low_readings = self.low_readings.saturating_sub(1);
         }
         self.low_readings >= GPU_PRESSURE_SAMPLES
     }
@@ -301,14 +338,11 @@ fn engine_worker(
     let mut server = match runtime.as_ref() {
         Ok(runtime) => match SpeechServer::start(runtime) {
             Ok(server) => {
-                if let (Some(before), Some(after)) = (
+                policy.note_loaded(
                     before_load,
                     gpu.as_ref().and_then(|gpu| gpu.memory_info().ok()),
-                ) {
-                    let observed = after.used.saturating_sub(before.used);
-                    policy.model_bytes = policy.model_bytes.max(observed);
-                }
-                policy.note_transition(Instant::now());
+                    Instant::now(),
+                );
                 emit_model_status(&app, true, &ready_message(backend));
                 Some(server)
             }
@@ -344,13 +378,19 @@ fn engine_worker(
                             }
                             server = None;
                             policy.note_transition(Instant::now());
-                            emit_model_status(
+                            // Status only: a persistent overlay notice here
+                            // would sit on top of the game that caused it.
+                            crate::set_model_status(
                                 &app,
-                                false,
-                                if cfg!(target_os = "macos") {
-                                    "Parakeet released under unified-memory pressure"
-                                } else {
-                                    "Parakeet released to protect GPU memory"
+                                ModelStatus {
+                                    ready: false,
+                                    message: if cfg!(target_os = "macos") {
+                                        "Parakeet released under unified-memory pressure"
+                                    } else {
+                                        "Parakeet released to protect GPU memory"
+                                    }
+                                    .into(),
+                                    backend: active_backend().backend_label().into(),
                                 },
                             );
                         }
@@ -372,8 +412,12 @@ fn engine_worker(
                 runtime = locate_runtime(resource_dir.as_deref(), backend);
                 last_start_failure = None;
                 if server.is_none() {
-                    server =
-                        warm_server(&app, runtime.as_ref().map_err(String::as_str), &mut policy);
+                    server = warm_server(
+                        &app,
+                        runtime.as_ref().map_err(String::as_str),
+                        &mut policy,
+                        gpu.as_ref(),
+                    );
                     last_start_failure = server.is_none().then(Instant::now);
                 }
             }
@@ -386,7 +430,12 @@ fn engine_worker(
                 runtime = locate_runtime(resource_dir.as_deref(), backend);
                 policy.model_bytes = minimum_model_bytes(runtime.as_ref().ok());
                 policy.note_transition(Instant::now());
-                server = warm_server(&app, runtime.as_ref().map_err(String::as_str), &mut policy);
+                server = warm_server(
+                    &app,
+                    runtime.as_ref().map_err(String::as_str),
+                    &mut policy,
+                    gpu.as_ref(),
+                );
                 last_start_failure = server.is_none().then(Instant::now);
             }
             EngineCommand::ConfigureGpuMemory(enabled) => {
@@ -418,6 +467,7 @@ fn engine_worker(
                             &app,
                             runtime.as_ref().map_err(String::as_str),
                             &mut policy,
+                            gpu.as_ref(),
                         );
                         last_start_failure = server.is_none().then(Instant::now);
                     } else {
@@ -451,6 +501,7 @@ fn engine_worker(
                                 &app,
                                 runtime.as_ref().map_err(String::as_str),
                                 &mut policy,
+                                gpu.as_ref(),
                             );
                             last_start_failure = server.is_none().then(Instant::now);
                             break;
@@ -497,8 +548,12 @@ fn engine_worker(
                 policy.note_activity(started);
                 let meeting_id = job.id.clone();
                 if server.is_none() {
-                    server =
-                        warm_server(&app, runtime.as_ref().map_err(String::as_str), &mut policy);
+                    server = warm_server(
+                        &app,
+                        runtime.as_ref().map_err(String::as_str),
+                        &mut policy,
+                        gpu.as_ref(),
+                    );
                     last_start_failure = server.is_none().then(Instant::now);
                 }
                 let result = match server.as_mut() {
@@ -517,8 +572,12 @@ fn engine_worker(
                 let started = Instant::now();
                 policy.note_activity(started);
                 if server.is_none() {
-                    server =
-                        warm_server(&app, runtime.as_ref().map_err(String::as_str), &mut policy);
+                    server = warm_server(
+                        &app,
+                        runtime.as_ref().map_err(String::as_str),
+                        &mut policy,
+                        gpu.as_ref(),
+                    );
                     last_start_failure = server.is_none().then(Instant::now);
                 }
                 let result = match server.as_mut() {
@@ -542,6 +601,7 @@ fn warm_server(
     app: &AppHandle,
     runtime: Result<&RuntimePaths, &str>,
     policy: &mut GpuPressurePolicy,
+    gpu: Option<&GpuMemoryMonitor>,
 ) -> Option<SpeechServer> {
     let runtime = match runtime {
         Ok(runtime) => runtime,
@@ -559,9 +619,11 @@ fn warm_server(
             device_phrase(runtime.backend)
         ),
     );
+    let memory = || gpu.and_then(|gpu| gpu.memory_info().ok());
+    let before = memory();
     match SpeechServer::start(runtime) {
         Ok(server) => {
-            policy.note_transition(Instant::now());
+            policy.note_loaded(before, memory(), Instant::now());
             emit_model_status(app, true, &ready_message(runtime.backend));
             Some(server)
         }
@@ -2031,6 +2093,64 @@ mod tests {
 
         policy.note_transition(now);
         assert!(!policy.observe_loaded(low, now));
+    }
+
+    #[test]
+    fn gpu_pressure_survives_bouncing_readings() {
+        let now = Instant::now();
+        let mut policy = GpuPressurePolicy::new(true, now, 1024 * MIB);
+        policy.last_activity = now - MODEL_IDLE_BEFORE_UNLOAD - Duration::from_secs(1);
+        policy.last_transition = now - MODEL_TRANSITION_COOLDOWN - Duration::from_secs(1);
+        let low = MemoryInfo {
+            total: 8 * 1024 * MIB,
+            free: 600 * MIB,
+            used: 7 * 1024 * MIB,
+        };
+        let spike = MemoryInfo {
+            free: 2500 * MIB,
+            used: 5 * 1024 * MIB,
+            ..low
+        };
+        assert!(!policy.observe_loaded(low, now));
+        assert!(!policy.observe_loaded(low, now));
+        assert!(!policy.observe_loaded(spike, now));
+        assert!(!policy.observe_loaded(low, now));
+        assert!(policy.observe_loaded(low, now));
+    }
+
+    #[test]
+    fn game_claiming_vram_counts_as_pressure_before_free_hits_reserve() {
+        let now = Instant::now();
+        let mut policy = GpuPressurePolicy::new(true, now, 1024 * MIB);
+        // 12 GiB card: model loads using 2.5 GiB while the desktop uses 1.5 GiB.
+        let before = MemoryInfo {
+            total: 12 * 1024 * MIB,
+            free: 10752 * MIB,
+            used: 1536 * MIB,
+        };
+        let after = MemoryInfo {
+            free: 8192 * MIB,
+            used: 4096 * MIB,
+            ..before
+        };
+        policy.note_loaded(Some(before), Some(after), now);
+        assert_eq!(policy.model_bytes, 2560 * MIB);
+        assert!(!policy.under_pressure(after));
+        // A game takes 5.5 GiB: free stays above the 2 GiB reserve, but the
+        // model now blocks a comfortable margin for the game.
+        let gaming = MemoryInfo {
+            free: 2560 * MIB,
+            used: 9728 * MIB,
+            ..before
+        };
+        assert!(policy.under_pressure(gaming));
+        // Plenty of headroom left: growth alone is not pressure.
+        let light_app = MemoryInfo {
+            free: 6144 * MIB,
+            used: 6144 * MIB,
+            ..before
+        };
+        assert!(!policy.under_pressure(light_app));
     }
 
     #[test]
