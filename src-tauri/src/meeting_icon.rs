@@ -23,10 +23,8 @@ pub struct MeetingIcon {
     pub rgba: Vec<u8>,
 }
 
-/// Best-effort icon for the app owning `hwnd`: exe path -> first icon
-/// resource -> RGBA bitmap. Anything failing yields None and the overlay
-/// falls back to a bundled vendor glyph. No window content is touched.
-pub fn icon_for_window(hwnd: HWND) -> Option<MeetingIcon> {
+/// Full executable path of the process owning `hwnd`, if it can be queried.
+pub fn window_exe_path(hwnd: HWND) -> Option<String> {
     unsafe {
         let mut pid = 0u32;
         GetWindowThreadProcessId(hwnd, Some(&mut pid));
@@ -45,7 +43,16 @@ pub fn icon_for_window(hwnd: HWND) -> Option<MeetingIcon> {
         .ok()
         .map(|_| String::from_utf16_lossy(&path[..length as usize]));
         let _ = CloseHandle(process);
-        let exe = exe?;
+        exe
+    }
+}
+
+/// Best-effort icon for the app owning `hwnd`: exe path -> first icon
+/// resource -> RGBA bitmap. Anything failing yields None and the overlay
+/// falls back to a bundled vendor glyph. No window content is touched.
+pub fn icon_for_window(hwnd: HWND) -> Option<MeetingIcon> {
+    unsafe {
+        let exe = window_exe_path(hwnd)?;
         let exe_w: Vec<u16> = exe.encode_utf16().chain(std::iter::once(0)).collect();
         let mut large = HICON::default();
         let mut small = HICON::default();
