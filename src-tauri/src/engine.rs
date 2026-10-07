@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use speech_packs::AsrModel;
 use std::fs::{self, OpenOptions};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::TcpListener;
 #[cfg(windows)]
 use std::os::windows::{io::AsRawHandle, process::CommandExt};
@@ -37,27 +37,46 @@ const GPU_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 const WARM_RETRY_COOLDOWN: Duration = Duration::from_secs(30);
 const ENGINE_LOG_LIMIT: u64 = 1024 * 1024;
 const PHONON_MODEL_DIR: &str = "models/phonon-2";
+/// Start error for a warm-up the user switched away from; not a failure.
+const SUPERSEDED: &str = "superseded by a model switch";
 const PHONON_PYTHON: &str = "runtimes/phonon-cpu/python/python.exe";
 const CUDA_RUNTIME_PACK_EXE: &str = "runtimes/nemo-speech-cuda/bin/nemo-speech.exe";
 
 /// The backend the engine thread is running, for status labels.
 static ACTIVE_BACKEND: AtomicU8 = AtomicU8::new(0);
+/// The backend the user last chose. It is set before the switch command is
+/// queued, so a long warm-up (Phonon takes over a minute on the CPU) can
+/// notice it has been superseded and give way instead of blocking the queue.
+static DESIRED_BACKEND: AtomicU8 = AtomicU8::new(0);
 
-fn active_backend() -> AsrModel {
-    match ACTIVE_BACKEND.load(Ordering::Acquire) {
+fn backend_code(model: AsrModel) -> u8 {
+    match model {
+        AsrModel::Parakeet => 0,
+        AsrModel::Phonon => 1,
+    }
+}
+
+fn backend_from_code(code: u8) -> AsrModel {
+    match code {
         1 => AsrModel::Phonon,
         _ => AsrModel::Parakeet,
     }
 }
 
+fn active_backend() -> AsrModel {
+    backend_from_code(ACTIVE_BACKEND.load(Ordering::Acquire))
+}
+
 fn set_active_backend(model: AsrModel) {
-    ACTIVE_BACKEND.store(
-        match model {
-            AsrModel::Parakeet => 0,
-            AsrModel::Phonon => 1,
-        },
-        Ordering::Release,
-    );
+    ACTIVE_BACKEND.store(backend_code(model), Ordering::Release);
+}
+
+fn desired_backend() -> AsrModel {
+    backend_from_code(DESIRED_BACKEND.load(Ordering::Acquire))
+}
+
+fn set_desired_backend(model: AsrModel) {
+    DESIRED_BACKEND.store(backend_code(model), Ordering::Release);
 }
 
 /// Where the active backend runs, for status text ("Warming Phonon on the CPU…").
@@ -162,6 +181,7 @@ impl EngineController {
         model: AsrModel,
     ) -> Self {
         let (commands, receiver) = mpsc::channel();
+        set_desired_backend(model);
         std::thread::Builder::new()
             .name("pronto-engine".into())
             .spawn(move || engine_worker(app, resource_dir, gpu_memory_management, model, receiver))
@@ -199,6 +219,7 @@ impl EngineController {
     /// Stop the running backend and warm `model` instead. Its packs must
     /// already be installed.
     pub fn switch_model(&self, model: AsrModel) {
+        set_desired_backend(model);
         let _ = self.commands.send(EngineCommand::SwitchModel(model));
     }
 
@@ -347,7 +368,9 @@ fn engine_worker(
                 Some(server)
             }
             Err(error) => {
-                emit_model_status(&app, false, &error);
+                if error != SUPERSEDED {
+                    emit_model_status(&app, false, &error);
+                }
                 None
             }
         },
@@ -356,7 +379,8 @@ fn engine_worker(
             None
         }
     };
-    let mut last_start_failure = server.is_none().then(Instant::now);
+    let mut last_start_failure =
+        (server.is_none() && desired_backend() == backend).then(Instant::now);
 
     let client = Client::builder()
         .connect_timeout(Duration::from_secs(2))
@@ -406,6 +430,20 @@ fn engine_worker(
             }
         };
 
+        // Follow the user's latest choice before running anything queued
+        // behind a switch, so dictations never wait on an abandoned backend.
+        if desired_backend() != backend {
+            adopt_backend(
+                desired_backend(),
+                &mut backend,
+                &mut runtime,
+                &mut server,
+                &mut policy,
+                &mut last_start_failure,
+                resource_dir.as_deref(),
+            );
+        }
+
         match command.expect("received engine command") {
             #[cfg(target_os = "macos")]
             EngineCommand::ModelInstalled => {
@@ -417,26 +455,24 @@ fn engine_worker(
                         runtime.as_ref().map_err(String::as_str),
                         &mut policy,
                         gpu.as_ref(),
+                        &mut last_start_failure,
                     );
-                    last_start_failure = server.is_none().then(Instant::now);
                 }
             }
             EngineCommand::SwitchModel(model) => {
-                if let Some(mut previous) = server.take() {
-                    previous.stop();
+                // A later switch has already been adopted above; this one is stale.
+                if model != backend {
+                    continue;
                 }
-                backend = model;
-                set_active_backend(backend);
-                runtime = locate_runtime(resource_dir.as_deref(), backend);
-                policy.model_bytes = minimum_model_bytes(runtime.as_ref().ok());
-                policy.note_transition(Instant::now());
-                server = warm_server(
-                    &app,
-                    runtime.as_ref().map_err(String::as_str),
-                    &mut policy,
-                    gpu.as_ref(),
-                );
-                last_start_failure = server.is_none().then(Instant::now);
+                if server.is_none() {
+                    server = warm_server(
+                        &app,
+                        runtime.as_ref().map_err(String::as_str),
+                        &mut policy,
+                        gpu.as_ref(),
+                        &mut last_start_failure,
+                    );
+                }
             }
             EngineCommand::ConfigureGpuMemory(enabled) => {
                 policy.enabled = enabled;
@@ -468,8 +504,8 @@ fn engine_worker(
                             runtime.as_ref().map_err(String::as_str),
                             &mut policy,
                             gpu.as_ref(),
+                            &mut last_start_failure,
                         );
-                        last_start_failure = server.is_none().then(Instant::now);
                     } else {
                         emit_model_status(
                             &app,
@@ -486,9 +522,15 @@ fn engine_worker(
             EngineCommand::Transcribe(job) => {
                 let started = Instant::now();
                 policy.note_activity(started);
-                let recent_start_failure =
-                    last_start_failure.is_some_and(|failed| failed.elapsed() < WARM_RETRY_COOLDOWN);
-                if server.is_none() && !recent_start_failure {
+                // A switch made while this dictation waited on a warm-up wins:
+                // the warm-up gives way and the dictation runs on the new
+                // backend. Two passes cover one switch per dictation.
+                for _ in 0..2 {
+                    let recent_start_failure = last_start_failure
+                        .is_some_and(|failed| failed.elapsed() < WARM_RETRY_COOLDOWN);
+                    if server.is_some() || recent_start_failure {
+                        break;
+                    }
                     let deadline = Instant::now() + GPU_WAIT_TIMEOUT;
                     let mut waiting_emitted = false;
                     loop {
@@ -502,8 +544,8 @@ fn engine_worker(
                                 runtime.as_ref().map_err(String::as_str),
                                 &mut policy,
                                 gpu.as_ref(),
+                                &mut last_start_failure,
                             );
-                            last_start_failure = server.is_none().then(Instant::now);
                             break;
                         }
                         if !waiting_emitted {
@@ -523,6 +565,18 @@ fn engine_worker(
                         }
                         std::thread::sleep(GPU_POLL_INTERVAL);
                     }
+                    if server.is_some() || desired_backend() == backend {
+                        break;
+                    }
+                    adopt_backend(
+                        desired_backend(),
+                        &mut backend,
+                        &mut runtime,
+                        &mut server,
+                        &mut policy,
+                        &mut last_start_failure,
+                        resource_dir.as_deref(),
+                    );
                 }
                 let recent_start_failure =
                     last_start_failure.is_some_and(|failed| failed.elapsed() < WARM_RETRY_COOLDOWN);
@@ -553,8 +607,8 @@ fn engine_worker(
                         runtime.as_ref().map_err(String::as_str),
                         &mut policy,
                         gpu.as_ref(),
+                        &mut last_start_failure,
                     );
-                    last_start_failure = server.is_none().then(Instant::now);
                 }
                 let result = match server.as_mut() {
                     Some(server) => process_meeting_job(&client, server, job, &app),
@@ -577,8 +631,8 @@ fn engine_worker(
                         runtime.as_ref().map_err(String::as_str),
                         &mut policy,
                         gpu.as_ref(),
+                        &mut last_start_failure,
                     );
-                    last_start_failure = server.is_none().then(Instant::now);
                 }
                 let result = match server.as_mut() {
                     Some(server) => process_search_asr(&client, server, job),
@@ -597,16 +651,42 @@ fn engine_worker(
     }
 }
 
+/// Stop the running backend and point the engine at `model`. Resets the
+/// start-failure cooldown, which belonged to the previous backend.
+fn adopt_backend(
+    model: AsrModel,
+    backend: &mut AsrModel,
+    runtime: &mut Result<RuntimePaths, String>,
+    server: &mut Option<SpeechServer>,
+    policy: &mut GpuPressurePolicy,
+    last_start_failure: &mut Option<Instant>,
+    resource_dir: Option<&Path>,
+) {
+    if let Some(mut previous) = server.take() {
+        previous.stop();
+    }
+    *backend = model;
+    set_active_backend(model);
+    *runtime = locate_runtime(resource_dir, model);
+    policy.model_bytes = minimum_model_bytes(runtime.as_ref().ok());
+    policy.note_transition(Instant::now());
+    *last_start_failure = None;
+}
+
+/// Start the speech server, recording a failed start for the retry
+/// cooldown. A start abandoned for a model switch is not a failure.
 fn warm_server(
     app: &AppHandle,
     runtime: Result<&RuntimePaths, &str>,
     policy: &mut GpuPressurePolicy,
     gpu: Option<&GpuMemoryMonitor>,
+    last_start_failure: &mut Option<Instant>,
 ) -> Option<SpeechServer> {
     let runtime = match runtime {
         Ok(runtime) => runtime,
         Err(error) => {
             emit_model_status(app, false, error);
+            *last_start_failure = Some(Instant::now());
             return None;
         }
     };
@@ -614,9 +694,14 @@ fn warm_server(
         app,
         false,
         &format!(
-            "Warming {} on {}…",
+            "Warming {} on {}{}…",
             runtime.backend.short_name(),
-            device_phrase(runtime.backend)
+            device_phrase(runtime.backend),
+            if runtime.backend == AsrModel::Phonon {
+                ", about a minute"
+            } else {
+                ""
+            }
         ),
     );
     let memory = || gpu.and_then(|gpu| gpu.memory_info().ok());
@@ -625,10 +710,13 @@ fn warm_server(
         Ok(server) => {
             policy.note_loaded(before, memory(), Instant::now());
             emit_model_status(app, true, &ready_message(runtime.backend));
+            *last_start_failure = None;
             Some(server)
         }
+        Err(error) if error == SUPERSEDED => None,
         Err(error) => {
             emit_model_status(app, false, &error);
+            *last_start_failure = Some(Instant::now());
             None
         }
     }
@@ -1215,10 +1303,18 @@ impl SpeechServer {
             .map_err(|error| error.to_string())?;
         let backend = runtime.backend;
         let name = backend.short_name();
-        // Phonon imports Python + torch and expands its weights on load.
-        let startup_limit = if backend == AsrModel::Phonon { 180 } else { 90 };
-        let deadline = Instant::now() + Duration::from_secs(startup_limit);
+        // Phonon imports Python + torch and expands its weights on load,
+        // which takes over a minute even on a fast CPU.
+        let startup_limit = if backend == AsrModel::Phonon { 300 } else { 90 };
+        let started = Instant::now();
+        let deadline = started + Duration::from_secs(startup_limit);
         while Instant::now() < deadline {
+            if desired_backend() != backend {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = writeln!(log, "[pronto] {name} start abandoned for a model switch");
+                return Err(SUPERSEDED.into());
+            }
             if let Some(status) = child
                 .try_wait()
                 .map_err(|error| format!("Could not inspect speech runtime: {error}"))?
@@ -1232,13 +1328,33 @@ impl SpeechServer {
                 .map(|response| response.status().is_success())
                 .unwrap_or(false)
             {
-                return Ok(Self {
+                let loaded = started.elapsed().as_secs_f32();
+                let server = Self {
                     child,
                     base_url,
                     backend,
                     #[cfg(windows)]
                     _job: job,
-                });
+                };
+                // Phonon's first decode pays ~3 s of one-time setup; spend it
+                // here so the user's first dictation does not.
+                if backend == AsrModel::Phonon {
+                    let warm = Instant::now();
+                    let _ = transcribe_recording_url(
+                        &health_client,
+                        &server.base_url,
+                        backend,
+                        &warm_up_clip(),
+                        "en",
+                    );
+                    let _ = writeln!(
+                        log,
+                        "[pronto] {name} warm-up decode {:.1}s",
+                        warm.elapsed().as_secs_f32()
+                    );
+                }
+                let _ = writeln!(log, "[pronto] {name} ready after {loaded:.1}s");
+                return Ok(server);
             }
             std::thread::sleep(Duration::from_millis(200));
         }
@@ -1248,6 +1364,20 @@ impl SpeechServer {
         Err(format!(
             "{name} did not finish loading within {startup_limit} seconds.{detail}"
         ))
+    }
+}
+
+/// Two seconds of a quiet 220 Hz tone: loud enough to survive silence
+/// trimming, so the warm-up runs the whole encoder and decoder.
+fn warm_up_clip() -> Recording {
+    let rate = 16_000u32;
+    let samples = (0..rate * 2)
+        .map(|index| (index as f32 * 220.0 * std::f32::consts::TAU / rate as f32).sin() * 0.05)
+        .collect();
+    Recording {
+        samples,
+        sample_rate: rate,
+        channels: 1,
     }
 }
 
@@ -1371,7 +1501,9 @@ fn server_command(runtime: &RuntimePaths, port: u16) -> Result<Command, String> 
             let mut command = Command::new(&runtime.executable);
             command
                 // -I isolates from user site-packages and PYTHON* variables.
-                .args(["-I", "-B", "-X", "utf8", "-m", "fermion.cli", "serve"])
+                // Bytecode stays cached in the pack: without it every start
+                // recompiles torch and transformers (~35 s of a ~80 s load).
+                .args(["-I", "-X", "utf8", "-m", "fermion.cli", "serve"])
                 .arg(&runtime.model)
                 .args(["--host", "127.0.0.1", "--port", &port])
                 .env("FERMION_DEVICE", "cpu")
@@ -2358,6 +2490,64 @@ mod tests {
             rewrite_em_dashes("It is ready — ship it. Pronto—our app—stays open."),
             "It is ready; ship it. Pronto, our app, stays open."
         );
+    }
+
+    #[test]
+    fn warm_up_clip_survives_silence_trimming() {
+        let wav = recording_to_wav(&warm_up_clip()).unwrap();
+        assert!(wav.len() > 44 + 16_000 * 2);
+    }
+
+    #[test]
+    #[ignore = "requires the Phonon pack and PRONTO_TEST_WAV; optional PRONTO_TEST_TRANSCRIPT"]
+    fn end_to_end_phonon_cpu_transcription() {
+        let wav_path = std::env::var("PRONTO_TEST_WAV").expect("PRONTO_TEST_WAV is required");
+        let recording = recording_from_pcm16_wav(&std::fs::read(wav_path).unwrap()).unwrap();
+        set_desired_backend(AsrModel::Phonon);
+        let runtime = locate_runtime(None, AsrModel::Phonon).unwrap();
+        let started = Instant::now();
+        let mut server = SpeechServer::start(&runtime).unwrap();
+        let load = started.elapsed();
+        let client = Client::builder().build().unwrap();
+        let settings = UserSettings {
+            cleanup_enabled: false,
+            auto_insert: false,
+            ..UserSettings::default()
+        };
+        let completed = process_job(
+            &client,
+            &mut server,
+            TranscriptionJob::file_import(recording, settings, false, None),
+            Instant::now(),
+        )
+        .unwrap();
+        println!(
+            "load {:.1}s, first transcription {} ms for {} ms of audio: {}",
+            load.as_secs_f32(),
+            completed.entry.asr_ms,
+            completed.entry.audio_ms,
+            completed.entry.raw_text
+        );
+        // Proper names may vary (the dictionary exists for them), so require
+        // nearly every expected word rather than an exact string.
+        if let Ok(expected) = std::env::var("PRONTO_TEST_TRANSCRIPT") {
+            let words = |text: &str| -> Vec<String> {
+                text.split_whitespace()
+                    .map(|word| {
+                        word.trim_matches(|c: char| !c.is_alphanumeric())
+                            .to_lowercase()
+                    })
+                    .collect()
+            };
+            let heard = words(&completed.entry.raw_text);
+            let expected = words(&expected);
+            let matched = expected.iter().filter(|word| heard.contains(word)).count();
+            assert!(
+                matched * 100 >= expected.len() * 95,
+                "only {matched}/{} expected words were transcribed",
+                expected.len()
+            );
+        }
     }
 
     #[test]
