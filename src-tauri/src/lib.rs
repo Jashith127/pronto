@@ -1307,7 +1307,10 @@ async fn retry_meeting(app: AppHandle, id: String) -> Result<meeting::MeetingRec
     off_main_thread(move || retry_meeting_blocking(app, id)).await
 }
 
-fn retry_notetaker_upload_blocking(app: AppHandle, item_id: String) -> Result<EngineStatus, String> {
+fn retry_notetaker_upload_blocking(
+    app: AppHandle,
+    item_id: String,
+) -> Result<EngineStatus, String> {
     let path = meeting::notetaker_audio_path(&item_id)
         .ok_or_else(|| "That recording was not found.".to_string())?;
     let bytes = std::fs::read(&path).map_err(|_| {
