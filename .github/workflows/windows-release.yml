@@ -1,9 +1,9 @@
 name: Windows release artifacts
 
-# Builds the speech packs and Pronto Setup. Run it manually; upload the packs
-# to the `speech-packs-v1` release, paste their size/sha256 into
-# crates/speech-packs/speech-packs.manifest, then run it again with
-# `packs: false` to build the installer that pins them.
+# Builds the speech packs and Pronto Setup. Run it manually. With `publish`,
+# the packs are uploaded to the `speech-packs-v1` release; paste the printed
+# size/sha256 values into crates/speech-packs/speech-packs.manifest, then run
+# it again with `packs: false` to build the installer that pins them.
 on:
   workflow_dispatch:
     inputs:
@@ -11,6 +11,10 @@ on:
         description: Build speech packs
         type: boolean
         default: true
+      publish:
+        description: Upload the packs to the speech-packs-v1 release
+        type: boolean
+        default: false
       installer:
         description: Build Pronto Setup
         type: boolean
@@ -20,6 +24,8 @@ jobs:
   speech-packs:
     if: ${{ inputs.packs }}
     runs-on: windows-2022
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - name: Fetch the CUDA runtime from Git LFS
@@ -37,6 +43,25 @@ jobs:
             dist/speech-packs/*.zip
             dist/speech-packs/manifest-values.txt
           compression-level: 0
+      - name: Show manifest values
+        shell: pwsh
+        run: Get-Content dist/speech-packs/manifest-values.txt
+      - name: Publish to the speech-packs-v1 release
+        if: ${{ inputs.publish }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = 'speech-packs-v1'
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA `
+              --title 'Speech packs v1' `
+              --notes 'Downloadable speech engines for Pronto: the Parakeet CUDA runtime, the Phonon CPU runtime, and the Phonon-2 model. Pronto Setup and Settings download these automatically and verify them against pinned SHA-256 values.'
+            if ($LASTEXITCODE -ne 0) { throw 'Could not create the release' }
+          }
+          gh release upload $tag (Get-ChildItem dist/speech-packs/*.zip).FullName --repo $env:GITHUB_REPOSITORY --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Could not upload the packs' }
 
   installer:
     if: ${{ inputs.installer }}
