@@ -1285,8 +1285,7 @@ fn delete_meeting(_app: AppHandle, id: String) -> Result<(), String> {
     meeting::delete_record(&id)
 }
 
-#[tauri::command]
-fn retry_meeting(app: AppHandle, id: String) -> Result<meeting::MeetingRecord, String> {
+fn retry_meeting_blocking(app: AppHandle, id: String) -> Result<meeting::MeetingRecord, String> {
     let state = app.state::<AppState>();
     let (record, audio_path) = meeting::record_for_retry(&id)?;
     let settings = state.settings.snapshot()?;
@@ -1304,7 +1303,14 @@ fn retry_meeting(app: AppHandle, id: String) -> Result<meeting::MeetingRecord, S
 }
 
 #[tauri::command]
-fn retry_notetaker_upload(app: AppHandle, item_id: String) -> Result<EngineStatus, String> {
+async fn retry_meeting(app: AppHandle, id: String) -> Result<meeting::MeetingRecord, String> {
+    off_main_thread(move || retry_meeting_blocking(app, id)).await
+}
+
+fn retry_notetaker_upload_blocking(
+    app: AppHandle,
+    item_id: String,
+) -> Result<EngineStatus, String> {
     let path = meeting::notetaker_audio_path(&item_id)
         .ok_or_else(|| "That recording was not found.".to_string())?;
     let bytes = std::fs::read(&path).map_err(|_| {
@@ -1312,6 +1318,11 @@ fn retry_notetaker_upload(app: AppHandle, item_id: String) -> Result<EngineStatu
     })?;
     let file_name = format!("{item_id}.wav");
     queue_file_import(&app, file_name, &bytes, true, Some(item_id))
+}
+
+#[tauri::command]
+async fn retry_notetaker_upload(app: AppHandle, item_id: String) -> Result<EngineStatus, String> {
+    off_main_thread(move || retry_notetaker_upload_blocking(app, item_id)).await
 }
 
 #[tauri::command]
@@ -2169,8 +2180,7 @@ fn handle_hotkey_event(app: &AppHandle, id: HotkeyId, event: HotkeyEvent) {
     }
 }
 
-#[tauri::command]
-fn reset(app: AppHandle) -> Result<EngineStatus, String> {
+fn reset_blocking(app: AppHandle) -> Result<EngineStatus, String> {
     let state = app.state::<AppState>();
     state.insertion_target.cancel();
     state.dictation_active.store(false, Ordering::Release);
@@ -2182,6 +2192,11 @@ fn reset(app: AppHandle) -> Result<EngineStatus, String> {
     pipeline.reset();
     emit_status(&app, &pipeline.status);
     Ok(pipeline.status.clone())
+}
+
+#[tauri::command]
+async fn reset(app: AppHandle) -> Result<EngineStatus, String> {
+    off_main_thread(move || reset_blocking(app)).await
 }
 
 #[tauri::command]
