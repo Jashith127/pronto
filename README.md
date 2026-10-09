@@ -16,7 +16,7 @@ Two editions share one codebase with clearly separated platform paths:
 
 ![Pronto Dictate screen](docs/screenshot-dictate.png)
 
-## For customers
+## For Users
 
 ### Dictate anywhere
 
