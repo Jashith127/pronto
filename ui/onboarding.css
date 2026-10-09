@@ -26,10 +26,16 @@
 .shortcut-keys.inline { display: inline-flex; vertical-align: middle; justify-content: flex-start; margin: 0 2px; }
 .shortcut-keys.inline kbd { padding: 4px 7px; }
 
-.onboarding-try { display: block; width: 100%; margin-top: 18px; padding: 12px 14px; border: 1px solid var(--input-border); border-radius: var(--radius-md); outline: 0; color: var(--ink); background: var(--input-bg); font: inherit; font-size: 13.5px; line-height: 1.5; resize: none; }
-.onboarding-try::placeholder { color: var(--input-placeholder); }
-.onboarding-try:focus { border-color: var(--focus-color); box-shadow: var(--focus-ring); }
-.onboarding-result { min-height: 19px; margin: 10px 0 0; color: var(--sage); font-size: 12.5px; font-weight: 600; }
+.onboarding-done { text-align: center; }
+.onboarding-done .onboarding-lede { margin-top: 6px; }
+.onboarding-check { display: grid; place-items: center; width: 56px; height: 56px; margin: 0 auto 16px; border-radius: 50%; background: var(--sage); box-shadow: 0 0 0 8px color-mix(in srgb, var(--sage) 16%, transparent); animation: onboarding-pop .42s cubic-bezier(.2, 1.4, .4, 1) both; }
+.onboarding-check svg { width: 28px; height: 28px; fill: none; stroke: var(--paper); stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 24; stroke-dashoffset: 24; animation: onboarding-tick .32s .2s ease-out forwards; }
+@keyframes onboarding-pop { from { opacity: 0; transform: scale(.5); } to { opacity: 1; transform: none; } }
+@keyframes onboarding-tick { to { stroke-dashoffset: 0; } }
+.onboarding-try-card { margin-top: 20px; padding: 14px 18px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); text-align: left; }
+.onboarding-try-card strong { font-size: 13px; font-weight: 650; }
+.onboarding-try-card ol { display: grid; gap: 6px; margin: 8px 0 0; padding-left: 20px; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+.onboarding-done .onboarding-tips { text-align: left; }
 
 .onboarding-tips { display: grid; gap: 8px; margin: 18px 0 0; padding: 0; list-style: none; }
 .onboarding-tips li { padding: 11px 14px; border-radius: var(--radius-sm); color: var(--muted); background: var(--surface-subtle); font-size: 12.5px; line-height: 1.45; }
@@ -42,5 +48,6 @@
 .onboarding-next:active { transform: translateY(1px); }
 
 @media (prefers-reduced-motion: reduce) {
-  .onboarding, .onboarding-step.active { animation: none; }
+  .onboarding, .onboarding-step.active, .onboarding-check { animation: none; }
+  .onboarding-check svg { animation: none; stroke-dashoffset: 0; }
 }

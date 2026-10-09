@@ -10,7 +10,7 @@ from pathlib import Path
 import statistics
 import sys
 
-BEFORE, AFTER = '#cdd3d9', '#c4573d'
+BEFORE, AFTER = '#cdd3d9', '#2a78d6'  # blue for Phonon; the Parakeet chart is rust
 INK, INK2, MUTED, GRID = '#1f1f1f', '#555555', '#777777', '#e6e6e6'
 CLIPS = ['6930-75918-0008', '6930-75918-0003']  # a 4.8 s and a 23.3 s recording
 
