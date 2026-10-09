@@ -1,160 +1,211 @@
 # Pronto
 
-> **Pronto for Mac (Apple Silicon):** the macOS port lives in this same
-> repository alongside Windows. The `v0.8.2-macos` release holds the
-> MAC-only `Pronto_0.8.2_aarch64.dmg` (ad hoc signed, not notarized).
-> The bundle name stays `Pronto`; "Pronto for Mac" is the docs/release name
-> for the Mac edition.
-> See [the port status and build prerequisites](docs/macos-port-status.md).
-
-Pronto is a push-to-talk dictation application. Hold a global shortcut, speak, and your words appear in whatever application you were typing in -- with local punctuation, cleanup, and history. It processes audio locally and inserts text into the active application.
-
-Two editions share one codebase with clearly separated platform paths:
-
-* **Pronto (Windows):** a choice of speech engine (NVIDIA Parakeet TDT 0.6B v3 on CUDA, or Fermion Phonon-2 on the CPU for PCs without an NVIDIA GPU), Win32 insertion via SendInput, and Pronto Setup, a custom installer.
-* **Pronto for Mac (Apple Silicon, macOS 13+):** Metal speech runtime, Accessibility insertion with clipboard fallback, `.app`/`.dmg` bundle. Dictation uses Control + Option + Space, Paste Last uses Control + Option + V, voice search uses Control + Option + S by default.
+**Speak. Pronto types.** Pronto is a push-to-talk dictation app for Windows. Push a shortcut, speak, and release. Pronto writes your words into the app that you use. The speech engine runs on your computer, so your audio stays on your computer.
 
 ![Pronto Dictate screen](docs/screenshot-dictate.png)
 
-## For customers
+Pronto 1.0 is the first stable release.
 
-### Dictate anywhere
+## What Pronto does
 
-* **Push-to-talk, globally.** A configurable shortcut (including modifier-only chords such as Win + Ctrl) starts and stops dictation from any application. Hold-to-talk or press-to-toggle, your choice.
-* **Compact recording pill.** A small always-on-top overlay shows cancel, a live waveform, and finish controls without stealing focus from your work.
-* **Paste last transcript.** A second global shortcut (default Win + Shift + V) pastes your most recent transcript wherever you are typing.
-* **Voice search.** A third global shortcut (default Win + Space) opens a transparent search overlay (not a Pronto app window): speak a query, Pronto retrieves DuckDuckGo HTML results, and your AI provider (DeepSeek recommended) synthesizes a grounded answer with citations. The overlay reuses the dictation pill while working, then pops a minimal result panel with the answer first and sources behind a disclosure. Suggested "ask next" prompts run real follow-up searches, and opening any link hands off to your browser and clears the overlay. Clicking away parks the answer as a small tab above the taskbar (bottom-left) with a two-minute countdown on its close button -- click it to restore, or let it expire. Audio stays local; query text and snippets go to DuckDuckGo and your AI provider. Win + Space may also switch Windows keyboard layouts because the low-level hook calls `CallNextHookEx`.
+| Feature | What it does |
+|---|---|
+| **Dictation** | Push the shortcut in any app and speak. Pronto types the text into that app. |
+| **Paste Last** | Push a second shortcut to paste your last transcript again. |
+| **Voice search** | Ask a question aloud. Pronto finds web results and shows a short answer with sources. |
+| **Note Taker** | Records meetings from your microphone and your computer audio. Pronto then makes a transcript and meeting notes. |
+| **File transcription** | Transcribes audio and video files: MP3, WAV, M4A, MP4, MOV and WebM. |
+| **Dictionary** | Keeps names and special terms correct in every transcript. |
+| **AI cleanup** | Optional. An AI provider removes filler words and corrects the text. |
 
-### Transcription that stays on your computer
+## Dictation
 
-* **Local speech engine.** Uses NVIDIA Parakeet TDT 0.6B v3 via CUDA. The model stays loaded in memory, so short phrases transcribe in well under a second with punctuation and capitalization included.
-* **Fully offline after setup.** The microphone, transcription, and cleanup all run locally. The network is needed only during installation (one-time model download) and optionally for AI rewriting.
-* **Private by design.** Audio never leaves the machine -- it travels only to a local loopback transcription server. Your AI provider receives transcript text only when cloud cleanup is enabled, and API keys are stored in Windows Credential Manager.
+1. Put the cursor in a text field in any app.
+2. Push and hold **Ctrl + Alt + Space**.
+3. Speak.
+4. Release the keys. Pronto types the text.
 
-### Cleanup and rewriting
+You can change the shortcut in **Settings → Shortcuts**. You can also select toggle mode: push one time to start, and push again to stop. Modifier-only shortcuts, for example **Win + Ctrl**, are also possible.
 
-* **Local cleanup.** Removes fillers and false starts and repairs punctuation automatically -- no account or key required.
-* **Optional AI rewrite.** Pick an AI provider (DeepSeek is recommended; OpenAI, Anthropic, Google Gemini, Groq, OpenRouter, or any OpenAI-compatible endpoint such as Ollama or LM Studio also work), add its API key, and optionally override the model. The same provider writes structured meeting notes and voice search answers.
-* **Personal dictionary.** Add names and specialist terms that Pronto must preserve; corrections apply deterministically after recognition.
+A small pill shows on the screen while Pronto listens. The pill has a live waveform, a cancel button and a finish button. The pill does not take the focus from your app.
 
-### Meeting Note Taker
+Pronto transcribes long dictations while you speak. When you stop, Pronto has only the last part of the audio to do. Thus a 60-second dictation is usually ready in less than half a second on Parakeet.
 
-* **Record meetings locally.** Captures microphone plus Windows system audio directly to disk -- no calendar connection or meeting bot required. Local window-title detection offers the recorder when a call is detected.
-* **Fast stop, background notes.** Stopping a recording -- even a one-to-two-hour meeting -- returns in about a second. Mixing and transcription continue in the background with live chunk progress, using parallel workers, so the app stays responsive throughout.
-* **Background notes.** After recording stops, Pronto transcribes the meeting in chunks and generates structured notes (via your AI provider when configured, with a local fallback otherwise).
-* **Recording library.** Organizes recorded meetings and imported audio into folders with background processing status, word counts, durations, and focused transcript views with audio playback.
-* **Audio and video import.** Transcribes the audio track from common media files (MP3, WAV, M4A, MP4, MOV, WebM) locally, from the Dictate screen or any Note Taker folder.
+To paste the last transcript again, push **Win + Shift + V**.
 
-### Look and feel
+## Voice search
 
-* **Rounded main window.** The app window is heavily rounded when floating and snaps back to square when maximized.
-* **Light and dark mode.** Choose System, Light, or Dark under Settings -- Appearance. Listening pills and dictation overlays keep their dark look so they stay readable on top of any app.
-* **Note Taker in dark mode.** Recording libraries, transcripts, and meeting notes all follow the app theme at full panel width.
+1. Push **Win + Space**.
+2. Speak your question.
+3. Read the answer in the panel.
 
-### Speech engines and setup
+Pronto gets results from DuckDuckGo. Your AI provider then writes a short answer from these results, with citations. The panel shows the answer first. The sources are below the answer.
 
-* **Pronto Setup.** A custom installer in Pronto's own look. It checks your graphics, recommends Parakeet when an NVIDIA GPU is present and Phonon otherwise, and downloads only the engine you pick, with live size, speed, and time remaining. Run it on a PC that already has Pronto to update in place or reinstall a clean copy, optionally erasing history and settings. Downloads resume after a cancel or a dropped connection and are checksum-verified.
-* **Switch engines any time.** Settings → Advanced → Speech model downloads the other engine in the app and switches as soon as it is ready.
-* **Parakeet** runs only on NVIDIA GPUs and is the fastest, with 25 languages. **Phonon** runs on any PC's CPU, is considerably slower, and understands English only.
+* Click a link to open it in your browser. The panel then closes.
+* Click an "Ask next" suggestion to do a follow-up search.
+* Click outside the panel to put it in a small tab at the bottom-left of the screen. Click the tab to open the answer again. The tab closes after two minutes.
 
-### Windows integration
+**Note:** Windows also uses **Win + Space** to change the keyboard layout. Your layout can change when you use this shortcut. If this is a problem, change the shortcut in **Settings → Shortcuts**.
 
-* **System tray operation.** Lives in the tray with dictation status, meeting controls, and Paste Last Transcript. Closing the main window keeps background dictation active.
-* **Starts at boot.** Optional silent launch into the tray.
-* **Dictation sounds and audio ducking.** Short start/stop cues, plus optional ducking that lowers playback while dictating and restores its exact prior state.
-* **GPU pressure relief.** Optionally frees the model's VRAM under sustained pressure; the next dictation briefly warms it back up.
-* **Dashboard.** Speaking pace (WPM with recent-history chart), words captured, transcript count, and average response time across your locally saved history.
+## Note Taker
 
-## Performance
+* **Record a meeting.** Pronto records your microphone and your Windows audio to the disk. You do not need a calendar connection or a meeting bot.
+* **Meeting detection.** When a meeting app uses your microphone for approximately 10 seconds, Pronto asks if you want to record. Pronto knows Zoom, Teams, Google Meet, Slack, Discord and other apps.
+* **Fast stop.** When you stop a recording, Pronto is ready again in approximately one second. This is also true for a two-hour meeting. Pronto makes the transcript and the notes in the background and shows the progress.
+* **Meeting notes.** Your AI provider writes structured notes. If you do not have an AI provider, Pronto makes local notes.
+* **Library.** Put recordings and imported files in folders. Search all notes, and move recordings with drag-and-drop. Each recording has tabs for notes and transcript, and an audio player.
 
-On an NVIDIA RTX 4050 Laptop GPU, local transcription of an 11-second audio file takes 86 ms. The microphone device is pre-opened at startup and the model stays resident, so hotkey activation has no device or model-loading delay. Search answers paint as soon as synthesis finishes while photos resolve in the background.
+## Speech engines
+
+Pronto has two local speech engines. Pronto Setup examines your PC and recommends one.
+
+| | **Parakeet** | **Phonon** |
+|---|---|---|
+| Model | NVIDIA Parakeet TDT 0.6B v3 | Fermion Phonon-2 |
+| Hardware | NVIDIA GPU | Any 64-bit CPU with AVX2 |
+| Languages | 25 | English only |
+| Speed | Fastest | Slower, but good for daily dictation |
+| Download | Approximately 780 MB | Approximately 350 MB |
+
+To change the engine, go to **Settings → Speech engine**. Pronto downloads the other engine and changes to it when the download is complete. You do not have to install Pronto again.
+
+## Privacy
+
+* Your audio does not go out of your computer. Pronto sends it only to the local speech engine.
+* After setup, dictation, transcription and local cleanup work offline.
+* Pronto sends text to your AI provider only when you turn on AI cleanup, meeting notes or voice search answers.
+* Voice search sends your question text to DuckDuckGo.
+* Pronto keeps your API keys in Windows Credential Manager.
+* Pronto keeps settings and the last 100 transcripts in `%LOCALAPPDATA%\Pronto`.
+
+## AI cleanup
+
+Local cleanup is always available. It removes filler words and false starts, and it corrects punctuation. It does not need an account or a key.
+
+For better text, add an AI provider in **Settings → Online services**:
+
+* **DeepSeek** (recommended)
+* OpenAI
+* Anthropic
+* Google Gemini
+* Groq
+* OpenRouter
+* A custom endpoint that is compatible with OpenAI, for example Ollama or LM Studio
+
+Enter the API key, then select a model from the list. The same provider writes your meeting notes and your voice search answers.
+
+## Other features
+
+* **Welcome tour.** On the first start, a short tour helps you set the shortcut and the microphone, and lets you try dictation. You can skip it. To see it again, go to **Settings → General → Show tour**.
+* **Light and dark mode.** Select System, Light or Dark in **Settings → General**. The listening pills always stay dark, so you can see them on all apps.
+* **Settings search.** Push **Ctrl + F** in Settings to find a setting.
+* **System tray.** Pronto stays in the tray when you close the main window. Dictation continues to work.
+* **Start with Windows.** Optional. Pronto starts silently in the tray.
+* **Sounds and audio ducking.** Pronto plays a short sound when dictation starts and stops. It can also make other audio quieter while you dictate.
+* **GPU memory release.** Optional. When a game needs GPU memory, Pronto releases Parakeet. The next dictation loads it again.
+* **Dashboard.** Shows your speaking speed (words per minute), word count, transcript count and average response time.
 
 ## Requirements
 
-### Windows (Pronto)
-
-* Windows 10 or 11 (64-bit)
-* NVIDIA GPU with current display driver for Parakeet (Phonon runs on the CPU of any x64 PC)
-* Microphone
-* Internet connection (during installation for the one-time model download, and only for AI rewriting afterwards)
-
-### macOS (Pronto for Mac)
-
-* Apple Silicon Mac, macOS 13 or newer
-* Microphone (Microphone permission granted)
-* Accessibility permission for automatic insertion (otherwise the transcript stays in History and the clipboard is left unchanged), Input Monitoring only for modifier-only shortcuts, Screen Recording only for computer-audio meeting capture
-* Internet connection (first-launch model download with progress/cancel/retry and SHA-256 verification, plus AI rewriting afterwards)
+* Windows 10 or 11, 64-bit
+* A microphone
+* **For Parakeet:** an NVIDIA GPU with a current driver
+* **For Phonon:** an Intel or AMD CPU with AVX2 (most PCs from 2015 and later)
+* An internet connection during setup, for the one-time engine download
+* Optional: an API key from an AI provider
 
 ## Install
 
-### Windows
+1. Download `Pronto_Setup_<version>_x64.exe` from the [Releases page](https://github.com/Jashith127/pronto/releases).
+2. Run Pronto Setup. You do not need administrator rights.
+3. Accept the recommended speech engine, or select the other one.
+4. Wait for the download to complete. Setup shows the size, speed and time remaining.
+5. Start Pronto and follow the welcome tour.
 
-1. Download `Pronto_Setup_<version>_x64.exe` from this repository's Releases page.
-2. Run Pronto Setup (per-user, no admin needed). It recommends Parakeet on PCs with an NVIDIA GPU and Phonon otherwise, then downloads the chosen engine once with progress and verification.
-3. Open **Settings** in Pronto.
-4. Optional: Choose an AI provider (DeepSeek recommended) and enter its API key. Local transcription works without a key.
+If Pronto is already installed, Setup gives two options:
 
-### macOS (Pronto for Mac)
+* **Update** keeps your history and settings.
+* **Reinstall** removes the app and the speech engines, then installs them again. To also erase your history and settings, select **Also erase my history and settings**.
 
-1. Download `Pronto_0.8.2_aarch64.dmg` from the MAC-only [`v0.8.2-macos` release](https://github.com/Jashith127/pronto/releases/tag/v0.8.2-macos).
-2. Open the DMG and move `Pronto.app` to Applications, then launch it. The build is ad hoc signed and not Apple notarized, so macOS may ask you to allow it manually in System Settings.
-3. On first launch the speech model downloads to `~/Library/Application Support/app.pronto.dictation/models/` with progress, cancellation, retry, and checksum verification. Settings also shows macOS permission status.
-4. Optional: Choose an AI provider (DeepSeek recommended) and enter its API key. Local transcription works without a key. New installations start with Clean up speech turned off; existing saved preferences are respected.
+Downloads continue after a cancel or a connection failure. Setup checks each file with a SHA-256 checksum.
+
+To uninstall, go to **Windows Settings → Apps → Installed apps → Pronto**. You can keep or remove your history and settings.
+
+## Pronto for Mac (preview)
+
+Pronto for Mac is a port for Apple Silicon Macs with macOS 13 or later. It is not a stable release. The [`v0.8.2-macos` release](https://github.com/Jashith127/pronto/releases/tag/v0.8.2-macos) has a preview DMG. This DMG has an ad hoc signature and is not notarized by Apple, so macOS can block it. Allow it in System Settings.
+
+On Mac, the default shortcuts are:
+
+* Dictation: **Control + Option + Space**
+* Paste Last: **Control + Option + V**
+* Voice search: **Control + Option + S**
+
+For permissions, status and known problems, see [the macOS port status](docs/macos-port-status.md).
+
+---
 
 ## For developers
 
+### How it works
+
+A global shortcut starts a Rust coordinator. The coordinator records audio from a microphone stream that is already open, and sends the audio to a local speech server that stays loaded. It then cleans the text (local rules, plus an optional AI rewrite) and types it into the window that had focus, with `SendInput`. The frontend gets only status and result events through Tauri IPC. Audio never goes into JavaScript.
+
+For the full pipeline, latency design and platform details, see [`ARCHITECTURE.md`](ARCHITECTURE.md).
+
 ### Repository layout
 
-* `ui/` -- static frontend (HTML/CSS/JS) embedded by Tauri. No Node.js or npm involved. Shared by Windows and Mac; platform wording/shortcuts switch at runtime.
-* `src-tauri/` -- Rust/Tauri backend: global hotkeys, audio capture, transcription pipeline, overlay windows, tray/menu-bar, installer hooks.
-* `src-tauri/src/platform/macos/` -- macOS-only implementations: registered hotkeys + CGEventTap modifier chords, Accessibility insertion, CoreAudio ducking, ScreenCaptureKit computer audio, permissions, power, startup, navigation guard.
-* `src-tauri/src/platform_paths.rs` + `src-tauri/src/model_provision.rs` -- standard macOS Application Support/Logs storage and first-launch model download with resume/cancel/SHA-256 verify. Windows storage paths remain intact.
-* `src-tauri/tauri.conf.json` -- Windows bundle (`nsis`, `installer-hooks.nsh` model download at setup time).
-* `src-tauri/tauri.macos.conf.json` + `Entitlements.plist` + `Info.plist` + `icons/icon.icns` -- macOS bundle (`.app`/`.dmg`, hardened runtime, privacy strings). Merged at build time by `scripts/build-macos.sh`.
-* `src-tauri/installer-hooks.nsh` -- NSIS logic that downloads and verifies the speech model at install time (legacy Windows installer, kept as a fallback).
-* `installer/` + `ui/setup.*` -- Pronto Setup, the custom Windows installer (a small Tauri app). It embeds the app payload, detects the GPU, downloads the chosen engine's packs, and registers the per-user install and uninstaller.
-* `crates/speech-packs/` -- shared by the app and Pronto Setup: the pinned pack manifest (`speech-packs.manifest`), resumable SHA-256-verified downloads with speed/ETA, safe zip unpacking, and DXGI GPU detection.
-* `src-tauri/src/speech_models.rs` -- Settings → Advanced → Speech model: lists engines and downloads/switches between Parakeet and Phonon.
-* `scripts/` -- `build-macos.sh` + `prepare-macos-assets.sh` (Mac build/asset staging), `publish-macos-release.ps1` (Windows-only DMG upload: checksum-verify `release-assets/` and `gh release create` -- no Mac needed).
-* `.github/workflows/desktop-ci.yml` -- CI matrix: `macos-15` (Apple Silicon check/clippy/test + hotkey bridge) and `windows-2022` (check/test). Future Mac DMGs can be rebuilt from CI without a local Mac.
-* `ARCHITECTURE.md` -- pipeline, latency design, storage, and Windows/macOS lifecycle details (see "Windows platform path" and "macOS platform path").
-* `RELEASE_NOTES.md` -- per-version changelog.
-* `docs/macos-*.md` -- Mac port plan/status/validation, Mac release notes used for the `v0.8.2-macos` GitHub release, and [Windows-only DMG upload](docs/upload-macos-release-from-windows.md).
-* `release-assets/` -- local-only Mac DMG + `.sha256` (DMG is gitignored; uploaded as a release asset, never committed).
+| Path | Contents |
+|---|---|
+| `ui/` | Static frontend (HTML, CSS, JS) for the app, overlays and Pronto Setup. No Node.js or npm. |
+| `src-tauri/` | Rust/Tauri backend: hotkeys, audio, speech engines, cleanup, search, meetings, tray. |
+| `src-tauri/src/platform/macos/` | macOS-only code: hotkeys, Accessibility insertion, CoreAudio, ScreenCaptureKit, permissions. |
+| `installer/` | Pronto Setup, the custom Windows installer (a small Tauri app). |
+| `crates/speech-packs/` | Shared pack manifest, resumable SHA-256-verified downloads, zip unpacking, GPU detection. |
+| `scripts/` | Build scripts for speech packs, the installer and macOS, plus the macOS release upload. |
+| `scripts/benchmarks/` | Speech engine benchmarks and findings. |
+| `docs/` | macOS port plan, status and validation, plus QA notes. |
+| `ARCHITECTURE.md` | Pipeline, latency, storage and lifecycle details. |
+| `RELEASE_NOTES.md` | Changes in each version. |
 
-### How it fits together
+### Build on Windows
 
-A global shortcut wakes a Rust coordinator that captures prewarmed microphone audio, sends it to a persistent local Parakeet server, runs deterministic cleanup (plus optional AI rewrite), and inserts Unicode text into the previously focused window via SendInput. The frontend receives only status and result events over Tauri IPC -- audio never crosses into JavaScript. See `ARCHITECTURE.md` for the full pipeline.
-
-### Build
-
-**Pronto Setup (recommended).** Build the speech packs once per runtime/model change, then the installer. Both also run in CI through the manual *Windows release artifacts* workflow:
+Build the speech packs one time for each runtime or model change. Then build the installer. The manual *Windows release artifacts* workflow in CI also does these steps.
 
 ```powershell
-# 1. Packs: CUDA runtime, Phonon CPU runtime, Phonon-2 model (needs Git LFS + Python 3.12)
+# 1. Speech packs: CUDA runtime, Phonon CPU runtime, Phonon-2 model
+#    (needs Git LFS and Python 3.12)
 scripts/build-speech-packs.ps1
-#    Upload dist/speech-packs/*.zip to the `speech-packs-v1` release and paste the printed
-#    size/sha256 values into crates/speech-packs/speech-packs.manifest.
-# 2. Installer: dist/Pronto_Setup_<version>_x64.exe (needs Node.js for the Tauri CLI)
+#    Upload dist/speech-packs/*.zip to the `speech-packs-v1` release.
+#    Copy the printed size and sha256 values into
+#    crates/speech-packs/speech-packs.manifest.
+
+# 2. Installer: dist/Pronto_Setup_<version>_x64.exe
+#    (needs Node.js for the Tauri CLI)
 scripts/build-installer.ps1
 ```
 
-Silent install: `Pronto_Setup_<version>_x64.exe /S --model=auto|parakeet|phonon [--reinstall|--fresh]` (`--reinstall` removes the app and speech engines first but keeps history and settings; `--fresh` removes everything first). Silent uninstall: `uninstall.exe --uninstall --silent [--remove-data]`.
-
-**Legacy NSIS installer.** The ~681 MB speech model is excluded from bundle resources and fetched with hash verification during setup. Run these commands in PowerShell to test and build:
+Run the tests from a Visual Studio developer shell:
 
 ```powershell
 cd src-tauri
 cmd.exe /d /s /c '"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\VsDevCmd.bat" -arch=x64 && cargo test --offline'
-cargo tauri build
-
 ```
 
-The installer lands at `src-tauri/target/release/bundle/nsis`.
+Silent install and uninstall:
 
-### macOS Apple Silicon development build
+```text
+Pronto_Setup_<version>_x64.exe /S --model=auto|parakeet|phonon [--reinstall|--fresh]
+uninstall.exe --uninstall --silent [--remove-data]
+```
 
-On macOS 13 or newer with Xcode Command Line Tools and Rust installed:
+`--reinstall` removes the app and engines but keeps history and settings. `--fresh` removes all.
+
+The legacy NSIS installer (`cargo tauri build`, output in `src-tauri/target/release/bundle/nsis`) is kept as a fallback. It downloads the model during setup with `src-tauri/installer-hooks.nsh`.
+
+### Build on macOS
+
+You need macOS 13 or later on Apple Silicon, Xcode Command Line Tools and Rust.
 
 ```sh
 scripts/prepare-macos-assets.sh
@@ -166,44 +217,22 @@ cd ..
 scripts/build-macos.sh local
 ```
 
-The local `.app` and `.dmg` are written under
-`src-tauri/target/aarch64-apple-darwin/release/bundle/`. The model is excluded
-from the app and is downloaded on first launch to
-`~/Library/Application Support/app.pronto.dictation/models/`. Settings shows
-progress, cancellation, retry, and macOS permission status. Dictation uses
-Control + Option + Space, Paste Last uses Control + Option + V, and voice search
-uses Control + Option + S by default.
-Key-based shortcuts use macOS registered hotkeys. Modifier-only shortcuts require
-Input Monitoring. Automatic insertion into another app requires Accessibility;
-without it, Pronto keeps the transcript in History and leaves the clipboard unchanged.
-Paste Last inserts the most recent transcript into the focused field when Accessibility
-is available. Copy Transcript in History still copies on request.
+The `.app` and `.dmg` are in `src-tauri/target/aarch64-apple-darwin/release/bundle/`. The model is not in the app. Pronto downloads it on the first start to `~/Library/Application Support/app.pronto.dictation/models/`.
 
-For a distribution build, install a Developer ID Application certificate and
-provide `APPLE_SIGNING_IDENTITY` plus either the App Store Connect API key
-variables (`APPLE_API_ISSUER`, `APPLE_API_KEY`, `APPLE_API_KEY_PATH`) or Apple ID
-notarization variables (`APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`) through
-the environment. Then run `scripts/build-macos.sh signed`. The script checks
-the signed app and stapled notarization ticket. No credentials are stored in
-the repository. See [the macOS port status](docs/macos-port-status.md) for
-remaining acceptance work.
+For a signed and notarized build, install a Developer ID Application certificate. Set `APPLE_SIGNING_IDENTITY`, and also set the App Store Connect API key variables (`APPLE_API_ISSUER`, `APPLE_API_KEY`, `APPLE_API_KEY_PATH`) or the Apple ID variables (`APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`). Then run `scripts/build-macos.sh signed`. Do not put credentials in the repository.
 
-To refresh the Mac DMG later without touching a Mac, rebuild via CI or on a Mac once, copy the new `release-assets/Pronto_*_aarch64.dmg` + `.sha256` to this Windows checkout, and re-run the publish script for the new tag:
+To upload a new Mac DMG from Windows, put the DMG and its `.sha256` in `release-assets/`, then run:
 
 ```powershell
 .\scripts\publish-macos-release.ps1 -Repo Jashith127/pronto -Tag v0.8.2-macos
 ```
 
-No macOS build tools are needed on the Windows laptop for the upload. The DMG itself stays out of Git (`release-assets/*.dmg` is gitignored); only code, docs, scripts, and the `.sha256` are committed. See
-[Upload the macOS DMG from Windows](docs/upload-macos-release-from-windows.md).
-The ready asset and SHA-256 checksum are in `release-assets/`. New installations start with Clean up speech
-turned off; existing saved preferences are respected.
+Git ignores the DMG. Commit only the `.sha256`. See [Upload the macOS DMG from Windows](docs/upload-macos-release-from-windows.md).
 
-*Note: Frontend files are static and embedded by Tauri. Do not run Node.js or npm.*
+### CI
 
-### Windows Behavior
+`.github/workflows/desktop-ci.yml` runs check, clippy and tests on `macos-15` (Apple Silicon) and `windows-2022` (x64). `.github/workflows/windows-release.yml` builds the Windows release artifacts.
 
-* Pronto runs without a console window.
-* Closing the main window keeps background dictation active in the system tray.
-* The application keeps the microphone active to avoid device initialization delay.
-* Third-party software licenses are available in `THIRD_PARTY_NOTICES.md`.
+### License notices
+
+Third-party licenses are in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
