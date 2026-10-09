@@ -34,6 +34,7 @@ const MODEL_TRANSITION_COOLDOWN: Duration = Duration::from_secs(20);
 /// to count as a new heavy GPU workload (a game starting).
 const GPU_EXTERNAL_GROWTH: u64 = 1536 * MIB;
 const GPU_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
+const DEEPSEEK_MODELS_URL: &str = "https://api.deepseek.com/models";
 const WARM_RETRY_COOLDOWN: Duration = Duration::from_secs(30);
 const ENGINE_LOG_LIMIT: u64 = 1024 * 1024;
 const PHONON_MODEL_DIR: &str = "models/phonon-2";
@@ -88,15 +89,13 @@ fn device_phrase(model: AsrModel) -> &'static str {
     }
 }
 
-/// Phonon's packed CPU engine competes with itself when requests run in
-/// parallel, so meeting chunks go one at a time there.
-fn meeting_workers(model: AsrModel) -> usize {
-    if model.uses_gpu() {
-        3
-    } else {
-        1
-    }
-}
+/// Meeting chunks go one at a time on both backends. Phonon's packed CPU
+/// engine competes with itself in parallel; Parakeet's server runs one
+/// request at a time and its single HTTP worker stays on an idle keep-alive
+/// connection for 5 s, so parallel chunks stalled behind each other and
+/// could be dropped (3 workers: 16 s and an aborted chunk where one worker
+/// took ~5 s; see scripts/benchmarks/README.md).
+const MEETING_WORKERS: usize = 1;
 pub struct TranscriptionJob {
     pub recording: Recording,
     pub settings: UserSettings,
@@ -171,6 +170,9 @@ pub struct ModelStatus {
 #[derive(Clone)]
 pub struct EngineController {
     commands: mpsc::Sender<EngineCommand>,
+    /// Shared with the engine thread: one connection pool, so a connection
+    /// opened by `preconnect_cleanup` is the one cleanup reuses.
+    client: Client,
 }
 
 impl EngineController {
@@ -182,11 +184,22 @@ impl EngineController {
     ) -> Self {
         let (commands, receiver) = mpsc::channel();
         set_desired_backend(model);
+        let client = engine_client();
+        let worker_client = client.clone();
         std::thread::Builder::new()
             .name("pronto-engine".into())
-            .spawn(move || engine_worker(app, resource_dir, gpu_memory_management, model, receiver))
+            .spawn(move || {
+                engine_worker(
+                    app,
+                    resource_dir,
+                    gpu_memory_management,
+                    model,
+                    receiver,
+                    worker_client,
+                )
+            })
             .expect("failed to start transcription engine thread");
-        Self { commands }
+        Self { commands, client }
     }
 
     pub fn transcribe(&self, job: TranscriptionJob) -> Result<(), String> {
@@ -209,6 +222,22 @@ impl EngineController {
 
     pub fn warm(&self) {
         let _ = self.commands.send(EngineCommand::Warm);
+    }
+
+    /// Opens the DeepSeek connection (DNS, TCP, TLS) while the user is still
+    /// speaking, so cleanup reuses it. After a few idle minutes the DNS
+    /// lookup alone took 2.2-2.6 s, beyond the 2 s connect timeout, and
+    /// cleanup silently fell back to local; a fresh connection otherwise costs
+    /// ~110 ms. Sends only the key, never text, to the same provider.
+    pub fn preconnect_cleanup(&self) {
+        let client = self.client.clone();
+        let _ = std::thread::Builder::new()
+            .name("pronto-cleanup-connect".into())
+            .spawn(move || {
+                if let Some(key) = deepseek_key() {
+                    let _ = client.get(DEEPSEEK_MODELS_URL).bearer_auth(key).send();
+                }
+            });
     }
 
     #[cfg(target_os = "macos")]
@@ -332,6 +361,7 @@ fn engine_worker(
     gpu_memory_management: bool,
     initial_model: AsrModel,
     receiver: mpsc::Receiver<EngineCommand>,
+    client: Client,
 ) {
     let mut backend = initial_model;
     set_active_backend(backend);
@@ -381,14 +411,6 @@ fn engine_worker(
     };
     let mut last_start_failure =
         (server.is_none() && desired_backend() == backend).then(Instant::now);
-
-    let client = Client::builder()
-        .connect_timeout(Duration::from_secs(2))
-        .timeout(Duration::from_secs(12))
-        .pool_idle_timeout(Duration::from_secs(90))
-        .tcp_nodelay(true)
-        .build()
-        .expect("failed to build HTTP client");
 
     loop {
         let command = if server.is_some() && policy.enabled && gpu.is_some() && backend.uses_gpu() {
@@ -651,6 +673,17 @@ fn engine_worker(
     }
 }
 
+/// The engine's one HTTP client: local speech server and DeepSeek cleanup.
+fn engine_client() -> Client {
+    Client::builder()
+        .connect_timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(12))
+        .pool_idle_timeout(Duration::from_secs(90))
+        .tcp_nodelay(true)
+        .build()
+        .expect("failed to build HTTP client")
+}
+
 /// Stop the running backend and point the engine at `model`. Resets the
 /// start-failure cooldown, which belonged to the previous backend.
 fn adopt_backend(
@@ -900,92 +933,25 @@ fn process_meeting_job(
     job: MeetingTranscriptionJob,
     app: &AppHandle,
 ) -> Result<CompletedMeetingTranscription, String> {
-    const CHUNK_SAMPLES: usize = 16_000 * 120;
-    const CHUNK_BYTES: usize = CHUNK_SAMPLES * 2;
-    let audio_len = fs::metadata(&job.audio_path)
-        .map_err(|error| format!("Could not inspect meeting audio: {error}"))?
-        .len();
-    let pcm_bytes = audio_len.saturating_sub(44) & !1;
-    let total = pcm_bytes.div_ceil(CHUNK_BYTES as u64) as usize;
-    if total == 0 {
-        return Err("The saved meeting audio has no samples".into());
-    }
-    // Bounded parallel transcription, order preserved. Any chunk failure
-    // fails the whole job. Each worker loads only its current chunk, so a
-    // two-hour recording does not sit in memory beside the warmed model.
-    let workers = meeting_workers(server.backend);
-    let slots: Vec<Mutex<Option<Result<String, String>>>> =
-        (0..total).map(|_| Mutex::new(None)).collect();
-    let done = AtomicUsize::new(0);
-    let base_url = server.base_url.clone();
-    let backend = server.backend;
-    std::thread::scope(|scope| {
-        for worker in 0..workers.min(total.max(1)) {
-            // Fresh shared references per worker: the `move` closure takes
-            // copies of these while the owned values stay put for later use.
-            let start = worker;
-            let audio_path = job.audio_path.as_path();
-            let slot_list = &slots;
-            let counter = &done;
-            let http = client;
-            let url = base_url.as_str();
-            let language = job.settings.language.as_str();
-            let job_id = job.id.as_str();
-            let progress_app = app;
-            scope.spawn(move || {
-                let mut index = start;
-                while index < total {
-                    let result = read_meeting_chunk(audio_path, index, CHUNK_BYTES, pcm_bytes)
-                        .and_then(|raw| {
-                            let samples = raw
-                                .as_chunks::<2>()
-                                .0
-                                .iter()
-                                .map(|v| i16::from_le_bytes([v[0], v[1]]) as f32 / 32768.0)
-                                .collect();
-                            transcribe_recording_url(
-                                http,
-                                url,
-                                backend,
-                                &Recording {
-                                    samples,
-                                    sample_rate: 16_000,
-                                    channels: 1,
-                                },
-                                language,
-                            )
-                        });
-                    if let Ok(mut slot) = slot_list[index].lock() {
-                        *slot = Some(result);
-                    }
-                    let finished = counter.fetch_add(1, Ordering::Relaxed) + 1;
-                    let _ = tauri::Emitter::emit(
-                        progress_app,
-                        "meeting-transcription-progress",
-                        serde_json::json!({
-                            "id": job_id,
-                            "done": finished,
-                            "total": total,
-                        }),
-                    );
-                    index += workers;
-                }
-            });
-        }
-    });
-    let mut transcript_parts = Vec::with_capacity(total);
-    for slot in &slots {
-        match slot
-            .lock()
-            .map_err(|_| "meeting progress lock poisoned")?
-            .take()
-        {
-            Some(Ok(text)) if !text.is_empty() => transcript_parts.push(text),
-            Some(Ok(_)) => {}
-            Some(Err(error)) => return Err(error),
-            None => return Err("Meeting transcription was interrupted".into()),
-        }
-    }
+    let transcript_parts = transcribe_meeting_chunks(
+        client,
+        &server.base_url,
+        server.backend,
+        &job.audio_path,
+        &job.settings.language,
+        MEETING_WORKERS,
+        &|finished, total| {
+            let _ = tauri::Emitter::emit(
+                app,
+                "meeting-transcription-progress",
+                serde_json::json!({
+                    "id": job.id.as_str(),
+                    "done": finished,
+                    "total": total,
+                }),
+            );
+        },
+    )?;
     let transcript = apply_dictionary(
         &local_cleanup(&transcript_parts.join(" ")),
         &job.settings.dictionary,
@@ -1009,6 +975,90 @@ fn process_meeting_job(
         notes,
         warning,
     })
+}
+
+/// Transcribes a saved meeting WAV in 120 s chunks; returns the non-empty
+/// chunk transcripts in order. `on_progress(done, total)` follows each chunk.
+fn transcribe_meeting_chunks(
+    client: &Client,
+    base_url: &str,
+    backend: AsrModel,
+    audio_path: &Path,
+    language: &str,
+    workers: usize,
+    on_progress: &(dyn Fn(usize, usize) + Sync),
+) -> Result<Vec<String>, String> {
+    const CHUNK_SAMPLES: usize = 16_000 * 120;
+    const CHUNK_BYTES: usize = CHUNK_SAMPLES * 2;
+    let audio_len = fs::metadata(audio_path)
+        .map_err(|error| format!("Could not inspect meeting audio: {error}"))?
+        .len();
+    let pcm_bytes = audio_len.saturating_sub(44) & !1;
+    let total = pcm_bytes.div_ceil(CHUNK_BYTES as u64) as usize;
+    if total == 0 {
+        return Err("The saved meeting audio has no samples".into());
+    }
+    // Bounded parallel transcription, order preserved. Any chunk failure
+    // fails the whole job. Each worker loads only its current chunk, so a
+    // two-hour recording does not sit in memory beside the warmed model.
+    let slots: Vec<Mutex<Option<Result<String, String>>>> =
+        (0..total).map(|_| Mutex::new(None)).collect();
+    let done = AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for worker in 0..workers.min(total.max(1)) {
+            // Fresh shared references per worker: the `move` closure takes
+            // copies of these while the owned values stay put for later use.
+            let start = worker;
+            let slot_list = &slots;
+            let counter = &done;
+            let http = client;
+            scope.spawn(move || {
+                let mut index = start;
+                while index < total {
+                    let result = read_meeting_chunk(audio_path, index, CHUNK_BYTES, pcm_bytes)
+                        .and_then(|raw| {
+                            let samples = raw
+                                .as_chunks::<2>()
+                                .0
+                                .iter()
+                                .map(|v| i16::from_le_bytes([v[0], v[1]]) as f32 / 32768.0)
+                                .collect();
+                            transcribe_recording_url(
+                                http,
+                                base_url,
+                                backend,
+                                &Recording {
+                                    samples,
+                                    sample_rate: 16_000,
+                                    channels: 1,
+                                },
+                                language,
+                            )
+                        });
+                    if let Ok(mut slot) = slot_list[index].lock() {
+                        *slot = Some(result);
+                    }
+                    let finished = counter.fetch_add(1, Ordering::Relaxed) + 1;
+                    on_progress(finished, total);
+                    index += workers;
+                }
+            });
+        }
+    });
+    let mut transcript_parts = Vec::with_capacity(total);
+    for slot in &slots {
+        match slot
+            .lock()
+            .map_err(|_| "meeting progress lock poisoned")?
+            .take()
+        {
+            Some(Ok(text)) if !text.is_empty() => transcript_parts.push(text),
+            Some(Ok(_)) => {}
+            Some(Err(error)) => return Err(error),
+            None => return Err("Meeting transcription was interrupted".into()),
+        }
+    }
+    Ok(transcript_parts)
 }
 
 fn read_meeting_chunk(
@@ -2225,9 +2275,8 @@ mod tests {
     }
 
     #[test]
-    fn meeting_chunks_run_one_at_a_time_on_the_cpu_backend() {
-        assert_eq!(meeting_workers(AsrModel::Phonon), 1);
-        assert_eq!(meeting_workers(AsrModel::Parakeet), 3);
+    fn meeting_chunks_run_one_at_a_time() {
+        assert_eq!(MEETING_WORKERS, 1);
     }
 
     #[test]
@@ -2536,9 +2585,59 @@ mod tests {
         assert!(wav.len() > 44 + 16_000 * 2);
     }
 
+    fn bench_env<T: std::str::FromStr>(name: &str, default: T) -> T {
+        std::env::var(name)
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(default)
+    }
+
+    fn bench_backend() -> AsrModel {
+        match std::env::var("PRONTO_BENCH_BACKEND").as_deref() {
+            Ok("parakeet") => AsrModel::Parakeet,
+            Ok("phonon") | Err(_) => AsrModel::Phonon,
+            Ok(other) => panic!("PRONTO_BENCH_BACKEND must be phonon or parakeet, not {other}"),
+        }
+    }
+
+    #[cfg(windows)]
+    fn server_cpu_seconds(server: &SpeechServer) -> f64 {
+        use windows::Win32::Foundation::{FILETIME, HANDLE};
+        use windows::Win32::System::Threading::GetProcessTimes;
+        let (mut created, mut exited, mut kernel, mut user) = (
+            FILETIME::default(),
+            FILETIME::default(),
+            FILETIME::default(),
+            FILETIME::default(),
+        );
+        unsafe {
+            GetProcessTimes(
+                HANDLE(server.child.as_raw_handle()),
+                &mut created,
+                &mut exited,
+                &mut kernel,
+                &mut user,
+            )
+            .unwrap();
+        }
+        let ticks = |t: FILETIME| ((t.dwHighDateTime as u64) << 32) | t.dwLowDateTime as u64;
+        (ticks(kernel) + ticks(user)) as f64 / 10_000_000.0
+    }
+
+    #[cfg(not(windows))]
+    fn server_cpu_seconds(_server: &SpeechServer) -> f64 {
+        0.0
+    }
+
+    /// The production `process_job` path (audio preparation, multipart HTTP,
+    /// server transcription, local cleanup, formatting) against a server
+    /// started by `SpeechServer::start`, with the engine's own HTTP client.
+    /// PRONTO_BENCH_BACKEND=phonon|parakeet; PRONTO_BENCH_CLEANUP=1 adds the
+    /// DeepSeek call with the user's key; PRONTO_BENCH_GAP_MS idles before
+    /// each request. Insertion is excluded (see insert.rs benchmark).
     #[test]
-    #[ignore = "CPU benchmark: requires Phonon pack and PRONTO_BENCH_MANIFEST; run in release mode"]
-    fn benchmark_phonon_warm_pipeline() {
+    #[ignore = "benchmark: requires the backend's packs and PRONTO_BENCH_MANIFEST; run in release mode"]
+    fn benchmark_warm_pipeline() {
         let manifest_path = PathBuf::from(std::env::var("PRONTO_BENCH_MANIFEST").unwrap());
         let manifest: serde_json::Value =
             serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
@@ -2555,12 +2654,23 @@ mod tests {
                 (clip["id"].as_str().unwrap().to_string(), recording)
             })
             .collect();
-        set_desired_backend(AsrModel::Phonon);
-        let runtime = locate_runtime(None, AsrModel::Phonon).unwrap();
+        let backend = bench_backend();
+        let cleanup = bench_env("PRONTO_BENCH_CLEANUP", 0u8) == 1;
+        let gap = Duration::from_millis(bench_env("PRONTO_BENCH_GAP_MS", 0u64));
+        let repeats: usize = bench_env("PRONTO_BENCH_REPEATS", 10);
+        let warmups: usize = bench_env("PRONTO_BENCH_WARMUPS", 2);
+        if cleanup {
+            assert!(
+                deepseek_key().is_some(),
+                "PRONTO_BENCH_CLEANUP=1 needs a DeepSeek key"
+            );
+        }
+        set_desired_backend(backend);
+        let runtime = locate_runtime(None, backend).unwrap();
         let start = Instant::now();
         let mut server = SpeechServer::start(&runtime).unwrap();
         let load_s = start.elapsed().as_secs_f64();
-        let client = Client::builder().build().unwrap();
+        let client = engine_client();
         let health: serde_json::Value = client
             .get(format!("{}/health", server.base_url))
             .send()
@@ -2568,39 +2678,13 @@ mod tests {
             .json()
             .unwrap();
         let settings = UserSettings {
-            cleanup_enabled: false,
+            cleanup_enabled: cleanup,
             auto_insert: false,
             ..UserSettings::default()
         };
-        let repeats: usize = std::env::var("PRONTO_BENCH_REPEATS")
-            .unwrap_or_else(|_| "10".into())
-            .parse()
-            .unwrap();
+        let logical_cpus = std::thread::available_parallelism().unwrap().get() as f64;
         let mut rows = Vec::new();
-        #[cfg(windows)]
-        let server_cpu = |server: &SpeechServer| {
-            use windows::Win32::Foundation::{FILETIME, HANDLE};
-            use windows::Win32::System::Threading::GetProcessTimes;
-            let (mut created, mut exited, mut kernel, mut user) = (
-                FILETIME::default(),
-                FILETIME::default(),
-                FILETIME::default(),
-                FILETIME::default(),
-            );
-            unsafe {
-                GetProcessTimes(
-                    HANDLE(server.child.as_raw_handle()),
-                    &mut created,
-                    &mut exited,
-                    &mut kernel,
-                    &mut user,
-                )
-                .unwrap();
-            }
-            let ticks = |t: FILETIME| ((t.dwHighDateTime as u64) << 32) | t.dwLowDateTime as u64;
-            (ticks(kernel) + ticks(user)) as f64 / 10_000_000.0
-        };
-        for repeat in 0..repeats + 2 {
+        for repeat in 0..repeats + warmups {
             for offset in 0..clips.len() {
                 let (id, recording) = &clips[(offset + repeat) % clips.len()];
                 // Separate preparation probe. The full pipeline below still performs
@@ -2614,36 +2698,255 @@ mod tests {
                     channels: recording.channels,
                 };
                 let job = TranscriptionJob::file_import(input, settings.clone(), false, None);
-                #[cfg(windows)]
-                let cpu_start = server_cpu(&server);
+                std::thread::sleep(gap);
+                let cpu_start = server_cpu_seconds(&server);
                 let started = Instant::now();
                 let result = process_job(&client, &mut server, job, started).unwrap();
                 let latency_s = started.elapsed().as_secs_f64();
-                #[cfg(windows)]
-                let cpu_s = server_cpu(&server) - cpu_start;
-                #[cfg(not(windows))]
-                let cpu_s = 0.0;
-                if repeat >= 2 {
-                    rows.push(json!({"clip": id, "repeat": repeat - 2, "latency_s": latency_s,
+                let cpu_s = server_cpu_seconds(&server) - cpu_start;
+                if repeat >= warmups {
+                    rows.push(json!({"clip": id, "repeat": repeat - warmups, "latency_s": latency_s,
                         "server_cpu_s": cpu_s,
-                        "server_cpu_percent": 100.0 * cpu_s / latency_s / std::thread::available_parallelism().unwrap().get() as f64,
+                        "server_cpu_percent": 100.0 * cpu_s / latency_s / logical_cpus,
                         "preparation_probe_s": preparation_s, "submitted_audio_s": (wav.len()-44) as f64/32000.0,
-                        "asr_ms": result.entry.asr_ms, "raw_text": result.entry.raw_text,
-                        "entry": result.entry}));
+                        "asr_ms": result.entry.asr_ms, "cleanup_ms": result.entry.cleanup_ms,
+                        "cleanup_applied": result.entry.cleanup_applied,
+                        "cleanup_warning": result.cleanup_warning,
+                        "raw_text": result.entry.raw_text, "entry": result.entry}));
                 }
             }
         }
         let stop = Instant::now();
         server.stop();
         let stop_s = stop.elapsed().as_secs_f64();
-        let report = json!({"load_including_startup_warmup_s": load_s, "stop_s": stop_s,
-            "health": health, "manifest": manifest, "rows": rows});
+        let report = json!({"backend": backend.short_name(), "cleanup": cleanup,
+            "gap_ms": gap.as_millis() as u64, 
+            "load_including_startup_warmup_s": load_s,
+            "stop_s": stop_s, "health": health, "manifest": manifest, "rows": rows});
         fs::write(
             std::env::var("PRONTO_BENCH_OUTPUT").unwrap(),
             serde_json::to_vec_pretty(&report).unwrap(),
         )
         .unwrap();
-        println!("Phonon benchmark complete; load {load_s:.3}s, stop {stop_s:.3}s");
+        println!(
+            "{} benchmark complete; load {load_s:.3}s, stop {stop_s:.3}s",
+            backend.short_name()
+        );
+    }
+
+    /// The production meeting chunk loop (`transcribe_meeting_chunks`, the
+    /// engine's client) against a server from `SpeechServer::start`, for each
+    /// worker count in PRONTO_BENCH_WORKERS (default "1,3"). A failed chunk is
+    /// recorded, not fatal, because the app fails the whole meeting on one.
+    #[test]
+    #[ignore = "benchmark: requires the backend's packs, PRONTO_BENCH_MEETING_WAV and PRONTO_BENCH_OUTPUT"]
+    fn benchmark_meeting_chunks() {
+        let wav = PathBuf::from(std::env::var("PRONTO_BENCH_MEETING_WAV").unwrap());
+        let backend = bench_backend();
+        let repeats: usize = bench_env("PRONTO_BENCH_REPEATS", 3);
+        let workers: Vec<usize> = std::env::var("PRONTO_BENCH_WORKERS")
+            .unwrap_or_else(|_| "1,3".into())
+            .split(',')
+            .map(|value| value.trim().parse().unwrap())
+            .collect();
+        set_desired_backend(backend);
+        let mut server = SpeechServer::start(&locate_runtime(None, backend).unwrap()).unwrap();
+        let client = engine_client();
+        let mut rows = Vec::new();
+        for repeat in 0..repeats {
+            for &count in &workers {
+                std::thread::sleep(Duration::from_secs(2));
+                let started = Instant::now();
+                let progress = Mutex::new(Vec::new());
+                let result = transcribe_meeting_chunks(
+                    &client,
+                    &server.base_url,
+                    backend,
+                    &wav,
+                    "auto",
+                    count,
+                    &|done, _| {
+                        progress
+                            .lock()
+                            .unwrap()
+                            .push((done, started.elapsed().as_secs_f64()))
+                    },
+                );
+                let wall_s = started.elapsed().as_secs_f64();
+                let row = match result {
+                    Ok(parts) => json!({"repeat": repeat, "workers": count, "wall_s": wall_s,
+                        "chunk_done_s": progress.into_inner().unwrap(), "parts": parts}),
+                    Err(error) => json!({"repeat": repeat, "workers": count, "wall_s": wall_s,
+                        "chunk_done_s": progress.into_inner().unwrap(), "error": error}),
+                };
+                println!(
+                    "{}",
+                    json!({"repeat": repeat, "workers": count, "wall_s": wall_s,
+                    "error": row.get("error")})
+                );
+                rows.push(row);
+            }
+        }
+        server.stop();
+        fs::write(
+            std::env::var("PRONTO_BENCH_OUTPUT").unwrap(),
+            serde_json::to_vec_pretty(&json!({"backend": backend.short_name(),
+                "wav": wav, "rows": rows}))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    /// DeepSeek cleanup latency by connection state, with the engine's client
+    /// and the user's key. Each case follows its own idle gap
+    /// (PRONTO_BENCH_GAP_MS, default 180 s, so DNS and pooled connections
+    /// expire as between real dictations): `cold` is a new client (DNS, TCP and
+    /// TLS inside the call, today's behaviour) followed by `reused`, the same
+    /// client at once; `preconnected` is `preconnect_cleanup`'s request, then
+    /// PRONTO_BENCH_RECORD_MS (default 1500) of simulated recording, then the
+    /// timed cleanup. Failures are recorded: the app falls back to local cleanup.
+    #[test]
+    #[ignore = "benchmark: calls DeepSeek with the user's key; PRONTO_BENCH_OUTPUT optional"]
+    fn benchmark_deepseek_connection() {
+        let key = deepseek_key().expect("a DeepSeek key is required");
+        let transcript = "He hoped there would be stew for dinner, turnips and carrots and bruised potatoes and fat mutton pieces to be ladled out in thick peppered flour fattened sauce.";
+        let iterations: usize = bench_env("PRONTO_BENCH_REPEATS", 6);
+        let gap = Duration::from_millis(bench_env("PRONTO_BENCH_GAP_MS", 180_000u64));
+        let record = Duration::from_millis(bench_env("PRONTO_BENCH_RECORD_MS", 1_500u64));
+        let cleanup = |client: &Client| {
+            let started = Instant::now();
+            let result = deepseek_cleanup(client, &key, transcript, &[], DEFAULT_CLEANUP_PROMPT);
+            let ms = started.elapsed().as_secs_f64() * 1000.0;
+            match result {
+                Ok(text) => json!({"ms": ms, "text": text}),
+                Err(error) => json!({"ms": ms, "error": error}),
+            }
+        };
+        let mut rows = Vec::new();
+        for iteration in 0..iterations {
+            std::thread::sleep(gap);
+            let client = engine_client();
+            let cold = cleanup(&client);
+            let reused = cleanup(&client);
+            std::thread::sleep(gap);
+            let client = engine_client();
+            let connect = Instant::now();
+            let status = client
+                .get(DEEPSEEK_MODELS_URL)
+                .bearer_auth(&key)
+                .send()
+                .map(|response| response.status().as_u16())
+                .map_err(|error| error.to_string());
+            let preconnect_ms = connect.elapsed().as_secs_f64() * 1000.0;
+            std::thread::sleep(record.saturating_sub(connect.elapsed()));
+            let preconnected = cleanup(&client);
+            let row = json!({"iteration": iteration, "cold": cold, "reused": reused,
+                "preconnect_ms": preconnect_ms, "preconnect_status": format!("{status:?}"),
+                "preconnected": preconnected});
+            println!("{row}");
+            rows.push(row);
+        }
+        if let Ok(output) = std::env::var("PRONTO_BENCH_OUTPUT") {
+            fs::write(
+                output,
+                serde_json::to_vec_pretty(&json!({"gap_ms": gap.as_millis() as u64,
+                "record_ms": record.as_millis() as u64, "rows": rows}))
+                .unwrap(),
+            )
+            .unwrap();
+        }
+    }
+
+    /// Load, unload and switch costs on the production path: `SpeechServer::start`
+    /// (its 200 ms health polling and Phonon's warm-up decode included) and `stop`.
+    /// A GPU-pressure release is one Parakeet stop; the reload is one start plus
+    /// the first request. A switch is the previous backend's stop plus the next
+    /// backend's start, as `adopt_backend` + `warm_server` do.
+    #[test]
+    #[ignore = "benchmark: requires the Parakeet and Phonon packs, PRONTO_BENCH_MANIFEST and PRONTO_BENCH_OUTPUT"]
+    fn benchmark_model_lifecycle() {
+        let manifest_path = PathBuf::from(std::env::var("PRONTO_BENCH_MANIFEST").unwrap());
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        let clip = manifest["clips"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .min_by(|a, b| {
+                a["duration_s"]
+                    .as_f64()
+                    .unwrap()
+                    .total_cmp(&b["duration_s"].as_f64().unwrap())
+            })
+            .unwrap()
+            .clone();
+        let recording = recording_from_pcm16_wav(
+            &fs::read(
+                manifest_path
+                    .parent()
+                    .unwrap()
+                    .join(clip["path"].as_str().unwrap()),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let cycles: usize = bench_env("PRONTO_BENCH_CYCLES", 5);
+        let client = engine_client();
+        let request = |server: &SpeechServer| {
+            let started = Instant::now();
+            transcribe_recording(&client, server, &recording, "auto").unwrap();
+            started.elapsed().as_secs_f64()
+        };
+        let start = |model: AsrModel| {
+            set_desired_backend(model);
+            let runtime = locate_runtime(None, model).unwrap();
+            let started = Instant::now();
+            let server = SpeechServer::start(&runtime).unwrap();
+            (server, started.elapsed().as_secs_f64())
+        };
+        let stop = |mut server: SpeechServer| {
+            let started = Instant::now();
+            server.stop();
+            started.elapsed().as_secs_f64()
+        };
+        let mut reloads = Vec::new();
+        for cycle in 0..cycles {
+            std::thread::sleep(Duration::from_secs(2));
+            let (server, load_s) = start(AsrModel::Parakeet);
+            let first_s = request(&server);
+            let second_s = request(&server);
+            let stop_s = stop(server);
+            reloads.push(
+                json!({"cycle": cycle, "load_s": load_s, "first_request_s": first_s,
+                "second_request_s": second_s, "stop_s": stop_s}),
+            );
+            println!("{}", reloads.last().unwrap());
+        }
+        let mut switches = Vec::new();
+        let (mut server, _) = start(AsrModel::Parakeet);
+        request(&server);
+        for cycle in 0..cycles.min(3) {
+            for next in [AsrModel::Phonon, AsrModel::Parakeet] {
+                let from = server.backend;
+                let stop_s = stop(server);
+                let (started, load_s) = start(next);
+                server = started;
+                let first_s = request(&server);
+                switches.push(
+                    json!({"cycle": cycle, "from": from.short_name(), "to": next.short_name(),
+                    "stop_previous_s": stop_s, "load_s": load_s, "first_request_s": first_s,
+                    "ready_s": stop_s + load_s}),
+                );
+                println!("{}", switches.last().unwrap());
+            }
+        }
+        stop(server);
+        let report = json!({"clip": clip, "reloads": reloads, "switches": switches});
+        fs::write(
+            std::env::var("PRONTO_BENCH_OUTPUT").unwrap(),
+            serde_json::to_vec_pretty(&report).unwrap(),
+        )
+        .unwrap();
     }
 
     #[test]

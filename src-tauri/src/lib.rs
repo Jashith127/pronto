@@ -471,6 +471,9 @@ fn begin_recording(app: &AppHandle) -> Result<EngineStatus, String> {
             if let Ok(engine) = state.engine.lock() {
                 if let Some(engine) = engine.as_ref() {
                     engine.warm();
+                    if settings.cleanup_enabled {
+                        engine.preconnect_cleanup();
+                    }
                 }
             }
             let show_microphone = state

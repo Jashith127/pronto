@@ -583,8 +583,8 @@ mod tests {
     use windows::Win32::UI::Input::KeyboardAndMouse::{SetActiveWindow, SetFocus};
     use windows::Win32::UI::WindowsAndMessaging::{
         BringWindowToTop, CreateWindowExW, DestroyWindow, DispatchMessageW, GetWindowTextLengthW,
-        GetWindowTextW, GetWindowThreadProcessId, PeekMessageW, ShowWindow, TranslateMessage, MSG,
-        PM_REMOVE, SW_SHOW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+        GetWindowTextW, GetWindowThreadProcessId, PeekMessageW, SetWindowTextW, ShowWindow,
+        TranslateMessage, MSG, PM_REMOVE, SW_SHOW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
     };
 
     #[test]
@@ -611,13 +611,9 @@ mod tests {
         }
     }
 
-    /// End-to-end verification against a native editable Windows control. Kept
-    /// ignored for ordinary CI because it requires an interactive desktop.
-    #[test]
-    #[ignore = "requires an interactive Windows desktop"]
-    fn inserts_unicode_into_foreground_edit_control() {
-        let original_clipboard = "Clipboard before Pronto";
-        copy_to_clipboard(original_clipboard).expect("test clipboard should be seeded");
+    /// Runs `body` with a native edit control in the foreground, as a dictation
+    /// target, and closes it afterwards.
+    fn with_foreground_edit<R>(body: impl FnOnce(HWND) -> R) -> R {
         let (ready, window_rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
         let gui_stop = Arc::clone(&stop);
@@ -668,7 +664,7 @@ mod tests {
                         DispatchMessageW(&message);
                     }
                 }
-                std::thread::sleep(Duration::from_millis(5));
+                std::thread::sleep(Duration::from_millis(1));
             }
             unsafe {
                 let _ = DestroyWindow(window);
@@ -677,19 +673,77 @@ mod tests {
         let target = window_rx
             .recv_timeout(Duration::from_secs(2))
             .expect("GUI thread should publish its edit control");
-        let window = HWND(target as *mut _);
         std::thread::sleep(Duration::from_millis(100));
+        let result = body(HWND(target as *mut _));
+        stop.store(true, Ordering::Release);
+        gui.join().expect("GUI thread should close cleanly");
+        result
+    }
 
-        let expected = "Pronto ✓ Parakeet";
-        insert_text(target, expected).expect("SendInput should accept every event");
-        std::thread::sleep(Duration::from_millis(250));
-
+    fn window_text(window: HWND) -> String {
         let length = unsafe { GetWindowTextLengthW(window) };
         let mut text = vec![0u16; length as usize + 1];
         let copied = unsafe { GetWindowTextW(window, &mut text) } as usize;
-        stop.store(true, Ordering::Release);
-        gui.join().expect("GUI thread should close cleanly");
-        assert_eq!(String::from_utf16_lossy(&text[..copied]), expected);
+        String::from_utf16_lossy(&text[..copied])
+    }
+
+    /// End-to-end verification against a native editable Windows control. Kept
+    /// ignored for ordinary CI because it requires an interactive desktop.
+    #[test]
+    #[ignore = "requires an interactive Windows desktop"]
+    fn inserts_unicode_into_foreground_edit_control() {
+        let original_clipboard = "Clipboard before Pronto";
+        copy_to_clipboard(original_clipboard).expect("test clipboard should be seeded");
+        let expected = "Pronto ✓ Parakeet";
+        let inserted = with_foreground_edit(|window| {
+            insert_text(window.0 as isize, expected).expect("SendInput should accept every event");
+            std::thread::sleep(Duration::from_millis(250));
+            window_text(window)
+        });
+        assert_eq!(inserted, expected);
         assert_eq!(clipboard_text(), original_clipboard);
+    }
+
+    /// Insertion latency: `insert_text` start to the text appearing in the
+    /// target, and to `insert_text` returning (after the clipboard-restore wait).
+    /// Prints JSON lines; PRONTO_BENCH_REPEATS sets the count (default 10).
+    #[test]
+    #[ignore = "benchmark: requires an interactive Windows desktop"]
+    fn benchmark_insertion_latency() {
+        let repeats: usize = std::env::var("PRONTO_BENCH_REPEATS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(10);
+        let text = "The quick brown fox jumps over the lazy dog, twice. ".repeat(4);
+        let text = text.trim_end();
+        copy_to_clipboard("Clipboard before Pronto").expect("test clipboard should be seeded");
+        with_foreground_edit(|window| {
+            for repeat in 0..repeats {
+                unsafe {
+                    let _ = SetWindowTextW(window, w!(""));
+                }
+                let target = window.0 as isize;
+                let started = std::time::Instant::now();
+                let watcher = std::thread::spawn(move || {
+                    let window = HWND(target as *mut _);
+                    let deadline = started + Duration::from_secs(2);
+                    while std::time::Instant::now() < deadline {
+                        if unsafe { GetWindowTextLengthW(window) } > 0 {
+                            return Some(started.elapsed().as_secs_f64() * 1000.0);
+                        }
+                        std::thread::yield_now();
+                    }
+                    None
+                });
+                insert_text(target, text).expect("SendInput should accept every event");
+                let returned_ms = started.elapsed().as_secs_f64() * 1000.0;
+                let visible_ms = watcher.join().unwrap();
+                assert_eq!(window_text(window), text);
+                println!(
+                    "{{\"repeat\": {repeat}, \"visible_ms\": {visible_ms:?}, \"returned_ms\": {returned_ms:.2}}}"
+                );
+                std::thread::sleep(Duration::from_millis(300));
+            }
+        });
     }
 }
