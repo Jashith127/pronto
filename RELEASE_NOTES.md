@@ -1,3 +1,31 @@
+# Pronto 1.0
+
+Pronto 1.0 is the first stable release. It adds a choice of AI providers, faster dictation on Parakeet, a welcome tour for new users, and a simpler way to reinstall.
+
+## Added
+
+- **Choose your AI provider.** Cleanup, meeting notes and voice search answers now work with DeepSeek (recommended), OpenAI, Anthropic, Google Gemini, Groq, OpenRouter, or any OpenAI-compatible endpoint such as Ollama or LM Studio. Each provider keeps its own API key, and your existing DeepSeek key carries over.
+- **Pick a model from a list.** Settings → Online services loads the provider's available models, with the default first and **Other...** to type a name.
+- **Welcome tour.** New users get a short, skippable tour: shortcut, microphone, a quick dictation test, and a summary. Replay it from Settings → General → Show tour.
+- **Update or Reinstall in Pronto Setup.** Running Setup on a PC that already has Pronto now offers to update in place or reinstall a clean copy, with an option to also erase history and settings. Silent installs accept `--reinstall` and `--fresh`.
+
+## Faster
+
+- **Dictation finishes sooner on Parakeet.** Pronto transcribes what you have already said at each pause while you keep talking, so stopping leaves only the last few words. Typical wait after you stop dropped from 0.66 s to 0.34 s, and long dictations improve the most (a 63-second clip: 0.94 s to 0.37 s).
+- **Phonon runs at full speed in the background.** Windows no longer throttles the CPU speech engine, which made it 3–4× slower on some laptops.
+- **AI cleanup no longer falls back after idle time.** Pronto opens the provider connection when dictation starts, so a slow first lookup no longer times out and drops to local cleanup.
+
+## Fixed
+
+- **Meetings on Parakeet no longer fail mid-transcription.** Meeting chunks are now sent one at a time, which avoids stalls and dropped connections.
+- **Window controls stay responsive** while a meeting retry, file re-import or reset is running.
+
+## Requirements
+
+Unchanged from 0.9: Windows 10 or 11 (64-bit), a microphone, and either an NVIDIA GPU (Parakeet) or any CPU with AVX2 (Phonon). An AI provider API key is optional.
+
+---
+
 # Pronto 0.9
 
 **Pronto now runs on any Windows PC.** Until now Pronto needed an NVIDIA graphics card. Pronto 0.9 adds **Phonon**, a new speech engine that runs entirely on your computer's processor, so laptops and desktops with AMD processors, AMD Radeon graphics, Intel graphics, or no dedicated graphics card at all can now dictate, take meeting notes and transcribe files. This release also brings a brand-new installer that picks the right engine for your PC, an in-app engine switcher, redesigned Settings and Note Taker screens, and smarter meeting detection.
