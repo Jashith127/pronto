@@ -1,3 +1,4 @@
+use crate::cleanup_provider::{self, CleanupProvider, CleanupTarget, Task};
 use crate::mcp;
 use crate::settings::deepseek_key;
 use crate::ui_schema::{
@@ -79,6 +80,9 @@ pub struct SearchResultPayload {
     pub banner_image: Option<SearchBannerImage>,
     pub sources: Vec<SearchHit>,
     pub warning: Option<String>,
+    /// Provider that wrote the answer, for the overlay footer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub answered_by: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1409,14 +1413,17 @@ impl SearchController {
 }
 
 /// Markdown answer synthesis — faster and more reliable than JSON UI validation.
+///
+/// `target` is the configured AI provider, or what is missing to use one.
 pub fn synthesize_search_markdown(
     client: &Client,
+    target: &Result<CleanupTarget, String>,
     query: &str,
     hits: &[SearchHit],
     grounded: bool,
 ) -> Result<(ParsedSearchAnswer, Option<String>), String> {
     if !grounded && hits.is_empty() {
-        return synthesize_direct_markdown(client, query);
+        return synthesize_direct_markdown(client, target, query);
     }
     if hits.is_empty() {
         let parsed = finalize_markdown_answer(&markdown_fallback_from_hits(query, hits), query);
@@ -1426,12 +1433,12 @@ pub fn synthesize_search_markdown(
         ));
     }
 
-    let Some(api_key) = deepseek_key() else {
-        let parsed = finalize_markdown_answer(&markdown_fallback_from_hits(query, hits), query);
-        return Ok((
-            parsed,
-            Some("Add a DeepSeek API key in Settings to synthesize answers.".into()),
-        ));
+    let target = match target {
+        Ok(target) => target,
+        Err(missing) => {
+            let parsed = finalize_markdown_answer(&markdown_fallback_from_hits(query, hits), query);
+            return Ok((parsed, Some(format!("{missing} to synthesize answers."))));
+        }
     };
 
     if classify_query(query) == QueryKind::Fast {
@@ -1439,7 +1446,7 @@ pub fn synthesize_search_markdown(
         return Ok((parsed, None));
     }
 
-    match deepseek_search_markdown(client, &api_key, query, hits, grounded) {
+    match ai_search_markdown(client, target, query, hits, grounded) {
         Ok(markdown) => {
             let parsed = finalize_markdown_answer(&markdown, query);
             Ok((parsed, None))
@@ -1453,19 +1460,20 @@ pub fn synthesize_search_markdown(
 
 fn synthesize_direct_markdown(
     client: &Client,
+    target: &Result<CleanupTarget, String>,
     query: &str,
 ) -> Result<(ParsedSearchAnswer, Option<String>), String> {
-    let Some(api_key) = deepseek_key() else {
-        let parsed = finalize_markdown_answer(
-            "> I need a DeepSeek API key in Settings to answer that.\n\nAdd your key under **Settings**.",
-            query,
-        );
-        return Ok((
-            parsed,
-            Some("Add a DeepSeek API key in Settings to synthesize answers.".into()),
-        ));
+    let target = match target {
+        Ok(target) => target,
+        Err(missing) => {
+            let parsed = finalize_markdown_answer(
+                "> I need an AI provider set up in Settings to answer that.\n\nAdd your API key under **Settings → Online services**.",
+                query,
+            );
+            return Ok((parsed, Some(format!("{missing} to synthesize answers."))));
+        }
     };
-    match deepseek_direct_markdown(client, &api_key, query) {
+    match ai_direct_markdown(client, target, query) {
         Ok(markdown) => {
             let parsed = finalize_markdown_answer(&markdown, query);
             Ok((parsed, None))
@@ -1947,9 +1955,9 @@ pub fn finalize_markdown_answer(raw: &str, query: &str) -> ParsedSearchAnswer {
     parse_classified_markdown(&normalized, query)
 }
 
-pub fn deepseek_search_markdown(
+pub fn ai_search_markdown(
     client: &Client,
-    api_key: &str,
+    target: &CleanupTarget,
     query: &str,
     hits: &[SearchHit],
     grounded: bool,
@@ -1982,17 +1990,20 @@ TABLES (use them generously when they improve clarity):
             "QUERY:\n{query}\n\nNo web results were retrieved. Answer from general knowledge and note any uncertainty.\n\nWrite the markdown answer."
         )
     };
-    deepseek_markdown_at(
+    ai_markdown(
         client,
-        api_key,
-        query,
+        target,
         &system,
         &user,
         adaptive_max_tokens(query, classify_query(query)),
     )
 }
 
-fn deepseek_direct_markdown(client: &Client, api_key: &str, query: &str) -> Result<String, String> {
+fn ai_direct_markdown(
+    client: &Client,
+    target: &CleanupTarget,
+    query: &str,
+) -> Result<String, String> {
     let layout_guide = search_layout_guide_for_query(query);
     let system = format!(
         r#"You are Pronto's voice-search assistant. Return markdown only (no JSON, no code fences).
@@ -2003,61 +2014,34 @@ When comparing items, listing specs/stats, or presenting side-by-side facts, inc
 Do not include a sources section."#
     );
     let user = format!("QUERY:\n{query}\n\nWrite the markdown answer.");
-    deepseek_markdown_at(client, api_key, query, &system, &user, 500)
+    ai_markdown(client, target, &system, &user, 500)
 }
 
-fn deepseek_markdown_at(
+fn ai_markdown(
     client: &Client,
-    api_key: &str,
-    _query: &str,
+    target: &CleanupTarget,
     system: &str,
     user: &str,
     max_tokens: u32,
 ) -> Result<String, String> {
-    let body = json!({
-        "model": "deepseek-v4-flash",
-        "thinking": { "type": "disabled" },
-        "messages": [
-            { "role": "system", "content": system },
-            { "role": "user", "content": user }
-        ],
-        "temperature": 0,
-        "max_tokens": max_tokens,
-        "stream": false,
-    });
-    let response = client
-        .post("https://api.deepseek.com/chat/completions")
-        .timeout(Duration::from_secs(8))
-        .bearer_auth(api_key)
-        .json(&body)
-        .send()
-        .map_err(|error| format!("DeepSeek answer failed: {error}"))?;
-    if !response.status().is_success() {
-        let status = response.status();
-        let detail = response.text().unwrap_or_default();
-        return Err(format!("DeepSeek answer returned {status}: {detail}"));
-    }
-    #[derive(Deserialize)]
-    struct DeepSeekResponse {
-        choices: Vec<Choice>,
-    }
-    #[derive(Deserialize)]
-    struct Choice {
-        message: Message,
-    }
-    #[derive(Deserialize)]
-    struct Message {
-        content: String,
-    }
-    response
-        .json::<DeepSeekResponse>()
-        .map_err(|error| format!("Invalid DeepSeek answer response: {error}"))?
-        .choices
-        .into_iter()
-        .next()
-        .map(|choice| choice.message.content.trim().to_string())
-        .filter(|content| !content.is_empty())
-        .ok_or_else(|| "DeepSeek returned an empty answer".to_string())
+    // Hosted chat models answer well inside 8s. Claude (which always thinks)
+    // and local servers get more room before the overlay falls back to the
+    // plain source list.
+    let timeout = match target.provider {
+        CleanupProvider::Anthropic | CleanupProvider::Custom => Duration::from_secs(20),
+        _ => Duration::from_secs(8),
+    };
+    cleanup_provider::complete_task(
+        client,
+        target,
+        &Task {
+            name: "answer",
+            timeout: Some(timeout),
+        },
+        system,
+        user,
+        max_tokens,
+    )
 }
 
 pub fn synthesize_search_ui(

@@ -313,12 +313,12 @@
                 <header class="settings-section-head"><h2 id="settings-online-title">Online services</h2><p>Optional. Used only for speech cleanup and voice search answers.</p></header>
                 <div class="settings-card api-card">
                   <div class="setting-row" data-keywords="cleanup provider llm ai openai anthropic claude gemini groq openrouter ollama lm studio deepseek">
-                    <div><strong>Cleanup provider</strong><p>Service used for speech cleanup and meeting notes. DeepSeek is preferred: its key also powers voice search answers.</p></div>
-                    <select id="cleanup-provider" aria-label="Cleanup provider"></select>
+                    <div><strong>AI provider</strong><p>Used for speech cleanup, meeting notes, and voice search answers. DeepSeek is recommended: fast and inexpensive.</p></div>
+                    <select id="cleanup-provider" aria-label="AI provider"></select>
                   </div>
                   <div class="setting-row" data-keywords="cleanup model llm ai name">
-                    <div><strong>Cleanup model</strong><p id="cleanup-model-help">Leave blank to use the provider's default.</p></div>
-                    <input type="text" id="cleanup-model" class="setting-text-input" aria-label="Cleanup model" spellcheck="false" autocomplete="off" />
+                    <div><strong>Model</strong><p id="cleanup-model-help">Leave blank to use the provider's default.</p></div>
+                    <input type="text" id="cleanup-model" class="setting-text-input" aria-label="Model" spellcheck="false" autocomplete="off" />
                   </div>
                   <div class="setting-row" id="cleanup-endpoint-row" data-keywords="custom endpoint url base openai compatible ollama lm studio local" hidden>
                     <div><strong>Custom endpoint URL</strong><p>Any OpenAI-compatible server, for example http://localhost:11434/v1 for Ollama.</p></div>
@@ -342,7 +342,7 @@
                     </div>
                   </details>
                   <div class="setting-row" data-keywords="voice search provider url duckduckgo web retrieval">
-                    <div><strong>Search provider URL</strong><p>DuckDuckGo HTML endpoint for voice search. Queries and snippets go to this provider and to DeepSeek.</p></div>
+                    <div><strong>Search provider URL</strong><p>DuckDuckGo HTML endpoint for voice search. Queries and snippets go to this provider and to your AI provider.</p></div>
                     <input type="url" id="search-provider-url" aria-label="Search provider URL" spellcheck="false" />
                   </div>
                 </div>

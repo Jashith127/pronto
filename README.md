@@ -23,25 +23,25 @@ Two editions share one codebase with clearly separated platform paths:
 * **Push-to-talk, globally.** A configurable shortcut (including modifier-only chords such as Win + Ctrl) starts and stops dictation from any application. Hold-to-talk or press-to-toggle, your choice.
 * **Compact recording pill.** A small always-on-top overlay shows cancel, a live waveform, and finish controls without stealing focus from your work.
 * **Paste last transcript.** A second global shortcut (default Win + Shift + V) pastes your most recent transcript wherever you are typing.
-* **Voice search.** A third global shortcut (default Win + Space) opens a transparent search overlay (not a Pronto app window): speak a query, Pronto retrieves DuckDuckGo HTML results, and DeepSeek synthesizes a grounded on-the-fly UI with citations. The overlay reuses the dictation pill while working, then pops a minimal result panel with the answer first and sources behind a disclosure. Suggested "ask next" prompts run real follow-up searches, and opening any link hands off to your browser and clears the overlay. Clicking away parks the answer as a small tab above the taskbar (bottom-left) with a two-minute countdown on its close button -- click it to restore, or let it expire. Audio stays local; query text and snippets go to DuckDuckGo and DeepSeek. Win + Space may also switch Windows keyboard layouts because the low-level hook calls `CallNextHookEx`.
+* **Voice search.** A third global shortcut (default Win + Space) opens a transparent search overlay (not a Pronto app window): speak a query, Pronto retrieves DuckDuckGo HTML results, and your AI provider (DeepSeek recommended) synthesizes a grounded answer with citations. The overlay reuses the dictation pill while working, then pops a minimal result panel with the answer first and sources behind a disclosure. Suggested "ask next" prompts run real follow-up searches, and opening any link hands off to your browser and clears the overlay. Clicking away parks the answer as a small tab above the taskbar (bottom-left) with a two-minute countdown on its close button -- click it to restore, or let it expire. Audio stays local; query text and snippets go to DuckDuckGo and your AI provider. Win + Space may also switch Windows keyboard layouts because the low-level hook calls `CallNextHookEx`.
 
 ### Transcription that stays on your computer
 
 * **Local speech engine.** Uses NVIDIA Parakeet TDT 0.6B v3 via CUDA. The model stays loaded in memory, so short phrases transcribe in well under a second with punctuation and capitalization included.
-* **Fully offline after setup.** The microphone, transcription, and cleanup all run locally. The network is needed only during installation (one-time model download) and optionally for DeepSeek rewriting.
-* **Private by design.** Audio never leaves the machine -- it travels only to a local loopback transcription server. The DeepSeek API receives transcript text only when cloud cleanup is enabled, and the API key is stored in Windows Credential Manager.
+* **Fully offline after setup.** The microphone, transcription, and cleanup all run locally. The network is needed only during installation (one-time model download) and optionally for AI rewriting.
+* **Private by design.** Audio never leaves the machine -- it travels only to a local loopback transcription server. Your AI provider receives transcript text only when cloud cleanup is enabled, and API keys are stored in Windows Credential Manager.
 
 ### Cleanup and rewriting
 
 * **Local cleanup.** Removes fillers and false starts and repairs punctuation automatically -- no account or key required.
-* **Optional AI rewrite.** Pick a cleanup provider (DeepSeek, OpenAI, Anthropic, Google Gemini, Groq, OpenRouter, or any OpenAI-compatible endpoint such as Ollama or LM Studio), add its API key, and optionally override the model. The same provider writes structured meeting notes. Voice search answers still use DeepSeek.
+* **Optional AI rewrite.** Pick an AI provider (DeepSeek is recommended; OpenAI, Anthropic, Google Gemini, Groq, OpenRouter, or any OpenAI-compatible endpoint such as Ollama or LM Studio also work), add its API key, and optionally override the model. The same provider writes structured meeting notes and voice search answers.
 * **Personal dictionary.** Add names and specialist terms that Pronto must preserve; corrections apply deterministically after recognition.
 
 ### Meeting Note Taker
 
 * **Record meetings locally.** Captures microphone plus Windows system audio directly to disk -- no calendar connection or meeting bot required. Local window-title detection offers the recorder when a call is detected.
 * **Fast stop, background notes.** Stopping a recording -- even a one-to-two-hour meeting -- returns in about a second. Mixing and transcription continue in the background with live chunk progress, using parallel workers, so the app stays responsive throughout.
-* **Background notes.** After recording stops, Pronto transcribes the meeting in chunks and generates structured notes (via DeepSeek when configured, with a local fallback otherwise).
+* **Background notes.** After recording stops, Pronto transcribes the meeting in chunks and generates structured notes (via your AI provider when configured, with a local fallback otherwise).
 * **Recording library.** Organizes recorded meetings and imported audio into folders with background processing status, word counts, durations, and focused transcript views with audio playback.
 * **Audio and video import.** Transcribes the audio track from common media files (MP3, WAV, M4A, MP4, MOV, WebM) locally, from the Dictate screen or any Note Taker folder.
 
@@ -76,14 +76,14 @@ On an NVIDIA RTX 4050 Laptop GPU, local transcription of an 11-second audio file
 * Windows 10 or 11 (64-bit)
 * NVIDIA GPU with current display driver for Parakeet (Phonon runs on the CPU of any x64 PC)
 * Microphone
-* Internet connection (during installation for the one-time model download, and only for DeepSeek rewriting afterwards)
+* Internet connection (during installation for the one-time model download, and only for AI rewriting afterwards)
 
 ### macOS (Pronto for Mac)
 
 * Apple Silicon Mac, macOS 13 or newer
 * Microphone (Microphone permission granted)
 * Accessibility permission for automatic insertion (otherwise the transcript stays in History and the clipboard is left unchanged), Input Monitoring only for modifier-only shortcuts, Screen Recording only for computer-audio meeting capture
-* Internet connection (first-launch model download with progress/cancel/retry and SHA-256 verification, plus DeepSeek rewriting afterwards)
+* Internet connection (first-launch model download with progress/cancel/retry and SHA-256 verification, plus AI rewriting afterwards)
 
 ## Install
 
@@ -92,14 +92,14 @@ On an NVIDIA RTX 4050 Laptop GPU, local transcription of an 11-second audio file
 1. Download `Pronto_Setup_<version>_x64.exe` from this repository's Releases page.
 2. Run Pronto Setup (per-user, no admin needed). It recommends Parakeet on PCs with an NVIDIA GPU and Phonon otherwise, then downloads the chosen engine once with progress and verification.
 3. Open **Settings** in Pronto.
-4. Optional: Enter a DeepSeek API key. Local transcription works without a key.
+4. Optional: Choose an AI provider (DeepSeek recommended) and enter its API key. Local transcription works without a key.
 
 ### macOS (Pronto for Mac)
 
 1. Download `Pronto_0.8.2_aarch64.dmg` from the MAC-only [`v0.8.2-macos` release](https://github.com/Jashith127/pronto/releases/tag/v0.8.2-macos).
 2. Open the DMG and move `Pronto.app` to Applications, then launch it. The build is ad hoc signed and not Apple notarized, so macOS may ask you to allow it manually in System Settings.
 3. On first launch the speech model downloads to `~/Library/Application Support/app.pronto.dictation/models/` with progress, cancellation, retry, and checksum verification. Settings also shows macOS permission status.
-4. Optional: Enter a DeepSeek API key. Local transcription works without a key. New installations start with Clean up speech turned off; existing saved preferences are respected.
+4. Optional: Choose an AI provider (DeepSeek recommended) and enter its API key. Local transcription works without a key. New installations start with Clean up speech turned off; existing saved preferences are respected.
 
 ## For developers
 
@@ -124,7 +124,7 @@ On an NVIDIA RTX 4050 Laptop GPU, local transcription of an 11-second audio file
 
 ### How it fits together
 
-A global shortcut wakes a Rust coordinator that captures prewarmed microphone audio, sends it to a persistent local Parakeet server, runs deterministic cleanup (plus optional DeepSeek rewrite), and inserts Unicode text into the previously focused window via SendInput. The frontend receives only status and result events over Tauri IPC -- audio never crosses into JavaScript. See `ARCHITECTURE.md` for the full pipeline.
+A global shortcut wakes a Rust coordinator that captures prewarmed microphone audio, sends it to a persistent local Parakeet server, runs deterministic cleanup (plus optional AI rewrite), and inserts Unicode text into the previously focused window via SendInput. The frontend receives only status and result events over Tauri IPC -- audio never crosses into JavaScript. See `ARCHITECTURE.md` for the full pipeline.
 
 ### Build
 

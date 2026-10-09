@@ -95,7 +95,7 @@ pub(crate) struct AppState {
     sounds: SoundController,
     engine: Mutex<Option<EngineController>>,
     settings: SettingsStore,
-    /// Shared HTTP client for search retrieval + DeepSeek synthesis.
+    /// Shared HTTP client for search retrieval + answer synthesis.
     /// Reused across searches for keep-alive (skips TLS+TCP setup).
     search_http: reqwest::blocking::Client,
     target_window: Mutex<isize>,
@@ -2014,8 +2014,16 @@ fn run_web_search_and_synthesize(
     let client = state.search_http.clone();
     let synthesis_started = std::time::Instant::now();
     let grounded = needs_web && !hits.is_empty();
+    let target = state
+        .settings
+        .snapshot()
+        .and_then(|settings| cleanup_provider::resolve(&settings));
+    let answered_by = target
+        .as_ref()
+        .ok()
+        .map(|target| target.label().to_string());
     let synth_result =
-        search::synthesize_search_markdown(&client, &completed.query, &hits, grounded);
+        search::synthesize_search_markdown(&client, &target, &completed.query, &hits, grounded);
 
     let (parsed, mut warning) = match synth_result {
         Ok(result) => result,
@@ -2054,6 +2062,7 @@ fn run_web_search_and_synthesize(
         banner_image: None,
         sources: hits.clone(),
         warning: warning.clone(),
+        answered_by,
     };
     if let Ok(status) = state.search.complete(completed.query.clone(), warning) {
         emit_search_status(app, &status);

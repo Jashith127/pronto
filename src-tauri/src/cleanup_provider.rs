@@ -1,5 +1,6 @@
-//! AI cleanup providers. Dictation cleanup, long-form Note Taker cleanup, and
-//! meeting notes all go through `complete`, which speaks either the
+//! AI providers. Dictation cleanup, long-form Note Taker cleanup, meeting
+//! notes, and voice search answers all go through `complete`, which speaks
+//! either the
 //! OpenAI-compatible chat completions shape (DeepSeek, OpenAI, Gemini, Groq,
 //! OpenRouter, and any custom endpoint such as Ollama or LM Studio) or the
 //! Anthropic Messages API.
@@ -8,6 +9,7 @@ use crate::settings::{provider_key, UserSettings};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum CleanupProvider {
@@ -225,16 +227,56 @@ pub fn complete(
     user_content: &str,
     max_tokens: u32,
 ) -> Result<String, String> {
+    complete_task(
+        client,
+        target,
+        &Task {
+            name: "cleanup",
+            timeout: None,
+        },
+        system_prompt,
+        user_content,
+        max_tokens,
+    )
+}
+
+/// What a request is for: `name` appears in error messages ("OpenAI answer
+/// failed"), and `timeout` overrides the client's default when set.
+pub struct Task {
+    pub name: &'static str,
+    pub timeout: Option<Duration>,
+}
+
+pub fn complete_task(
+    client: &Client,
+    target: &CleanupTarget,
+    task: &Task,
+    system_prompt: &str,
+    user_content: &str,
+    max_tokens: u32,
+) -> Result<String, String> {
     let label = target.label();
     let content = match target.provider {
-        CleanupProvider::Anthropic => {
-            anthropic_complete(client, target, system_prompt, user_content, max_tokens)?
-        }
-        _ => openai_complete(client, target, system_prompt, user_content, max_tokens)?,
+        CleanupProvider::Anthropic => anthropic_complete(
+            client,
+            target,
+            task,
+            system_prompt,
+            user_content,
+            max_tokens,
+        )?,
+        _ => openai_complete(
+            client,
+            target,
+            task,
+            system_prompt,
+            user_content,
+            max_tokens,
+        )?,
     };
     let content = content.trim().to_string();
     if content.is_empty() {
-        return Err(format!("{label} returned an empty cleanup"));
+        return Err(format!("{label} returned an empty {}", task.name));
     }
     Ok(content)
 }
@@ -242,11 +284,13 @@ pub fn complete(
 fn openai_complete(
     client: &Client,
     target: &CleanupTarget,
+    task: &Task,
     system_prompt: &str,
     user_content: &str,
     max_tokens: u32,
 ) -> Result<String, String> {
     let label = target.label();
+    let what = task.name;
     let mut body = json!({
         "model": target.model,
         "messages": [
@@ -275,16 +319,19 @@ fn openai_complete(
         }
     }
     let mut request = client.post(&target.endpoint).json(&body);
+    if let Some(timeout) = task.timeout {
+        request = request.timeout(timeout);
+    }
     if let Some(key) = &target.api_key {
         request = request.bearer_auth(key);
     }
     let response = request
         .send()
-        .map_err(|error| format!("{label} cleanup failed: {error}"))?;
+        .map_err(|error| format!("{label} {what} failed: {error}"))?;
     if !response.status().is_success() {
         let status = response.status();
         let detail = response.text().unwrap_or_default();
-        return Err(format!("{label} cleanup returned {status}: {detail}"));
+        return Err(format!("{label} {what} returned {status}: {detail}"));
     }
 
     #[derive(Deserialize)]
@@ -303,12 +350,12 @@ fn openai_complete(
 
     response
         .json::<ChatResponse>()
-        .map_err(|error| format!("Invalid {label} response: {error}"))?
+        .map_err(|error| format!("Invalid {label} {what} response: {error}"))?
         .choices
         .into_iter()
         .next()
         .and_then(|choice| choice.message.content)
-        .ok_or_else(|| format!("{label} returned an empty cleanup"))
+        .ok_or_else(|| format!("{label} returned an empty {what}"))
 }
 
 fn is_openai_reasoning_model(model: &str) -> bool {
@@ -326,11 +373,13 @@ const ANTHROPIC_THINKING_HEADROOM: u32 = 4096;
 fn anthropic_complete(
     client: &Client,
     target: &CleanupTarget,
+    task: &Task,
     system_prompt: &str,
     user_content: &str,
     max_tokens: u32,
 ) -> Result<String, String> {
     let label = target.label();
+    let what = task.name;
     let mut body = json!({
         "model": target.model,
         "max_tokens": max_tokens + ANTHROPIC_THINKING_HEADROOM,
@@ -356,19 +405,22 @@ fn anthropic_complete(
     if fallbacks {
         request = request.header("anthropic-beta", "server-side-fallback-2026-07-01");
     }
+    if let Some(timeout) = task.timeout {
+        request = request.timeout(timeout);
+    }
     let response = request
         .send()
-        .map_err(|error| format!("{label} cleanup failed: {error}"))?;
+        .map_err(|error| format!("{label} {what} failed: {error}"))?;
     if !response.status().is_success() {
         let status = response.status();
         let detail = response.text().unwrap_or_default();
-        return Err(format!("{label} cleanup returned {status}: {detail}"));
+        return Err(format!("{label} {what} returned {status}: {detail}"));
     }
     let message = response
         .json::<Value>()
-        .map_err(|error| format!("Invalid {label} response: {error}"))?;
+        .map_err(|error| format!("Invalid {label} {what} response: {error}"))?;
     if message["stop_reason"] == "refusal" {
-        return Err(format!("{label} declined to clean up this transcript"));
+        return Err(format!("{label} declined this {what} request"));
     }
     let text = message["content"]
         .as_array()

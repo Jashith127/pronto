@@ -459,7 +459,7 @@ function renderCleanupProvider(keyStore) {
   const select = document.querySelector('#cleanup-provider');
   const providers = preferences.cleanupProviders || [];
   if (select.options.length !== providers.length) {
-    select.innerHTML = providers.map(provider => `<option value="${provider.id}">${escapeHtml(provider.label)}</option>`).join('');
+    select.innerHTML = providers.map(provider => `<option value="${provider.id}">${escapeHtml(provider.label)}${provider.id === 'deepseek' ? ' (recommended)' : ''}</option>`).join('');
   }
   select.value = preferences.settings.cleanupProvider || 'deepseek';
   const provider = selectedCleanupProvider();
@@ -479,8 +479,7 @@ function renderCleanupProvider(keyStore) {
   document.querySelector('#api-key').placeholder = isCustom ? 'Enter key (optional)' : `Enter ${provider.label} key`;
   let status = provider.keyConfigured
     ? keyStore
-    : (provider.requiresKey ? 'Not configured — local cleanup will be used' : 'Optional — most local servers need no key');
-  if (provider.id !== 'deepseek' && !preferences.apiKeyConfigured) status += ' · Voice search answers need a DeepSeek key';
+    : (provider.requiresKey ? 'Not configured — AI cleanup and search answers are off' : 'Optional — most local servers need no key');
   document.querySelector('#api-status').textContent = status;
 }
 

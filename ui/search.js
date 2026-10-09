@@ -540,6 +540,12 @@ async function enterSearching() {
 async function showResultPanel(payload) {
   hidePeek();
   paintResult(payload);
+  const footerNote = document.querySelector('#panel-footer-note');
+  if (footerNote) {
+    footerNote.textContent = payload.answeredBy
+      ? `Results by DuckDuckGo · Answer by ${payload.answeredBy}`
+      : 'Results by DuckDuckGo';
+  }
   uiMode = 'panel';
   body.className = 'mode-panel';
   hideChrome();
