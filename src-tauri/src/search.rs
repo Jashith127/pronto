@@ -1,12 +1,6 @@
 use crate::cleanup_provider::{self, CleanupProvider, CleanupTarget, Task};
-use crate::mcp;
-use crate::settings::deepseek_key;
-use crate::ui_schema::{
-    fallback_document_with_images, parse_and_validate_ui, SearchUiDocument, SourceItem, UiNode,
-};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
@@ -134,11 +128,6 @@ pub struct DuckDuckGoProvider {
 }
 
 impl DuckDuckGoProvider {
-    #[allow(dead_code)]
-    pub fn new(endpoint: impl Into<String>) -> Self {
-        Self::with_client(endpoint, shared_search_client().clone())
-    }
-
     pub fn with_client(endpoint: impl Into<String>, client: Client) -> Self {
         Self {
             endpoint: endpoint.into(),
@@ -506,7 +495,7 @@ pub fn classify_query(query: &str) -> QueryKind {
     QueryKind::Grounded
 }
 
-/// Only chart/table-flavored queries get the paid repair retry.
+/// Chart/table-flavored queries, which get a larger answer budget.
 pub fn needs_visual_repair(query: &str) -> bool {
     let lower = query.to_ascii_lowercase();
     [
@@ -580,10 +569,6 @@ pub fn photo_candidates_for_hits(hits: &[SearchHit]) -> Vec<(String, String)> {
         .collect()
 }
 
-pub fn expanded_allowed_urls(hits: &[SearchHit]) -> HashSet<String> {
-    expanded_allowed_urls_with_images(hits, &[])
-}
-
 /// Result URLs plus every vetted image URL (thumbnails, DDG proxies, favicons).
 pub fn expanded_allowed_urls_with_images(
     hits: &[SearchHit],
@@ -646,16 +631,6 @@ pub fn resolve_banner_images(
     } else {
         out.into_iter().take(max).collect()
     }
-}
-
-/// Banner photos: result thumbnails first, then DuckDuckGo image search.
-pub fn banner_images_for_search(
-    client: &Client,
-    query: &str,
-    hits: &[SearchHit],
-    max: usize,
-) -> Vec<(String, String)> {
-    resolve_banner_images(client, query, hits, max)
 }
 
 fn push_unique_image(out: &mut Vec<(String, String)>, img: (String, String), max: usize) {
@@ -763,11 +738,6 @@ fn guess_image_mime(url: &str) -> String {
 
 const IMAGE_FETCH_TIMEOUT: Duration = Duration::from_secs(4);
 const IMAGE_RESULT_CAP: usize = 4;
-
-/// Tiny schema for the LLM prompt — avoids shipping the full design-system JSON
-/// on every search call (lower latency + input-token cost).
-const SEARCH_UI_SCHEMA: &str =
-    "Nodes: text{text}, image_frame{src,alt,caption?}, youtube{url}, button{label,action,value}, source_list{items[{index,title,url,snippet?}]}, table{columns,rows}, chart{chart_type,labels,datasets}, divider. URLs must match SEARCH RESULTS or IMAGE CANDIDATES exactly. No HTML.";
 
 type ImageCacheValue = (Instant, Vec<(String, String)>);
 
@@ -2044,292 +2014,6 @@ fn ai_markdown(
     )
 }
 
-pub fn synthesize_search_ui(
-    client: &Client,
-    query: &str,
-    hits: &[SearchHit],
-    resource_dir: Option<&std::path::Path>,
-    images: &[(String, String)],
-) -> Result<(SearchUiDocument, Option<String>), String> {
-    let allowed: HashSet<String> = expanded_allowed_urls_with_images(hits, images);
-    let photos = images;
-    let sources: Vec<(u32, String, String, String)> = hits
-        .iter()
-        .enumerate()
-        .map(|(index, hit)| {
-            (
-                (index + 1) as u32,
-                hit.title.clone(),
-                hit.url.clone(),
-                hit.snippet.clone(),
-            )
-        })
-        .collect();
-
-    if hits.is_empty() {
-        return Ok((
-            fallback_document_with_images(query, &sources, photos),
-            Some("No evidence found in the retrieved sources.".into()),
-        ));
-    }
-
-    let Some(api_key) = deepseek_key() else {
-        return Ok((
-            fallback_document_with_images(query, &sources, photos),
-            Some("Add a DeepSeek API key in Settings to synthesize answers.".into()),
-        ));
-    };
-
-    // Fast-path: navigation queries render instantly with photo + sources, $0.
-    if classify_query(query) == QueryKind::Fast {
-        return Ok((fallback_document_with_images(query, &sources, photos), None));
-    }
-
-    let _ = resource_dir;
-    match deepseek_search_ui(client, &api_key, query, hits, photos) {
-        Ok(raw) => match parse_and_validate_ui(&raw, &allowed) {
-            Ok(mut document) => {
-                ensure_image(&mut document, photos);
-                Ok((document, None))
-            }
-            Err(first_error) => {
-                // Locked policy: only chart/table queries get the paid repair.
-                if !needs_visual_repair(query) {
-                    return Ok((
-                        fallback_document_with_images(query, &sources, photos),
-                        Some(format!("UI synthesis failed validation: {first_error}")),
-                    ));
-                }
-                match deepseek_search_ui_repair(
-                    client,
-                    &api_key,
-                    query,
-                    hits,
-                    photos,
-                    &raw,
-                    &first_error,
-                ) {
-                    Ok(repaired) => match parse_and_validate_ui(&repaired, &allowed) {
-                        Ok(mut document) => {
-                            ensure_image(&mut document, photos);
-                            Ok((document, Some(format!("Repaired UI JSON: {first_error}"))))
-                        }
-                        Err(_) => Ok((
-                            fallback_document_with_images(query, &sources, photos),
-                            Some(format!("UI synthesis failed validation: {first_error}")),
-                        )),
-                    },
-                    Err(error) => Ok((
-                        fallback_document_with_images(query, &sources, photos),
-                        Some(format!("UI synthesis failed: {error}")),
-                    )),
-                }
-            }
-        },
-        Err(error) => Ok((
-            fallback_document_with_images(query, &sources, photos),
-            Some(format!("DeepSeek search UI failed: {error}")),
-        )),
-    }
-}
-
-/// Guarantee frequent visuals: if the model returned text-only, inject the
-/// top vetted image after the first answer paragraph. Zero extra LLM cost.
-pub fn ensure_image(document: &mut SearchUiDocument, images: &[(String, String)]) {
-    if images.is_empty() {
-        return;
-    }
-    let has_visual = document.nodes.iter().any(|node| {
-        matches!(
-            node,
-            UiNode::ImageFrame { .. }
-                | UiNode::Youtube { .. }
-                | UiNode::Chart { .. }
-                | UiNode::Table { .. }
-        )
-    });
-    if has_visual {
-        return;
-    }
-    let (src, alt) = &images[0];
-    let text_positions = document
-        .nodes
-        .iter()
-        .enumerate()
-        .filter(|(_, node)| matches!(node, UiNode::Text { .. }))
-        .map(|(idx, _)| idx)
-        .collect::<Vec<_>>();
-    let insert_at = text_positions
-        .get(1)
-        .or_else(|| text_positions.first())
-        .map(|idx| idx + 1)
-        .unwrap_or(0)
-        .min(document.nodes.len());
-    document.nodes.insert(
-        insert_at,
-        UiNode::ImageFrame {
-            src: src.clone(),
-            alt: alt.clone(),
-            caption: None,
-        },
-    );
-}
-
-pub fn deepseek_search_ui(
-    client: &Client,
-    api_key: &str,
-    query: &str,
-    hits: &[SearchHit],
-    images: &[(String, String)],
-) -> Result<String, String> {
-    deepseek_search_ui_at(
-        client,
-        "https://api.deepseek.com/chat/completions",
-        api_key,
-        query,
-        hits,
-        images,
-        None,
-    )
-}
-
-fn deepseek_search_ui_repair(
-    client: &Client,
-    api_key: &str,
-    query: &str,
-    hits: &[SearchHit],
-    images: &[(String, String)],
-    previous: &str,
-    error: &str,
-) -> Result<String, String> {
-    deepseek_search_ui_at(
-        client,
-        "https://api.deepseek.com/chat/completions",
-        api_key,
-        query,
-        hits,
-        images,
-        Some((previous, error)),
-    )
-}
-
-fn deepseek_search_ui_at(
-    client: &Client,
-    endpoint: &str,
-    api_key: &str,
-    query: &str,
-    hits: &[SearchHit],
-    images: &[(String, String)],
-    repair: Option<(&str, &str)>,
-) -> Result<String, String> {
-    let sources = compact_sources_for_prompt(hits);
-    let image_list = if images.is_empty() {
-        "(none)".to_string()
-    } else {
-        images
-            .iter()
-            .take(3)
-            .enumerate()
-            .map(|(i, (src, alt))| format!("{}. src={src} alt={alt}", i + 1))
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    let system = format!(
-        r#"You are Pronto's grounded voice-search synthesizer. Return ONLY a JSON object with a "nodes" array.
-
-SCHEMA ({uri}):
-{schema}
-
-RULES:
-1. Use only the provided search results. Cite with [1][2] markers matching source_list indexes.
-2. Do NOT include a heading — the query is already shown. Use exactly 2 text nodes when evidence allows:
-   - First text: one crisp direct-answer sentence (the UI highlights this). Add [n] only if needed.
-   - Second text: 3-5 sentences with names, dates, numbers, and useful context. Cite sources.
-3. Then include one image_frame when IMAGE CANDIDATES exist (alt + short caption). Skip only if "(none)".
-4. End with source_list. image_frame.src and URLs must be copied EXACTLY from candidates/results.
-5. If evidence is thin, say so clearly in text nodes but still include source_list.
-6. No raw HTML, Markdown, or unknown fields. Max 24 nodes."#,
-        uri = mcp::DESIGN_SYSTEM_URI,
-        schema = SEARCH_UI_SCHEMA
-    );
-    let user = if let Some((previous, error)) = repair {
-        format!(
-            "QUERY:\n{query}\n\nSEARCH RESULTS:\n{sources}\n\nIMAGE CANDIDATES:\n{image_list}\n\nPREVIOUS INVALID JSON:\n{previous}\n\nVALIDATION ERROR:\n{error}\n\nReturn corrected JSON only."
-        )
-    } else {
-        format!("QUERY:\n{query}\n\nSEARCH RESULTS:\n{sources}\n\nIMAGE CANDIDATES:\n{image_list}\n\nReturn JSON only.")
-    };
-    let max_tokens = adaptive_max_tokens(query, classify_query(query));
-    let body = json!({
-        "model": "deepseek-v4-flash",
-        "thinking": { "type": "disabled" },
-        "messages": [
-            { "role": "system", "content": system },
-            { "role": "user", "content": user }
-        ],
-        "temperature": 0,
-        "max_tokens": max_tokens,
-        "stream": false,
-        "response_format": { "type": "json_object" }
-    });
-    let response = client
-        .post(endpoint)
-        .timeout(std::time::Duration::from_secs(10))
-        .bearer_auth(api_key)
-        .json(&body)
-        .send()
-        .map_err(|error| format!("DeepSeek search UI failed: {error}"))?;
-    if !response.status().is_success() {
-        let status = response.status();
-        let detail = response.text().unwrap_or_default();
-        return Err(format!("DeepSeek search UI returned {status}: {detail}"));
-    }
-    #[derive(Deserialize)]
-    struct DeepSeekResponse {
-        choices: Vec<Choice>,
-    }
-    #[derive(Deserialize)]
-    struct Choice {
-        message: Message,
-    }
-    #[derive(Deserialize)]
-    struct Message {
-        content: String,
-    }
-    response
-        .json::<DeepSeekResponse>()
-        .map_err(|error| format!("Invalid DeepSeek search UI response: {error}"))?
-        .choices
-        .into_iter()
-        .next()
-        .map(|choice| choice.message.content.trim().to_string())
-        .filter(|content| !content.is_empty())
-        .ok_or_else(|| "DeepSeek returned an empty search UI".to_string())
-}
-
-/// Ensure a source_list exists when the model omitted citations.
-pub fn ensure_sources(document: &mut SearchUiDocument, hits: &[SearchHit]) {
-    let has_sources = document
-        .nodes
-        .iter()
-        .any(|node| matches!(node, UiNode::SourceList { .. }));
-    if has_sources || hits.is_empty() {
-        return;
-    }
-    document.nodes.push(UiNode::SourceList {
-        items: hits
-            .iter()
-            .enumerate()
-            .map(|(index, hit)| SourceItem {
-                index: (index + 1) as u32,
-                title: hit.title.clone(),
-                url: hit.url.clone(),
-                snippet: (!hit.snippet.is_empty()).then(|| hit.snippet.clone()),
-            })
-            .collect(),
-    });
-}
-
 #[cfg(windows)]
 pub fn open_url_in_default_browser(url: &str) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
@@ -2380,10 +2064,6 @@ pub fn open_url_in_default_browser(url: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
-    use std::sync::mpsc;
-    use std::time::Duration;
 
     const FIXTURE: &str = r#"
 <html><body>
@@ -2436,82 +2116,6 @@ mod tests {
         assert_eq!(hits[0].url, "https://example.com/alpha");
         assert!(hits[0].snippet.contains("Alpha snippet"));
         assert_eq!(hits[1].url, "https://example.com/beta");
-    }
-
-    #[test]
-    fn mock_deepseek_search_ui_returns_json_object() {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let address = listener.local_addr().unwrap();
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut request = Vec::new();
-            let mut chunk = [0u8; 4096];
-            loop {
-                let count = stream.read(&mut chunk).unwrap();
-                if count == 0 {
-                    break;
-                }
-                request.extend_from_slice(&chunk[..count]);
-                if let Some(header_end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
-                    let headers = String::from_utf8_lossy(&request[..header_end + 4]);
-                    let content_length = headers
-                        .lines()
-                        .find_map(|line| {
-                            let (name, value) = line.split_once(':')?;
-                            name.eq_ignore_ascii_case("content-length")
-                                .then(|| value.trim().parse::<usize>().ok())
-                                .flatten()
-                        })
-                        .unwrap_or(0);
-                    while request.len() < header_end + 4 + content_length {
-                        let count = stream.read(&mut chunk).unwrap();
-                        if count == 0 {
-                            break;
-                        }
-                        request.extend_from_slice(&chunk[..count]);
-                    }
-                    let body = String::from_utf8_lossy(&request[header_end + 4..]);
-                    let _ = tx.send(body.into_owned());
-                    break;
-                }
-            }
-            let payload = r#"{"choices":[{"message":{"content":"{\"nodes\":[{\"type\":\"heading\",\"text\":\"Answer\"},{\"type\":\"text\",\"text\":\"See [1].\"},{\"type\":\"source_list\",\"items\":[{\"index\":1,\"title\":\"Alpha\",\"url\":\"https://example.com/alpha\",\"snippet\":\"snip\"}]}] }"}}]}"#;
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                payload.len(),
-                payload
-            );
-            stream.write_all(response.as_bytes()).unwrap();
-        });
-
-        let client = Client::builder()
-            .timeout(Duration::from_secs(2))
-            .build()
-            .unwrap();
-        let hits = vec![SearchHit {
-            title: "Alpha".into(),
-            url: "https://example.com/alpha".into(),
-            snippet: "snip".into(),
-            image: None,
-        }];
-        let content = deepseek_search_ui_at(
-            &client,
-            &format!("http://{address}/chat/completions"),
-            "test-key",
-            "compare alpha vs beta chart",
-            &hits,
-            &[],
-            None,
-        )
-        .unwrap();
-        let request = rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        assert!(request.contains("deepseek-v4-flash"));
-        assert!(request.contains("json_object"));
-        assert!(request.contains("\"temperature\":0"));
-        let allowed = hits.iter().map(|hit| hit.url.clone()).collect();
-        let document = parse_and_validate_ui(&content, &allowed).unwrap();
-        assert_eq!(document.nodes.len(), 3);
     }
 
     #[test]
@@ -2621,7 +2225,7 @@ mod tests {
         }];
         assert!(photo_candidates_for_hits(&icon_only).is_empty());
         // Favicon derived for same host is still allowlisted for validation.
-        let allowed = expanded_allowed_urls(&hits);
+        let allowed = expanded_allowed_urls_with_images(&hits, &[]);
         assert!(allowed.contains("https://example.com/alpha"));
         assert!(allowed.contains("https://example.com/a.jpg"));
         assert!(allowed.iter().any(|u| u.contains("icons.duckduckgo.com")));

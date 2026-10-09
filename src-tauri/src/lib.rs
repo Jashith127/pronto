@@ -12,8 +12,6 @@ mod insert;
 #[cfg(target_os = "macos")]
 #[path = "platform/macos/insert.rs"]
 mod insert;
-#[cfg_attr(target_os = "macos", allow(dead_code))]
-mod mcp;
 mod meeting;
 mod meeting_detector;
 #[cfg(windows)]

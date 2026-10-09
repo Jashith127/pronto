@@ -100,9 +100,7 @@ pub struct TranscriptionJob {
     pub recording: Recording,
     pub settings: UserSettings,
     pub target_window: isize,
-    #[allow(dead_code)]
     pub skip_history: bool,
-    #[allow(dead_code)]
     pub upload_id: Option<String>,
     /// Segments already transcribed while recording (`LiveSegments`).
     pub live: Option<LiveTranscript>,
