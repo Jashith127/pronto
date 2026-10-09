@@ -188,7 +188,8 @@
   background: var(--danger-soft);
 }
 
-#search-provider-url {
+#search-provider-url,
+.setting-text-input {
   width: min(320px, 100%);
   flex: 0 1 auto;
   height: 36px;
@@ -238,3 +239,16 @@
 @keyframes model-switch-sweep { from { left: -34%; } to { left: 100%; } }
 @media (max-width: 720px) { .model-options { grid-template-columns: 1fr; } }
 @media (prefers-reduced-motion: reduce) { .model-switch.indeterminate .model-switch-bar i { animation: none; width: 100% !important; opacity: .5; } }
+
+.model-picker {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  width: min(320px, 100%);
+}
+
+.model-picker select {
+  width: 100%;
+  max-width: 100%;
+}

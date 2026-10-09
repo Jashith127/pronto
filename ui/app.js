@@ -300,7 +300,7 @@ function historyMarkup(entries) {
   return entries.map(entry => {
     const date = new Date(Number(entry.createdAtMs));
     const time = date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-    const cleanup = entry.cleanupApplied ? 'DeepSeek cleanup' : 'Local cleanup';
+    const cleanup = entry.cleanupApplied ? 'AI cleanup' : 'Local cleanup';
     return `<article class="history-item"><time class="history-time">${time}</time><div class="history-copy"><p>${escapeHtml(entry.finalText)}</p><small>${date.toLocaleDateString()} · ${cleanup}</small></div><div class="history-actions"><span class="latency">${formatDuration(entry.totalMs)}</span><button class="copy-transcript" data-copy="${entry.id}" aria-label="Copy transcript" title="Copy transcript"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg></button></div></article>`;
   }).join('');
 }
@@ -435,7 +435,8 @@ function renderPreferences() {
   document.querySelector('#meeting-suggestions').checked = preferences.settings.meetingSuggestions !== false;
   document.querySelector('#language').value = preferences.settings.language;
   document.querySelectorAll('[data-activation]').forEach(button => button.classList.toggle('active', button.dataset.activation === preferences.settings.activationMode));
-  document.querySelector('#api-status').textContent = preferences.apiKeyConfigured ? (isMac ? 'Stored securely in macOS Keychain' : 'Stored securely in Windows Credential Manager') : 'Not configured — local cleanup will be used';
+  const keyStore = isMac ? 'Stored securely in macOS Keychain' : 'Stored securely in Windows Credential Manager';
+  renderCleanupProvider(keyStore);
   const promptInput = document.querySelector('#cleanup-prompt');
   const effectivePrompt = preferences.settings.cleanupPrompt || preferences.defaultCleanupPrompt;
   if (document.activeElement !== promptInput) promptInput.value = effectivePrompt;
@@ -449,6 +450,102 @@ function renderPreferences() {
   renderDictionary();
 }
 
+function selectedCleanupProvider() {
+  const id = document.querySelector('#cleanup-provider').value || 'deepseek';
+  return (preferences.cleanupProviders || []).find(provider => provider.id === id);
+}
+
+// Live model list for the selected provider, fetched once per
+// provider + endpoint + key state.
+const OTHER_MODEL = '__other';
+const modelList = { key: '', models: [], error: '', loading: false };
+
+function modelListKey(provider) {
+  return `${provider.id}|${preferences.settings.cleanupEndpoint || ''}|${provider.keyConfigured}`;
+}
+
+async function loadProviderModels(provider) {
+  const key = modelListKey(provider);
+  if (modelList.key === key) return;
+  Object.assign(modelList, { key, models: [], error: '', loading: true });
+  renderModelPicker(provider);
+  let models = [];
+  let error = '';
+  try {
+    models = await invoke('list_provider_models', { provider: provider.id, endpoint: preferences.settings.cleanupEndpoint || null });
+  } catch (failure) {
+    error = String(failure);
+  }
+  if (modelList.key !== key) return;
+  Object.assign(modelList, { models, error, loading: false });
+  const current = selectedCleanupProvider();
+  if (current?.id === provider.id) renderModelPicker(current);
+}
+
+function renderModelPicker(provider) {
+  const select = document.querySelector('#cleanup-model');
+  const customInput = document.querySelector('#cleanup-model-custom');
+  const saved = preferences.settings.cleanupModel || '';
+  const isCustom = provider.id === 'custom';
+  const models = [...modelList.models];
+  if (saved && !models.includes(saved)) models.unshift(saved);
+  const options = [];
+  if (provider.defaultModel) options.push(`<option value="">Default (${escapeHtml(provider.defaultModel)})</option>`);
+  else if (!saved && models.length) options.push('<option value="" disabled>Choose a model</option>');
+  for (const model of models) {
+    if (model === provider.defaultModel) continue;
+    options.push(`<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`);
+  }
+  options.push(`<option value="${OTHER_MODEL}">Other…</option>`);
+  // Keep the free-text box open while a name is being typed, but switch to
+  // the list entry once that name has been saved.
+  const typingOther = select.value === OTHER_MODEL && !customInput.hidden && customInput.value.trim() !== saved;
+  select.innerHTML = options.join('');
+  if (typingOther || (!provider.defaultModel && !models.length)) {
+    select.value = OTHER_MODEL;
+  } else {
+    select.value = saved;
+  }
+  customInput.hidden = select.value !== OTHER_MODEL;
+  if (!customInput.hidden && document.activeElement !== customInput && !typingOther) customInput.value = saved;
+  let help;
+  if (modelList.loading) help = `Loading ${provider.label} models…`;
+  else if (modelList.error) help = modelList.error;
+  else if (isCustom) help = 'The model your server should use.';
+  else help = `${modelList.models.length || 'No'} models available. Default uses ${provider.defaultModel}.`;
+  document.querySelector('#cleanup-model-help').textContent = help;
+}
+
+function selectedModelValue() {
+  const value = document.querySelector('#cleanup-model').value;
+  if (value === OTHER_MODEL) return document.querySelector('#cleanup-model-custom').value.trim() || null;
+  return value || null;
+}
+
+function renderCleanupProvider(keyStore) {
+  const select = document.querySelector('#cleanup-provider');
+  const providers = preferences.cleanupProviders || [];
+  if (select.options.length !== providers.length) {
+    select.innerHTML = providers.map(provider => `<option value="${provider.id}">${escapeHtml(provider.label)}${provider.id === 'deepseek' ? ' (recommended)' : ''}</option>`).join('');
+  }
+  select.value = preferences.settings.cleanupProvider || 'deepseek';
+  const provider = selectedCleanupProvider();
+  if (!provider) return;
+  const isCustom = provider.id === 'custom';
+  renderModelPicker(provider);
+  loadProviderModels(provider);
+  document.querySelector('#cleanup-endpoint-row').hidden = !isCustom;
+  const endpointInput = document.querySelector('#cleanup-endpoint');
+  if (document.activeElement !== endpointInput) endpointInput.value = preferences.settings.cleanupEndpoint || '';
+  // One key field, saved under whichever provider is selected.
+  document.querySelector('#api-key').setAttribute('aria-label', `${provider.label} API key`);
+  document.querySelector('#api-key').placeholder = isCustom ? 'Enter key (optional)' : `Enter ${provider.label} key`;
+  let status = provider.keyConfigured
+    ? keyStore
+    : (provider.requiresKey ? 'Not configured — AI cleanup and search answers are off' : 'Optional — most local servers need no key');
+  document.querySelector('#api-status').textContent = status;
+}
+
 async function persistSettings() {
   const settings = {
     ...preferences.settings,
@@ -460,6 +557,9 @@ async function persistSettings() {
     dictationSounds: document.querySelector('#dictation-sounds').checked,
     meetingSuggestions: document.querySelector('#meeting-suggestions').checked,
     language: document.querySelector('#language').value,
+    cleanupProvider: document.querySelector('#cleanup-provider').value || preferences.settings.cleanupProvider || 'deepseek',
+    cleanupModel: selectedModelValue(),
+    cleanupEndpoint: document.querySelector('#cleanup-endpoint').value.trim() || null,
     searchProviderUrl: document.querySelector('#search-provider-url')?.value?.trim()
       || preferences.settings.searchProviderUrl
       || 'https://html.duckduckgo.com/html/'
@@ -804,12 +904,35 @@ document.querySelector('#microphone').addEventListener('change', async event => 
 });
 document.querySelector('#save-key').addEventListener('click', async () => {
   const input = document.querySelector('#api-key');
-  if (!input.value.trim()) { showToast('Enter a DeepSeek API key first', true); return; }
-  preferences = await call('save_api_key', { apiKey: input.value });
+  const provider = selectedCleanupProvider();
+  if (!provider) return;
+  if (!input.value.trim()) { showToast('Enter an API key first', true); return; }
+  preferences = await call('save_api_key', { apiKey: input.value, provider: provider.id });
   input.value = '';
   renderPreferences();
-  showToast('DeepSeek key saved securely');
+  showToast(`${provider.label} key saved securely`);
 });
+document.querySelector('#cleanup-provider').addEventListener('change', async () => {
+  // A model name belongs to one provider; start the new one on its default.
+  document.querySelector('#cleanup-model').value = '';
+  document.querySelector('#cleanup-model-custom').hidden = true;
+  await persistSettings();
+});
+document.querySelector('#cleanup-model').addEventListener('change', event => {
+  const customInput = document.querySelector('#cleanup-model-custom');
+  if (event.target.value === OTHER_MODEL) {
+    customInput.hidden = false;
+    customInput.value = '';
+    customInput.focus();
+    return;
+  }
+  customInput.hidden = true;
+  persistSettings();
+});
+document.querySelector('#cleanup-model-custom').addEventListener('change', event => {
+  if (event.target.value.trim()) persistSettings();
+});
+document.querySelector('#cleanup-endpoint').addEventListener('change', () => persistSettings());
 document.querySelector('#cleanup-prompt').addEventListener('input', event => {
   document.querySelector('#cleanup-prompt-status').textContent = 'Unsaved changes';
   document.querySelector('#cleanup-prompt-count').textContent = `${event.target.value.length.toLocaleString()} / 16,000`;

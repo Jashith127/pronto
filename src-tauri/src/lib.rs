@@ -1,4 +1,5 @@
 mod audio;
+mod cleanup_provider;
 mod engine;
 mod gpu_memory;
 #[cfg(windows)]
@@ -94,7 +95,7 @@ pub(crate) struct AppState {
     sounds: SoundController,
     engine: Mutex<Option<EngineController>>,
     settings: SettingsStore,
-    /// Shared HTTP client for search retrieval + DeepSeek synthesis.
+    /// Shared HTTP client for search retrieval + answer synthesis.
     /// Reused across searches for keep-alive (skips TLS+TCP setup).
     search_http: reqwest::blocking::Client,
     target_window: Mutex<isize>,
@@ -2013,8 +2014,16 @@ fn run_web_search_and_synthesize(
     let client = state.search_http.clone();
     let synthesis_started = std::time::Instant::now();
     let grounded = needs_web && !hits.is_empty();
+    let target = state
+        .settings
+        .snapshot()
+        .and_then(|settings| cleanup_provider::resolve(&settings));
+    let answered_by = target
+        .as_ref()
+        .ok()
+        .map(|target| target.label().to_string());
     let synth_result =
-        search::synthesize_search_markdown(&client, &completed.query, &hits, grounded);
+        search::synthesize_search_markdown(&client, &target, &completed.query, &hits, grounded);
 
     let (parsed, mut warning) = match synth_result {
         Ok(result) => result,
@@ -2053,6 +2062,7 @@ fn run_web_search_and_synthesize(
         banner_image: None,
         sources: hits.clone(),
         warning: warning.clone(),
+        answered_by,
     };
     if let Ok(status) = state.search.complete(completed.query.clone(), warning) {
         emit_search_status(app, &status);
@@ -2733,8 +2743,9 @@ fn get_search_status(state: tauri::State<'_, AppState>) -> Result<SearchStatus, 
 fn save_api_key(
     state: tauri::State<'_, AppState>,
     api_key: String,
+    provider: Option<cleanup_provider::CleanupProvider>,
 ) -> Result<AppPreferences, String> {
-    settings::set_deepseek_key(&api_key)?;
+    settings::set_provider_key(provider.unwrap_or_default(), &api_key)?;
     state.settings.preferences()
 }
 
@@ -2816,15 +2827,13 @@ fn cleanup_notetaker_transcript_blocking(app: AppHandle, text: String) -> Result
         return Err("This transcript is too long to clean up in one request.".into());
     }
     let settings = state.settings.snapshot()?;
-    let api_key = settings::deepseek_key().ok_or_else(|| {
-        "Add a DeepSeek API key in Settings to enable Clean Up Speech.".to_string()
-    })?;
+    let target = cleanup_provider::resolve(&settings)
+        .map_err(|missing| format!("{missing} to enable Clean Up Speech."))?;
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
         .build()
-        .map_err(|error| format!("DeepSeek cleanup failed: {error}"))?;
-    let cleaned =
-        engine::deepseek_longform_cleanup(&client, &api_key, &transcript, &settings.dictionary)?;
+        .map_err(|error| format!("{} cleanup failed: {error}", target.label()))?;
+    let cleaned = engine::ai_longform_cleanup(&client, &target, &transcript, &settings.dictionary)?;
     Ok(engine::apply_dictionary_public(
         &cleaned,
         &settings.dictionary,
@@ -2913,6 +2922,18 @@ async fn finish_media_upload(
 #[tauri::command]
 async fn fetch_search_image(app: AppHandle, url: String) -> Result<SearchImagePayload, String> {
     off_main_thread(move || fetch_search_image_blocking(app, url)).await
+}
+
+#[tauri::command]
+async fn list_provider_models(
+    provider: cleanup_provider::CleanupProvider,
+    endpoint: Option<String>,
+) -> Result<Vec<String>, String> {
+    off_main_thread(move || {
+        let client = reqwest::blocking::Client::new();
+        cleanup_provider::list_models(&client, provider, endpoint.as_deref())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -3340,6 +3361,7 @@ pub fn run() {
             fetch_search_image,
             get_search_status,
             save_api_key,
+            list_provider_models,
             add_dictionary_term,
             remove_dictionary_term,
             get_history,

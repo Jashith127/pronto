@@ -297,7 +297,7 @@ nav { margin-top: 28px; }
   .settings-nav::-webkit-scrollbar { display: none; }
   .settings-nav button { width: auto; height: 32px; flex: 0 0 auto; padding: 0 12px; }
   .setting-row:not(.setting-row--switch) { flex-wrap: wrap; }
-  .setting-row select, #microphone, .api-form, #search-provider-url { max-width: 100%; width: 100%; }
+  .setting-row select, #microphone, .api-form, #search-provider-url, .setting-text-input { max-width: 100%; width: 100%; }
   .setting-control { width: 100%; justify-content: flex-start; }
   .setting-control--stack { flex-direction: row; align-items: center; }
   .hotkey-row .setting-control { justify-content: space-between; }

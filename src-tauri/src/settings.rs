@@ -1,5 +1,7 @@
+use crate::cleanup_provider::{CleanupProvider, ProviderInfo};
 use serde::{Deserialize, Serialize};
 pub use speech_packs::AsrModel;
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -7,7 +9,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const KEYRING_SERVICE: &str = "app.pronto.dictation";
 const LEGACY_KEYRING_SERVICE: &str = "app.vela.dictation";
-const KEYRING_ACCOUNT: &str = "deepseek-api-key";
 
 pub const DEFAULT_CLEANUP_PROMPT: &str = r#"You are Pronto's dictation editor. Transform raw speech recognition into the polished text the speaker intended to write. Return only the finished text—no preface, explanation, labels, or commentary.
 
@@ -56,6 +57,16 @@ pub struct UserSettings {
     pub gpu_memory_management_configured: bool,
     pub dictation_sounds: bool,
     pub cleanup_prompt: Option<String>,
+    /// Service used for AI cleanup and meeting notes. Voice search answers
+    /// always use DeepSeek.
+    #[serde(default)]
+    pub cleanup_provider: CleanupProvider,
+    /// Model override; `None` uses the provider's default.
+    #[serde(default)]
+    pub cleanup_model: Option<String>,
+    /// Base or chat completions URL for the custom provider.
+    #[serde(default)]
+    pub cleanup_endpoint: Option<String>,
     #[serde(default = "default_meeting_suggestions")]
     pub meeting_suggestions: bool,
     #[serde(default)]
@@ -115,6 +126,9 @@ impl Default for UserSettings {
             gpu_memory_management_configured: true,
             dictation_sounds: true,
             cleanup_prompt: None,
+            cleanup_provider: CleanupProvider::DeepSeek,
+            cleanup_model: None,
+            cleanup_endpoint: None,
             meeting_suggestions: true,
             theme: ThemeMode::System,
             asr_model: AsrModel::Parakeet,
@@ -169,7 +183,9 @@ impl HistoryEntry {
 #[serde(rename_all = "camelCase")]
 pub struct AppPreferences {
     pub settings: UserSettings,
+    /// Whether the DeepSeek key (used by voice search) is configured.
     pub api_key_configured: bool,
+    pub cleanup_providers: Vec<ProviderInfo>,
     pub default_cleanup_prompt: &'static str,
     pub default_longform_prompt: &'static str,
 }
@@ -216,6 +232,7 @@ impl SettingsStore {
         Ok(AppPreferences {
             settings: self.snapshot()?,
             api_key_configured: deepseek_key().is_some(),
+            cleanup_providers: crate::cleanup_provider::catalog(),
             default_cleanup_prompt: DEFAULT_CLEANUP_PROMPT,
             default_longform_prompt: DEFAULT_LONGFORM_CLEANUP_PROMPT,
         })
@@ -241,6 +258,13 @@ impl SettingsStore {
             }
             _ => None,
         };
+        next.cleanup_model = trimmed(next.cleanup_model.take());
+        next.cleanup_endpoint = trimmed(next.cleanup_endpoint.take());
+        if let Some(endpoint) = &next.cleanup_endpoint {
+            if !(endpoint.starts_with("http://") || endpoint.starts_with("https://")) {
+                return Err("The custom endpoint must start with http:// or https://".into());
+            }
+        }
         let mut settings = self.settings.lock().map_err(|_| "settings lock poisoned")?;
         write_json(self.data_dir.join("settings.json"), &next)?;
         *settings = next.clone();
@@ -335,68 +359,82 @@ impl SettingsStore {
     }
 }
 
-pub fn set_deepseek_key(api_key: &str) -> Result<(), String> {
+pub fn set_provider_key(provider: CleanupProvider, api_key: &str) -> Result<(), String> {
     // Invalidate first: even a partial deletion must not leave an old key
     // available from the in-process cache for another minute.
     if let Some(cache) = KEY_CACHE.get() {
         if let Ok(mut guard) = cache.lock() {
-            guard.1 = None;
+            guard.remove(&provider);
         }
     }
-    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
+    let account = provider.keyring_account();
+    let entry = keyring::Entry::new(KEYRING_SERVICE, account)
         .map_err(|error| format!("Credential Manager unavailable: {error}"))?;
     if api_key.trim().is_empty() {
         match entry.delete_password() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(error) => Err(format!("Could not remove API key: {error}")),
         }?;
-        let legacy = keyring::Entry::new(LEGACY_KEYRING_SERVICE, KEYRING_ACCOUNT)
-            .map_err(|error| format!("Credential Manager unavailable: {error}"))?;
-        match legacy.delete_password() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(error) => Err(format!("Could not remove migrated API key: {error}")),
+        if provider == CleanupProvider::DeepSeek {
+            let legacy = keyring::Entry::new(LEGACY_KEYRING_SERVICE, account)
+                .map_err(|error| format!("Credential Manager unavailable: {error}"))?;
+            match legacy.delete_password() {
+                Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+                Err(error) => Err(format!("Could not remove migrated API key: {error}")),
+            }?;
         }
+        Ok(())
     } else {
         entry
             .set_password(api_key.trim())
             .map_err(|error| format!("Could not securely save API key: {error}"))
-    }?;
-    Ok(())
+    }
 }
 
-/// Credential Manager round-trips cost 10–100ms, and the key is read on
-/// every search, cleanup, and preferences fetch — cache it for 60s.
-static KEY_CACHE: std::sync::OnceLock<Mutex<(Option<String>, Option<std::time::Instant>)>> =
-    std::sync::OnceLock::new();
+/// Credential Manager round-trips cost 10–100ms, and keys are read on every
+/// search, cleanup, and preferences fetch — cache each for 60s.
+type KeyCache = HashMap<CleanupProvider, (Option<String>, std::time::Instant)>;
+static KEY_CACHE: std::sync::OnceLock<Mutex<KeyCache>> = std::sync::OnceLock::new();
 
 pub fn deepseek_key() -> Option<String> {
-    if let Ok(key) = std::env::var("DEEPSEEK_API_KEY") {
+    provider_key(CleanupProvider::DeepSeek)
+}
+
+pub fn provider_key(provider: CleanupProvider) -> Option<String> {
+    if let Ok(key) = std::env::var(provider.env_var()) {
         if !key.is_empty() {
             return Some(key);
         }
     }
-    let cache = KEY_CACHE.get_or_init(|| Mutex::new((None, None)));
+    let cache = KEY_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     if let Ok(guard) = cache.lock() {
-        if let (Some(key), Some(at)) = (&guard.0, guard.1) {
+        if let Some((key, at)) = guard.get(&provider) {
             if at.elapsed() < std::time::Duration::from_secs(60) {
-                return Some(key.clone());
+                return key.clone();
             }
         }
     }
-    let key = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
-        .ok()?
-        .get_password()
+    let account = provider.keyring_account();
+    let key = keyring::Entry::new(KEYRING_SERVICE, account)
         .ok()
+        .and_then(|entry| entry.get_password().ok())
         .or_else(|| {
-            keyring::Entry::new(LEGACY_KEYRING_SERVICE, KEYRING_ACCOUNT)
-                .ok()?
+            (provider == CleanupProvider::DeepSeek)
+                .then(|| keyring::Entry::new(LEGACY_KEYRING_SERVICE, account).ok())
+                .flatten()?
                 .get_password()
                 .ok()
         });
     if let Ok(mut guard) = cache.lock() {
-        *guard = (key.clone(), Some(std::time::Instant::now()));
+        guard.insert(provider, (key.clone(), std::time::Instant::now()));
     }
     key
+}
+
+fn trimmed(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn data_dir() -> PathBuf {
@@ -541,5 +579,19 @@ mod tests {
         assert!(settings.cleanup_prompt.is_none());
         let enabled: UserSettings = serde_json::from_str(r#"{"cleanupEnabled":true}"#).unwrap();
         assert!(enabled.cleanup_enabled);
+    }
+
+    #[test]
+    fn older_settings_default_to_deepseek_cleanup() {
+        let settings: UserSettings = serde_json::from_str(r#"{"cleanupEnabled":true}"#).unwrap();
+        assert_eq!(settings.cleanup_provider, CleanupProvider::DeepSeek);
+        assert!(settings.cleanup_model.is_none());
+        assert!(settings.cleanup_endpoint.is_none());
+        let settings: UserSettings = serde_json::from_str(
+            r#"{"cleanupProvider":"anthropic","cleanupModel":"claude-haiku-5-5"}"#,
+        )
+        .unwrap();
+        assert_eq!(settings.cleanup_provider, CleanupProvider::Anthropic);
+        assert_eq!(settings.cleanup_model.as_deref(), Some("claude-haiku-5-5"));
     }
 }
