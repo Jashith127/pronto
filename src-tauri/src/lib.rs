@@ -476,7 +476,7 @@ fn begin_recording(app: &AppHandle) -> Result<EngineStatus, String> {
                 if let Some(engine) = engine.as_ref() {
                     engine.warm();
                     if settings.cleanup_enabled {
-                        engine.preconnect_cleanup();
+                        engine.preconnect_cleanup(&settings);
                     }
                     let snapshot_app = app.clone();
                     let segments = engine.start_live_segments(
