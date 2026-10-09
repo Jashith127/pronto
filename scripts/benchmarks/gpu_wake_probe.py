@@ -10,8 +10,11 @@ Starts nemo-speech exactly as Pronto does (serve_bench.server_command), then:
    while the user speaks), then times a real clip. Lead 0 = no wake request,
    i.e. today's behaviour.
 
-The wake requests are timed too: they would compete with a dictation that
-ends while one is in flight.
+--wake-clip ID instead sends the first min(elapsed, --wake-max-s) seconds of
+that clip, as transcribing the recording so far would; --wake-tone-s with
+--wake-growing sends a tone of that same growing length. The wake requests
+are timed too: they would compete with a dictation that ends while one is in
+flight.
 """
 import argparse
 import http.client
@@ -53,6 +56,9 @@ def main():
     p.add_argument('--leads', default='0,0.5,1,2,4,8', help='seconds of wake requests before the clip')
     p.add_argument('--wake-interval', type=float, default=1.0)
     p.add_argument('--wake-tone-s', type=float, default=1.0)
+    p.add_argument('--wake-clip', help='manifest clip id to use as the growing "recording so far"')
+    p.add_argument('--wake-growing', action='store_true', help='tone that grows with elapsed time')
+    p.add_argument('--wake-max-s', type=float, default=10.0)
     p.add_argument('--repeats', type=int, default=3)
     p.add_argument('--decay-s', type=float, default=15)
     p.add_argument('--output', type=Path, required=True)
@@ -66,6 +72,23 @@ def main():
     clips = [c for c in manifest['clips'] if c['id'] in args.clips.split(',')]
     blobs = {c['id']: (args.manifest.parent / c['path']).read_bytes() for c in clips}
     wake_blob = tone(args.wake_tone_s)
+    wake_pcm = None
+    if args.wake_clip:
+        source = next(c for c in manifest['clips'] if c['id'] == args.wake_clip)
+        with wave.open(str(args.manifest.parent / source['path'])) as w:
+            wake_pcm = w.readframes(w.getnframes())
+
+    def wake_payload(elapsed):
+        seconds = min(max(elapsed, 0.5), args.wake_max_s)
+        if wake_pcm is not None:
+            buffer = io.BytesIO()
+            with wave.open(buffer, 'wb') as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(16_000)
+                w.writeframes(wake_pcm[:int(seconds * 16_000) * 2])
+            return buffer.getvalue()
+        return tone(seconds) if args.wake_growing else wake_blob
     gpu = telemetry.GpuSampler()
     args.output.parent.mkdir(parents=True, exist_ok=True)
     log = open(args.output.with_suffix('.server.log'), 'w')
@@ -103,7 +126,7 @@ def main():
                     wakes = []
                     started = time.perf_counter()
                     while lead and time.perf_counter() - started < lead:
-                        wakes.append(post(wake_blob)[0])
+                        wakes.append(post(wake_payload(time.perf_counter() - started))[0])
                         remaining = lead - (time.perf_counter() - started)
                         time.sleep(max(0.0, min(args.wake_interval - wakes[-1], remaining)))
                     with gpu.window() as window:

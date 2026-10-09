@@ -4,8 +4,10 @@ Run after fetch_librispeech.py. Writes manifest-long.json beside the clips:
 ~55 s and ~60 s dictations (lengths seen in real history), a 120 s clip (one
 meeting chunk, CHUNK_SAMPLES in engine.rs) and a ~200 s dictation; and
 manifest-meeting.json: three different ~120 s chunks of one meeting, for the
-parallel meeting path (http_bench.py --concurrency 3). Each is
-the source utterances joined by 0.25 s of silence; the reference is their
+parallel meeting path (http_bench.py --concurrency 3); and manifest-paused.json:
+~30, ~45 and ~63 s dictations with 1 s pauses between sentences, for the
+live-segment benchmark (engine.rs splits at pauses of 0.8 s or more). Each is
+the source utterances joined by 0.25 s (paused: 1 s) of silence; the reference is their
 references joined in the same order, so WER stays exact. Stdlib only.
 """
 import hashlib
@@ -33,10 +35,14 @@ for n in range(3):
         parts.append(order[len(parts)])
         total += by_id[parts[-1]]['duration_s'] + 0.25
     MEETING[f'meeting-{n + 1}'] = parts
-GAP_S = 0.25
+PAUSED = {
+    'paused-030': ['1320-122617-0038', '1320-122617-0012', '1320-122617-0007'],
+    'paused-045': ['5639-40744-0008', '5639-40744-0036', '5639-40744-0031'],
+    'paused-063': LONG['long-060'],
+}
 
 
-def build(name, parts):
+def build(name, parts, gap_s=0.25):
     frames, rate = [], None
     for part in parts:
         with wave.open(str(clips_dir / by_id[part]['path'])) as w:
@@ -44,7 +50,7 @@ def build(name, parts):
             rate = rate or w.getframerate()
             assert w.getframerate() == rate
             if frames:
-                frames.append(b'\0\0' * int(GAP_S * rate))
+                frames.append(b'\0\0' * int(gap_s * rate))
             frames.append(w.readframes(w.getnframes()))
     data = b''.join(frames)
     path = clips_dir / f'{name}.wav'
@@ -58,8 +64,9 @@ def build(name, parts):
                 sha256=hashlib.sha256(path.read_bytes()).hexdigest())
 
 
-for file, group in (('manifest-long.json', LONG), ('manifest-meeting.json', MEETING)):
-    rows = [build(name, parts) for name, parts in group.items()]
+for file, group, gap_s in (('manifest-long.json', LONG, 0.25), ('manifest-meeting.json', MEETING, 0.25),
+                           ('manifest-paused.json', PAUSED, 1.0)):
+    rows = [build(name, parts, gap_s) for name, parts in group.items()]
     (clips_dir / file).write_text(json.dumps(
         dict(source=manifest['source'], license=manifest['license'], derived_from='manifest.json', clips=rows),
         indent=2))

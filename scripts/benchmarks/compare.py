@@ -11,6 +11,7 @@ import json
 import math
 import re
 import statistics
+import sys
 from pathlib import Path
 
 
@@ -115,6 +116,7 @@ def compare(before, after):
 
 
 def main():
+    sys.stdout.reconfigure(encoding='utf-8')  # tables use arrows; the Windows console defaults to cp1252
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('before', type=Path)
     p.add_argument('after', type=Path, nargs='?')

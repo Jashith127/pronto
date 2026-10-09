@@ -15,9 +15,9 @@ use std::net::TcpListener;
 use std::os::windows::{io::AsRawHandle, process::CommandExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::AppHandle;
 
@@ -35,6 +35,8 @@ const MODEL_TRANSITION_COOLDOWN: Duration = Duration::from_secs(20);
 const GPU_EXTERNAL_GROWTH: u64 = 1536 * MIB;
 const GPU_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 const DEEPSEEK_MODELS_URL: &str = "https://api.deepseek.com/models";
+/// `recording_to_wav`'s error for audio that is silent after trimming.
+const NO_SPEECH: &str = "No speech was detected";
 const WARM_RETRY_COOLDOWN: Duration = Duration::from_secs(30);
 const ENGINE_LOG_LIMIT: u64 = 1024 * 1024;
 const PHONON_MODEL_DIR: &str = "models/phonon-2";
@@ -104,16 +106,24 @@ pub struct TranscriptionJob {
     pub skip_history: bool,
     #[allow(dead_code)]
     pub upload_id: Option<String>,
+    /// Segments already transcribed while recording (`LiveSegments`).
+    pub live: Option<LiveTranscript>,
 }
 
 impl TranscriptionJob {
-    pub fn live(recording: Recording, settings: UserSettings, target_window: isize) -> Self {
+    pub fn live(
+        recording: Recording,
+        settings: UserSettings,
+        target_window: isize,
+        live: Option<LiveTranscript>,
+    ) -> Self {
         Self {
             recording,
             settings,
             target_window,
             skip_history: false,
             upload_id: None,
+            live,
         }
     }
 
@@ -129,6 +139,7 @@ impl TranscriptionJob {
             target_window: 0,
             skip_history,
             upload_id,
+            live: None,
         }
     }
 }
@@ -173,6 +184,8 @@ pub struct EngineController {
     /// Shared with the engine thread: one connection pool, so a connection
     /// opened by `preconnect_cleanup` is the one cleanup reuses.
     client: Client,
+    /// The running server's URL and backend, published by the engine thread.
+    endpoint: Arc<Mutex<Option<(String, AsrModel)>>>,
 }
 
 impl EngineController {
@@ -186,6 +199,8 @@ impl EngineController {
         set_desired_backend(model);
         let client = engine_client();
         let worker_client = client.clone();
+        let endpoint = Arc::new(Mutex::new(None));
+        let worker_endpoint = Arc::clone(&endpoint);
         std::thread::Builder::new()
             .name("pronto-engine".into())
             .spawn(move || {
@@ -196,10 +211,15 @@ impl EngineController {
                     model,
                     receiver,
                     worker_client,
+                    worker_endpoint,
                 )
             })
             .expect("failed to start transcription engine thread");
-        Self { commands, client }
+        Self {
+            commands,
+            client,
+            endpoint,
+        }
     }
 
     pub fn transcribe(&self, job: TranscriptionJob) -> Result<(), String> {
@@ -222,6 +242,49 @@ impl EngineController {
 
     pub fn warm(&self) {
         let _ = self.commands.send(EngineCommand::Warm);
+    }
+
+    /// Starts transcribing a dictation's finished segments while it records.
+    /// `snapshot(from_frame)` returns the audio captured since that frame, or
+    /// `None` when recording has stopped or the capture path cannot tell.
+    /// Parakeet only: Phonon's CPU engine would compete with itself.
+    pub fn start_live_segments(
+        &self,
+        snapshot: impl Fn(usize) -> Result<Option<Recording>, String> + Send + 'static,
+        language: String,
+    ) -> LiveSegments {
+        let stop = Arc::new(AtomicBool::new(false));
+        let (client, endpoint, thread_stop) = (
+            self.client.clone(),
+            Arc::clone(&self.endpoint),
+            Arc::clone(&stop),
+        );
+        let thread = std::thread::Builder::new()
+            .name("pronto-live-segments".into())
+            .spawn(move || {
+                let mut segmenter = Segmenter::new();
+                while !thread_stop.load(Ordering::Acquire) {
+                    std::thread::sleep(SEGMENT_POLL);
+                    if thread_stop.load(Ordering::Acquire) {
+                        break;
+                    }
+                    let current = endpoint.lock().ok().and_then(|endpoint| endpoint.clone());
+                    let Some((base_url, backend)) =
+                        current.filter(|(_, backend)| backend.uses_gpu())
+                    else {
+                        continue;
+                    };
+                    match snapshot(segmenter.transcript.covered_frames) {
+                        Ok(Some(pending)) => {
+                            segmenter.step(&pending, &client, &base_url, backend, &language)
+                        }
+                        _ => break,
+                    }
+                }
+                segmenter.transcript
+            })
+            .ok();
+        LiveSegments { stop, thread }
     }
 
     /// Opens the DeepSeek connection (DNS, TCP, TLS) while the user is still
@@ -362,6 +425,7 @@ fn engine_worker(
     initial_model: AsrModel,
     receiver: mpsc::Receiver<EngineCommand>,
     client: Client,
+    endpoint: Arc<Mutex<Option<(String, AsrModel)>>>,
 ) {
     let mut backend = initial_model;
     set_active_backend(backend);
@@ -413,6 +477,11 @@ fn engine_worker(
         (server.is_none() && desired_backend() == backend).then(Instant::now);
 
     loop {
+        if let Ok(mut endpoint) = endpoint.lock() {
+            *endpoint = server
+                .as_ref()
+                .map(|server| (server.base_url.clone(), server.backend));
+        }
         let command = if server.is_some() && policy.enabled && gpu.is_some() && backend.uses_gpu() {
             match receiver.recv_timeout(GPU_POLL_INTERVAL) {
                 Ok(command) => Some(command),
@@ -771,13 +840,37 @@ fn minimum_model_bytes(runtime: Option<&RuntimePaths>) -> u64 {
 fn process_job(
     client: &Client,
     server: &mut SpeechServer,
-    job: TranscriptionJob,
+    mut job: TranscriptionJob,
     started: Instant,
 ) -> Result<CompletedTranscription, String> {
     let audio_ms = job.recording.samples.len() as u128 * 1_000
         / (job.recording.sample_rate as u128 * job.recording.channels.max(1) as u128);
     let asr_started = Instant::now();
-    let raw = transcribe_recording(client, server, &job.recording, &job.settings.language)?;
+    let raw = match job.live.take() {
+        // Segments transcribed while recording cover the start; only the
+        // audio after the last pause is left.
+        Some(live) if !live.failed && live.covered_frames > 0 => {
+            let channels = job.recording.channels.max(1) as usize;
+            let start = (live.covered_frames * channels).min(job.recording.samples.len());
+            let tail = Recording {
+                samples: job.recording.samples[start..].to_vec(),
+                sample_rate: job.recording.sample_rate,
+                channels: job.recording.channels,
+            };
+            let tail_text =
+                match transcribe_recording(client, server, &tail, &job.settings.language) {
+                    Ok(text) => text,
+                    Err(error) if error == NO_SPEECH => String::new(),
+                    Err(error) => return Err(error),
+                };
+            let mut texts = live.texts;
+            if !tail_text.is_empty() {
+                texts.push(tail_text);
+            }
+            texts.join(" ")
+        }
+        _ => transcribe_recording(client, server, &job.recording, &job.settings.language)?,
+    };
     let asr_ms = asr_started.elapsed().as_millis();
     if raw.is_empty() {
         return Err("No speech was detected".into());
@@ -925,6 +1018,130 @@ fn transcribe_recording_url(
         .text
         .trim()
         .to_string())
+}
+
+/// Dictation pauses this long split the recording into segments that are
+/// transcribed while the user keeps talking; the first segment needs this
+/// much audio, so short dictations stay one request.
+const SEGMENT_PAUSE: Duration = Duration::from_millis(800);
+const SEGMENT_MIN_AUDIO: Duration = Duration::from_secs(3);
+/// How often the recording thread looks for a new pause.
+const SEGMENT_POLL: Duration = Duration::from_millis(250);
+
+/// 16 kHz sample index at which to cut `mono` (16 kHz, from the last cut):
+/// the middle of the first pause of at least `SEGMENT_PAUSE` that follows
+/// speech and at least `SEGMENT_MIN_AUDIO` of audio. Speech is detected per
+/// 20 ms frame exactly as `trim_silence` does, so the cut lands in audio
+/// that trimming would discard anyway.
+fn find_segment_cut(mono: &[f32]) -> Option<usize> {
+    let frame = 16_000 / 50;
+    let pause_frames = (SEGMENT_PAUSE.as_millis() / 20) as usize;
+    let min_frames = (SEGMENT_MIN_AUDIO.as_millis() / 20) as usize;
+    let mut heard = false;
+    let mut quiet_since = None;
+    for (index, chunk) in mono.chunks_exact(frame).enumerate() {
+        let rms = (chunk.iter().map(|sample| sample * sample).sum::<f32>() / frame as f32).sqrt();
+        if rms > 0.004 {
+            heard = true;
+            quiet_since = None;
+            continue;
+        }
+        let start = *quiet_since.get_or_insert(index);
+        if heard && start >= min_frames && index + 1 - start >= pause_frames {
+            return Some((start + pause_frames / 2) * frame);
+        }
+    }
+    None
+}
+
+/// Text of the segments transcribed during a recording, and how much of the
+/// recording (frames at its native rate) they cover. `process_job`
+/// transcribes only the rest; a failed segment means the whole recording.
+pub struct LiveTranscript {
+    texts: Vec<String>,
+    covered_frames: usize,
+    failed: bool,
+}
+
+/// One recording's segmentation state. `step` is called with the audio
+/// captured since the last cut; production calls it from `LiveSegments`,
+/// the benchmark from a simulated recording.
+struct Segmenter {
+    transcript: LiveTranscript,
+}
+
+impl Segmenter {
+    fn new() -> Self {
+        Self {
+            transcript: LiveTranscript {
+                texts: Vec::new(),
+                covered_frames: 0,
+                failed: false,
+            },
+        }
+    }
+
+    fn step(
+        &mut self,
+        pending: &Recording,
+        client: &Client,
+        base_url: &str,
+        backend: AsrModel,
+        language: &str,
+    ) {
+        if self.transcript.failed || pending.sample_rate == 0 || pending.channels == 0 {
+            return;
+        }
+        let channels = pending.channels as usize;
+        let mono = resample_linear(
+            &downmix(&pending.samples, channels),
+            pending.sample_rate,
+            16_000,
+        );
+        let Some(cut) = find_segment_cut(&mono) else {
+            return;
+        };
+        let frames = (cut as u64 * pending.sample_rate as u64 / 16_000) as usize;
+        let segment = Recording {
+            samples: pending.samples[..(frames * channels).min(pending.samples.len())].to_vec(),
+            sample_rate: pending.sample_rate,
+            channels: pending.channels,
+        };
+        match transcribe_recording_url(client, base_url, backend, &segment, language) {
+            Ok(text) => {
+                if !text.is_empty() {
+                    self.transcript.texts.push(text);
+                }
+                self.transcript.covered_frames += frames;
+            }
+            Err(error) if error == NO_SPEECH => self.transcript.covered_frames += frames,
+            Err(_) => self.transcript.failed = true,
+        }
+    }
+}
+
+/// Transcribes a dictation's finished segments while it is still being
+/// recorded (Parakeet only), so stopping leaves only the audio after the
+/// last pause. Each segment also wakes the GPU, which an idle laptop keeps
+/// in P8. Dropping it stops the thread.
+pub struct LiveSegments {
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<LiveTranscript>>,
+}
+
+impl LiveSegments {
+    /// Recording has stopped: wait for an in-flight segment and return the
+    /// transcript so far.
+    pub fn finish(mut self) -> Option<LiveTranscript> {
+        self.stop.store(true, Ordering::Release);
+        self.thread.take()?.join().ok()
+    }
+}
+
+impl Drop for LiveSegments {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+    }
 }
 
 fn process_meeting_job(
@@ -1833,7 +2050,7 @@ fn recording_to_wav(recording: &Recording) -> Result<Vec<u8>, String> {
     let mono = resample_linear(&mono, recording.sample_rate, 16_000);
     let mono = trim_silence(&mono, 16_000);
     if mono.len() < 1_600 {
-        return Err("No speech was detected".into());
+        return Err(NO_SPEECH.into());
     }
 
     let data_len = (mono.len() * 2) as u32;
@@ -2851,6 +3068,171 @@ mod tests {
                 output,
                 serde_json::to_vec_pretty(&json!({"gap_ms": gap.as_millis() as u64,
                 "record_ms": record.as_millis() as u64, "rows": rows}))
+                .unwrap(),
+            )
+            .unwrap();
+        }
+    }
+
+    fn tone_and_silence(parts: &[(f32, bool)]) -> Vec<f32> {
+        parts
+            .iter()
+            .flat_map(|&(seconds, speech)| {
+                (0..(seconds * 16_000.0) as usize).map(move |index| {
+                    if speech {
+                        (index as f32 * 220.0 * std::f32::consts::TAU / 16_000.0).sin() * 0.1
+                    } else {
+                        0.0
+                    }
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn segment_cut_lands_mid_pause_after_enough_speech() {
+        let audio = tone_and_silence(&[(4.0, true), (1.0, false), (2.0, true)]);
+        let cut = find_segment_cut(&audio).unwrap();
+        assert_eq!(
+            cut,
+            64_000 + 6_400,
+            "4 s of speech, then half the 0.8 s pause"
+        );
+        // The cut falls in silence that trimming drops, on a frame boundary.
+        assert!(audio[cut..cut + 320].iter().all(|sample| *sample == 0.0));
+    }
+
+    #[test]
+    fn short_pauses_and_short_openings_are_not_cut() {
+        assert_eq!(
+            find_segment_cut(&tone_and_silence(&[(4.0, true), (0.6, false), (2.0, true)])),
+            None
+        );
+        assert_eq!(
+            find_segment_cut(&tone_and_silence(&[(2.0, true), (1.0, false), (2.0, true)])),
+            None
+        );
+        assert_eq!(find_segment_cut(&tone_and_silence(&[(5.0, false)])), None);
+    }
+
+    /// Transcribing finished segments while recording versus the whole
+    /// recording at stop, on the production path. Each recording is replayed
+    /// in real time after PRONTO_BENCH_GAP_MS idle (default 12 s, so the GPU
+    /// is in P8 as before a real dictation), polling every `SEGMENT_POLL` with
+    /// the real `Segmenter`; only `process_job` is timed, which is what the
+    /// user waits for after stopping. Modes alternate per repeat. Writes
+    /// `<PRONTO_BENCH_OUTPUT>-full.json` and `-segmented.json` for compare.py.
+    #[test]
+    #[ignore = "benchmark: requires Parakeet, PRONTO_BENCH_MANIFEST and PRONTO_BENCH_OUTPUT"]
+    fn benchmark_live_segments() {
+        let manifest_path = PathBuf::from(std::env::var("PRONTO_BENCH_MANIFEST").unwrap());
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        let clips: Vec<_> = manifest["clips"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|clip| {
+                let path = manifest_path
+                    .parent()
+                    .unwrap()
+                    .join(clip["path"].as_str().unwrap());
+                let recording = recording_from_pcm16_wav(&fs::read(path).unwrap()).unwrap();
+                (clip["id"].as_str().unwrap().to_string(), recording)
+            })
+            .collect();
+        let repeats: usize = bench_env("PRONTO_BENCH_REPEATS", 3);
+        let gap = Duration::from_millis(bench_env("PRONTO_BENCH_GAP_MS", 12_000u64));
+        set_desired_backend(AsrModel::Parakeet);
+        let mut server =
+            SpeechServer::start(&locate_runtime(None, AsrModel::Parakeet).unwrap()).unwrap();
+        let client = engine_client();
+        let settings = UserSettings {
+            cleanup_enabled: false,
+            auto_insert: false,
+            ..UserSettings::default()
+        };
+        let logical_cpus = std::thread::available_parallelism().unwrap().get() as f64;
+        for (_, recording) in &clips {
+            transcribe_recording(&client, &server, recording, "auto").unwrap();
+        }
+        let mut rows = [Vec::new(), Vec::new()];
+        for repeat in 0..repeats {
+            for (id, recording) in &clips {
+                let modes = if repeat % 2 == 0 {
+                    [false, true]
+                } else {
+                    [true, false]
+                };
+                for segmented in modes {
+                    std::thread::sleep(gap);
+                    let channels = recording.channels as usize;
+                    let frames = recording.samples.len() / channels;
+                    let mut segmenter = Segmenter::new();
+                    let recording_started = Instant::now();
+                    loop {
+                        std::thread::sleep(SEGMENT_POLL);
+                        let captured = ((recording_started.elapsed().as_secs_f64()
+                            * recording.sample_rate as f64)
+                            as usize)
+                            .min(frames);
+                        if segmented {
+                            let from = segmenter.transcript.covered_frames * channels;
+                            let pending = Recording {
+                                samples: recording.samples[from..captured * channels].to_vec(),
+                                sample_rate: recording.sample_rate,
+                                channels: recording.channels,
+                            };
+                            segmenter.step(
+                                &pending,
+                                &client,
+                                &server.base_url,
+                                AsrModel::Parakeet,
+                                "auto",
+                            );
+                        }
+                        if captured == frames {
+                            break;
+                        }
+                    }
+                    let segments = segmenter.transcript.texts.len();
+                    let covered_s =
+                        segmenter.transcript.covered_frames as f64 / recording.sample_rate as f64;
+                    let failed = segmenter.transcript.failed;
+                    let job = TranscriptionJob::live(
+                        Recording {
+                            samples: recording.samples.clone(),
+                            sample_rate: recording.sample_rate,
+                            channels: recording.channels,
+                        },
+                        settings.clone(),
+                        0,
+                        segmented.then_some(segmenter.transcript),
+                    );
+                    let cpu_start = server_cpu_seconds(&server);
+                    let started = Instant::now();
+                    let result = process_job(&client, &mut server, job, started).unwrap();
+                    let latency_s = started.elapsed().as_secs_f64();
+                    let cpu_s = server_cpu_seconds(&server) - cpu_start;
+                    println!(
+                        "{id} segmented={segmented} segments={segments} covered={covered_s:.1}s latency={:.1}ms",
+                        latency_s * 1000.0
+                    );
+                    rows[segmented as usize].push(json!({"clip": id, "repeat": repeat,
+                        "latency_s": latency_s, "server_cpu_percent": 100.0 * cpu_s / latency_s / logical_cpus,
+                        "segments_before_stop": segments, "covered_s": covered_s, "segment_failed": failed,
+                        "asr_ms": result.entry.asr_ms, "raw_text": result.entry.raw_text,
+                        "entry": result.entry}));
+                }
+            }
+        }
+        server.stop();
+        let output = std::env::var("PRONTO_BENCH_OUTPUT").unwrap();
+        for (mode, rows) in [("full", &rows[0]), ("segmented", &rows[1])] {
+            fs::write(
+                format!("{output}-{mode}.json"),
+                serde_json::to_vec_pretty(&json!({"label": mode, "backend": "Parakeet",
+                    "gap_ms": gap.as_millis() as u64, "manifest": manifest, "rows": rows}))
                 .unwrap(),
             )
             .unwrap();
