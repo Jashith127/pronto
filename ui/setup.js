@@ -70,7 +70,7 @@ function renderChoices() {
     const bytes = kind === 'update' ? model.downloadBytes : model.fullDownloadBytes;
     card.querySelector('.engine-size').textContent = bytes ? `${formatBytes(bytes)} download` : 'Already on this PC';
   }
-  $('#install').textContent = { update: info.upgrade ? 'Update' : 'Install', reinstall: 'Reinstall', fresh: 'Install fresh' }[kind];
+  $('#install').textContent = { update: info.upgrade ? 'Update' : 'Install', reinstall: 'Reinstall', fresh: 'Reinstall' }[kind];
   $('#choose-note').textContent =
     kind === 'fresh' ? 'Your history and settings will be erased.' : 'You can switch later in Settings.';
   select(selected || info.currentModel || info.recommended);
@@ -175,7 +175,7 @@ async function init() {
   mode = info.mode;
   $('#version').textContent = `Version ${info.version}`;
   if (info.upgrade) {
-    $('#welcome-lede').textContent = `Version ${info.version} is ready. Update, reinstall, or start fresh.`;
+    $('#welcome-lede').textContent = `Version ${info.version} is ready. Update it or reinstall from scratch.`;
     $('#get-started').textContent = 'Continue';
   }
   renderChoices();
@@ -193,8 +193,13 @@ document.querySelector('.engines').addEventListener('keydown', event => {
 });
 $('#get-started').addEventListener('click', () => show(info.upgrade ? 'kind' : 'choose'));
 $('#kind-back').addEventListener('click', () => show('welcome'));
+document.querySelectorAll('input[name="kind"]').forEach(input =>
+  input.addEventListener('change', () => {
+    $('#erase-row').hidden = !$('#kind-reinstall').checked;
+  })
+);
 $('#kind-next').addEventListener('click', () => {
-  kind = document.querySelector('input[name="kind"]:checked').value;
+  kind = $('#kind-update').checked ? 'update' : $('#kind-fresh').checked ? 'fresh' : 'reinstall';
   renderChoices();
   show('choose');
 });

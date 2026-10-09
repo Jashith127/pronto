@@ -46,14 +46,14 @@
             <label class="choice">
               <input type="radio" name="kind" id="kind-reinstall" value="reinstall" />
               <span class="choice-mark" aria-hidden="true"></span>
-              <span class="choice-text"><strong>Reinstall</strong><span>Fix a broken install. History and settings stay; the speech engine downloads again.</span></span>
-            </label>
-            <label class="choice">
-              <input type="radio" name="kind" id="kind-fresh" value="fresh" />
-              <span class="choice-mark" aria-hidden="true"></span>
-              <span class="choice-text"><strong>Fresh install</strong><span>Erase history, settings and speech engines, then start over.</span></span>
+              <span class="choice-text"><strong>Reinstall</strong><span>A clean copy. The speech engine downloads again.</span></span>
             </label>
           </div>
+          <label class="erase" id="erase-row" hidden>
+            <input type="checkbox" id="kind-fresh" />
+            <span class="erase-box" aria-hidden="true"></span>
+            <span>Also erase my history and settings</span>
+          </label>
           <div class="actions kind-actions">
             <button type="button" class="quiet" id="kind-back">Back</button>
             <button type="button" class="primary" id="kind-next">Continue</button>
