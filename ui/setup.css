@@ -117,7 +117,12 @@ kbd { min-width: 46px; padding: 9px 12px; border: 1px solid var(--line); border-
 .choice:has(input:checked) .choice-mark { border-color: var(--sage); background: var(--sage); box-shadow: inset 0 0 0 4px var(--surface); }
 .choice:has(#erase-data:checked) { border-color: #b14c3d; box-shadow: 0 0 0 4px rgba(177, 76, 61, .14); }
 .choice:has(#erase-data:checked) .choice-mark { border-color: #b14c3d; background: #b14c3d; }
+.choice:has(#kind-fresh:checked) { border-color: #b14c3d; box-shadow: 0 0 0 4px rgba(177, 76, 61, .14); }
+.choice:has(#kind-fresh:checked) .choice-mark { border-color: #b14c3d; background: #b14c3d; }
 .choice:has(input:focus-visible) { box-shadow: var(--focus-ring); }
+.screen[data-screen="kind"] .lede { margin-top: 6px; }
+.screen[data-screen="kind"] .choices { margin-top: 20px; }
+.kind-actions { max-width: 440px; margin-top: 12px; }
 .uninstall-actions { max-width: 440px; justify-content: flex-end; margin-top: 12px; }
 
 @media (prefers-reduced-motion: reduce) {
