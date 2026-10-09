@@ -94,6 +94,8 @@ pub(crate) struct AppState {
     insertion_target: insert::InsertionTargetTracker,
     sounds: SoundController,
     engine: Mutex<Option<EngineController>>,
+    /// The current dictation's segments, transcribed while it records.
+    live_segments: Mutex<Option<engine::LiveSegments>>,
     settings: SettingsStore,
     /// Shared HTTP client for search retrieval + answer synthesis.
     /// Reused across searches for keep-alive (skips TLS+TCP setup).
@@ -222,6 +224,7 @@ impl AppState {
             insertion_target: insert::InsertionTargetTracker::new(),
             sounds: SoundController::new(),
             engine: Mutex::new(None),
+            live_segments: Mutex::new(None),
             search_http: search::shared_search_client().clone(),
             settings,
             target_window: Mutex::new(0),
@@ -472,6 +475,20 @@ fn begin_recording(app: &AppHandle) -> Result<EngineStatus, String> {
             if let Ok(engine) = state.engine.lock() {
                 if let Some(engine) = engine.as_ref() {
                     engine.warm();
+                    if settings.cleanup_enabled {
+                        engine.preconnect_cleanup();
+                    }
+                    let snapshot_app = app.clone();
+                    let segments = engine.start_live_segments(
+                        move |from_frame| {
+                            snapshot_app.state::<AppState>().audio.snapshot(from_frame)
+                        },
+                        settings.language.clone(),
+                    );
+                    // Replacing a stale one (a cancelled dictation) stops it.
+                    if let Ok(mut live) = state.live_segments.lock() {
+                        *live = Some(segments);
+                    }
                 }
             }
             let show_microphone = state
@@ -539,6 +556,12 @@ fn finish_recording(app: &AppHandle) -> Result<EngineStatus, String> {
     }
     let recording = state.audio.stop();
     state.dictation_active.store(false, Ordering::Release);
+    let live = state
+        .live_segments
+        .lock()
+        .ok()
+        .and_then(|mut live| live.take())
+        .and_then(engine::LiveSegments::finish);
     let recording = recording?;
     let target_window = *state
         .target_window
@@ -555,7 +578,12 @@ fn finish_recording(app: &AppHandle) -> Result<EngineStatus, String> {
 
     let engine = state.engine.lock().map_err(|_| "engine lock poisoned")?;
     if let Some(engine) = engine.as_ref() {
-        engine.transcribe(TranscriptionJob::live(recording, settings, target_window))?;
+        engine.transcribe(TranscriptionJob::live(
+            recording,
+            settings,
+            target_window,
+            live,
+        ))?;
     } else {
         pipeline.fail("Transcription engine is still starting");
         emit_status(app, &pipeline.status);
@@ -1334,6 +1362,9 @@ fn delete_notetaker_audio(_app: AppHandle, item_id: String) -> Result<(), String
 fn cancel_recording_blocking(app: AppHandle) -> Result<EngineStatus, String> {
     let state = app.state::<AppState>();
     let _ = state.audio.stop();
+    if let Ok(mut live) = state.live_segments.lock() {
+        live.take();
+    }
     state.insertion_target.cancel();
     state.dictation_active.store(false, Ordering::Release);
     let _ = state.system_audio.restore();

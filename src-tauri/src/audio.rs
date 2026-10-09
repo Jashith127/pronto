@@ -201,6 +201,25 @@ impl AudioCapture {
         Ok(active)
     }
 
+    /// Audio captured so far from frame `from_frame` on, without stopping.
+    /// `None` on the WaveIn fallback, whose single buffer reports its length
+    /// only when recording ends.
+    pub fn snapshot(&self, from_frame: usize) -> Result<Option<Recording>, String> {
+        #[cfg(windows)]
+        if self.wave_in.is_some() {
+            return Ok(None);
+        }
+        let channels = self.channels.max(1) as usize;
+        let samples = self.samples.lock().map_err(|_| "audio buffer poisoned")?;
+        let start = (from_frame * channels).min(samples.len());
+        let end = samples.len() / channels * channels;
+        Ok(Some(Recording {
+            samples: samples[start..end.max(start)].to_vec(),
+            sample_rate: self.sample_rate,
+            channels: self.channels,
+        }))
+    }
+
     pub fn stop(&mut self) -> Result<Recording, String> {
         #[cfg(windows)]
         if let Some(capture) = self.wave_in.as_mut() {
@@ -389,6 +408,7 @@ fn build_input_stream(
 enum AudioCommand {
     Start(mpsc::Sender<Result<ActiveMicrophone, String>>),
     Stop(mpsc::Sender<Result<Recording, String>>),
+    Snapshot(usize, mpsc::Sender<Result<Option<Recording>, String>>),
     Status(mpsc::Sender<Result<MicrophoneStatus, String>>),
     Reprepare(mpsc::Sender<Result<ActiveMicrophone, String>>),
     Select(
@@ -437,6 +457,14 @@ impl AudioController {
                         AudioCommand::Stop(reply) => {
                             let result = capture.stop();
                             recording = false;
+                            let _ = reply.send(result);
+                        }
+                        AudioCommand::Snapshot(from_frame, reply) => {
+                            let result = if recording {
+                                capture.snapshot(from_frame)
+                            } else {
+                                Ok(None)
+                            };
                             let _ = reply.send(result);
                         }
                         AudioCommand::Status(reply) => {
@@ -528,6 +556,15 @@ impl AudioController {
             .send(AudioCommand::Stop(reply))
             .map_err(|_| "audio thread stopped".to_string())?;
         receive_audio_reply(response, "stop", Duration::from_secs(15))
+    }
+
+    /// See `AudioCapture::snapshot`; `None` also when not recording.
+    pub fn snapshot(&self, from_frame: usize) -> Result<Option<Recording>, String> {
+        let (reply, response) = mpsc::channel();
+        self.commands
+            .send(AudioCommand::Snapshot(from_frame, reply))
+            .map_err(|_| "audio thread stopped".to_string())?;
+        receive_audio_reply(response, "snapshot", Duration::from_secs(2))
     }
 
     pub fn status(&self) -> Result<MicrophoneStatus, String> {
