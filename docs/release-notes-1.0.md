@@ -6,7 +6,7 @@ Pronto 1.0 is the first stable release. It adds a choice of AI providers, much f
 
 - **Choose your AI provider.** Cleanup, meeting notes and voice search answers now work with DeepSeek (recommended), OpenAI, Anthropic, Google Gemini, Groq, OpenRouter, or any OpenAI-compatible endpoint such as Ollama or LM Studio. Each provider keeps its own API key, and your existing DeepSeek key carries over.
 - **Pick a model from a list.** Settings → Online services loads the provider's available models, with the default first and **Other...** to type a name.
-- **Welcome tour.** New users get a short, skippable tour: shortcut, microphone, a quick dictation test, and a summary. Replay it from Settings → General → Show tour.
+- **Welcome tour.** New users get a short, skippable tour: shortcut, microphone and startup, then an all-set screen that shows how to dictate in any app. Replay it from Settings → General → Show tour.
 - **Update or Reinstall in Pronto Setup.** Running Setup on a PC that already has Pronto now offers to update in place or reinstall a clean copy, with an option to also erase history and settings. Silent installs accept `--reinstall` and `--fresh`.
 
 ## Faster
