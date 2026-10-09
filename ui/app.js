@@ -436,10 +436,6 @@ function renderPreferences() {
   document.querySelector('#language').value = preferences.settings.language;
   document.querySelectorAll('[data-activation]').forEach(button => button.classList.toggle('active', button.dataset.activation === preferences.settings.activationMode));
   const keyStore = isMac ? 'Stored securely in macOS Keychain' : 'Stored securely in Windows Credential Manager';
-  const cleanupProvider = preferences.settings.cleanupProvider || 'deepseek';
-  document.querySelector('#api-status').textContent = preferences.apiKeyConfigured
-    ? keyStore
-    : (cleanupProvider === 'deepseek' ? 'Not configured — local cleanup will be used' : 'Not configured — needed for voice search answers');
   renderCleanupProvider(keyStore);
   const promptInput = document.querySelector('#cleanup-prompt');
   const effectivePrompt = preferences.settings.cleanupPrompt || preferences.defaultCleanupPrompt;
@@ -478,13 +474,14 @@ function renderCleanupProvider(keyStore) {
   document.querySelector('#cleanup-endpoint-row').hidden = !isCustom;
   const endpointInput = document.querySelector('#cleanup-endpoint');
   if (document.activeElement !== endpointInput) endpointInput.value = preferences.settings.cleanupEndpoint || '';
-  // DeepSeek's key has its own row because voice search always uses it.
-  document.querySelector('#provider-key-row').hidden = provider.id === 'deepseek';
-  document.querySelector('#provider-key-label').textContent = isCustom ? 'Endpoint API key' : `${provider.label} API key`;
-  document.querySelector('#provider-key').setAttribute('aria-label', `${provider.label} API key`);
-  document.querySelector('#provider-key-status').textContent = provider.keyConfigured
+  // One key field, saved under whichever provider is selected.
+  document.querySelector('#api-key').setAttribute('aria-label', `${provider.label} API key`);
+  document.querySelector('#api-key').placeholder = isCustom ? 'Enter key (optional)' : `Enter ${provider.label} key`;
+  let status = provider.keyConfigured
     ? keyStore
     : (provider.requiresKey ? 'Not configured — local cleanup will be used' : 'Optional — most local servers need no key');
+  if (provider.id !== 'deepseek' && !preferences.apiKeyConfigured) status += ' · Voice search answers need a DeepSeek key';
+  document.querySelector('#api-status').textContent = status;
 }
 
 async function persistSettings() {
@@ -845,21 +842,6 @@ document.querySelector('#microphone').addEventListener('change', async event => 
 });
 document.querySelector('#save-key').addEventListener('click', async () => {
   const input = document.querySelector('#api-key');
-  if (!input.value.trim()) { showToast('Enter a DeepSeek API key first', true); return; }
-  preferences = await call('save_api_key', { apiKey: input.value });
-  input.value = '';
-  renderPreferences();
-  showToast('DeepSeek key saved securely');
-});
-document.querySelector('#cleanup-provider').addEventListener('change', async () => {
-  // A model name belongs to one provider; start the new one on its default.
-  document.querySelector('#cleanup-model').value = '';
-  await persistSettings();
-});
-document.querySelector('#cleanup-model').addEventListener('change', () => persistSettings());
-document.querySelector('#cleanup-endpoint').addEventListener('change', () => persistSettings());
-document.querySelector('#save-provider-key').addEventListener('click', async () => {
-  const input = document.querySelector('#provider-key');
   const provider = selectedCleanupProvider();
   if (!provider) return;
   if (!input.value.trim()) { showToast('Enter an API key first', true); return; }
@@ -868,6 +850,13 @@ document.querySelector('#save-provider-key').addEventListener('click', async () 
   renderPreferences();
   showToast(`${provider.label} key saved securely`);
 });
+document.querySelector('#cleanup-provider').addEventListener('change', async () => {
+  // A model name belongs to one provider; start the new one on its default.
+  document.querySelector('#cleanup-model').value = '';
+  await persistSettings();
+});
+document.querySelector('#cleanup-model').addEventListener('change', () => persistSettings());
+document.querySelector('#cleanup-endpoint').addEventListener('change', () => persistSettings());
 document.querySelector('#cleanup-prompt').addEventListener('input', event => {
   document.querySelector('#cleanup-prompt-status').textContent = 'Unsaved changes';
   document.querySelector('#cleanup-prompt-count').textContent = `${event.target.value.length.toLocaleString()} / 16,000`;
