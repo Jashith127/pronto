@@ -79,7 +79,7 @@ function Build-PhononRuntime {
     # CPU-only torch keeps the pack small; everything else comes from PyPI.
     & python -m pip install --disable-pip-version-check --no-warn-script-location --only-binary=:all: `
         --target $site --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple `
-        torch "fermion-research==$FermionVersion" safetensors soundfile scipy zstandard
+        torch "fermion-research==$FermionVersion" safetensors soundfile scipy zstandard | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'pip install failed' }
     & python -m pip freeze --path $site | Set-Content -Encoding utf8 (Join-Path $stage 'requirements.lock.txt')
 
