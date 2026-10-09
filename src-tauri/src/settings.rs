@@ -75,6 +75,9 @@ pub struct UserSettings {
     /// installs its packs first. Older settings default to Parakeet.
     #[serde(default)]
     pub asr_model: AsrModel,
+    /// Set once the first-run welcome tour is finished or skipped.
+    #[serde(default)]
+    pub onboarding_completed: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -132,6 +135,7 @@ impl Default for UserSettings {
             meeting_suggestions: true,
             theme: ThemeMode::System,
             asr_model: AsrModel::Parakeet,
+            onboarding_completed: false,
         }
     }
 }
@@ -220,7 +224,14 @@ impl SettingsStore {
             settings.gpu_memory_management_configured = true;
             let _ = write_json(data_dir.join("settings.json"), &settings);
         }
-        let history = read_json(data_dir.join("history.json")).unwrap_or_default();
+        let history: Vec<HistoryEntry> =
+            read_json(data_dir.join("history.json")).unwrap_or_default();
+        // Settings from before the welcome tour existed have no flag. Anyone
+        // with saved transcripts already knows Pronto, so skip the tour.
+        if !settings.onboarding_completed && !history.is_empty() {
+            settings.onboarding_completed = true;
+            let _ = write_json(data_dir.join("settings.json"), &settings);
+        }
         Self {
             settings: Mutex::new(settings),
             history: Mutex::new(history),
@@ -279,6 +290,15 @@ impl SettingsStore {
         write_json(self.data_dir.join("settings.json"), &next)?;
         *settings = next;
         Ok(())
+    }
+
+    pub fn set_onboarding_completed(&self, completed: bool) -> Result<UserSettings, String> {
+        let mut settings = self.settings.lock().map_err(|_| "settings lock poisoned")?;
+        let mut next = settings.clone();
+        next.onboarding_completed = completed;
+        write_json(self.data_dir.join("settings.json"), &next)?;
+        *settings = next.clone();
+        Ok(next)
     }
 
     pub fn add_dictionary_term(&self, term: String) -> Result<UserSettings, String> {

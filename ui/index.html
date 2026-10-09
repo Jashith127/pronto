@@ -9,6 +9,7 @@
     <link rel="stylesheet" href="styles.css" />
     <link rel="stylesheet" href="app-polish.css" />
     <link rel="stylesheet" href="notes.css" />
+    <link rel="stylesheet" href="onboarding.css" />
   </head>
   <body>
     <main class="app">
@@ -212,6 +213,7 @@
                     </div>
                   </div>
                   <div class="setting-row" data-keywords="startup boot login autostart tray menu bar"><div><strong>Launch at startup</strong><p>Starts Pronto silently in the system tray without opening this window.</p></div><label class="toggle"><input type="checkbox" id="launch-at-startup" /><span></span></label></div>
+                  <div class="setting-row" data-keywords="welcome tour onboarding setup introduction getting started"><div><strong>Welcome tour</strong><p>Walk through the first-run setup again.</p></div><button type="button" class="change-button" id="replay-onboarding">Show tour</button></div>
                   <div class="setting-row" data-keywords="meeting note taker zoom teams call prompt popup notification"><div><strong>Suggest meeting notes</strong><p>Offer to take notes when a meeting app starts using your microphone.</p></div><label class="toggle"><input type="checkbox" id="meeting-suggestions" /><span></span></label></div>
                 </div>
               </section>
@@ -362,6 +364,79 @@
       </section>
     </main>
 
+    <div class="onboarding-layer" id="onboarding" hidden>
+      <div class="onboarding" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
+        <header class="onboarding-head">
+          <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
+          <ol class="onboarding-dots" aria-label="Setup progress"></ol>
+          <button type="button" class="onboarding-skip" id="onboarding-skip">Skip setup</button>
+        </header>
+
+        <section class="onboarding-step" data-step="welcome">
+          <h2 id="onboarding-title">Welcome to Pronto</h2>
+          <p class="onboarding-lede">Speak in any app and your words appear where you are typing. Transcription runs on this computer.</p>
+          <p class="onboarding-lede">Let's set up the essentials. It takes under a minute, and you can change everything later in Settings.</p>
+        </section>
+
+        <section class="onboarding-step" data-step="shortcut">
+          <h2>Your dictation shortcut</h2>
+          <p class="onboarding-lede">Press this from anywhere to start talking.</p>
+          <div class="onboarding-card">
+            <div class="setting-row">
+              <div><strong>Start dictation</strong><p>Works globally, in any app.</p></div>
+              <div class="setting-control"><div class="shortcut-keys" id="onboarding-hotkey"></div><button type="button" class="change-button" id="onboarding-change-hotkey">Change</button></div>
+            </div>
+            <div class="setting-row">
+              <div><strong>How the shortcut works</strong><p>Hold to talk, or press once to start and again to stop.</p></div>
+              <div class="segmented" role="group" aria-label="Activation behavior">
+                <button type="button" data-activation="hold">Hold</button><button type="button" data-activation="toggle">Toggle</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="onboarding-step" data-step="microphone">
+          <h2>Microphone and startup</h2>
+          <p class="onboarding-lede">Pick the microphone Pronto listens to.</p>
+          <div class="onboarding-card">
+            <div class="setting-row">
+              <div><strong>Microphone</strong><p id="onboarding-microphone-status">Loading available microphones…</p></div>
+              <div class="setting-control"><select id="onboarding-microphone" aria-label="Microphone" disabled><option>Loading…</option></select></div>
+            </div>
+            <div class="setting-row">
+              <div><strong>Launch at startup</strong><p>Keep Pronto ready in the background whenever you sign in.</p></div>
+              <label class="toggle"><input type="checkbox" id="onboarding-launch-at-startup" /><span></span></label>
+            </div>
+            <div class="setting-row">
+              <div><strong>Dictation sounds</strong><p>A soft cue when Pronto starts and stops listening.</p></div>
+              <label class="toggle"><input type="checkbox" id="onboarding-dictation-sounds" /><span></span></label>
+            </div>
+          </div>
+        </section>
+
+        <section class="onboarding-step" data-step="try">
+          <h2>Give it a try</h2>
+          <p class="onboarding-lede" id="onboarding-try-lede">Click the box below, then use your shortcut and say a sentence.</p>
+          <textarea class="onboarding-try" id="onboarding-try" rows="4" placeholder="Your words will appear here…"></textarea>
+          <p class="onboarding-result" id="onboarding-result" aria-live="polite"></p>
+        </section>
+
+        <section class="onboarding-step" data-step="done">
+          <h2>You're all set</h2>
+          <p class="onboarding-lede">Use <span class="shortcut-keys inline" id="onboarding-done-hotkey"></span> in any app to dictate.</p>
+          <ul class="onboarding-tips">
+            <li><strong>Dictionary</strong> keeps names and terms spelled right.</li>
+            <li><strong>Note Taker</strong> records and transcribes your meetings.</li>
+            <li><strong>Settings</strong> has everything you set up here, plus cleanup and voice search.</li>
+          </ul>
+        </section>
+
+        <footer class="onboarding-actions">
+          <button type="button" class="change-button" id="onboarding-back">Back</button>
+          <button type="button" class="onboarding-next" id="onboarding-next">Get started</button>
+        </footer>
+      </div>
+    </div>
     <dialog class="hotkey-dialog" id="hotkey-dialog">
       <form method="dialog">
         <button class="dialog-close" value="cancel" aria-label="Close"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
