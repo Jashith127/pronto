@@ -10,3 +10,4 @@ runtime/nemo-speech-macos/
 /installer/target
 /installer/gen
 /crates/*/target
+__pycache__/
