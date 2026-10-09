@@ -1,4 +1,5 @@
 mod audio;
+mod cleanup_provider;
 mod engine;
 mod gpu_memory;
 #[cfg(windows)]
@@ -2733,8 +2734,9 @@ fn get_search_status(state: tauri::State<'_, AppState>) -> Result<SearchStatus, 
 fn save_api_key(
     state: tauri::State<'_, AppState>,
     api_key: String,
+    provider: Option<cleanup_provider::CleanupProvider>,
 ) -> Result<AppPreferences, String> {
-    settings::set_deepseek_key(&api_key)?;
+    settings::set_provider_key(provider.unwrap_or_default(), &api_key)?;
     state.settings.preferences()
 }
 
@@ -2816,15 +2818,13 @@ fn cleanup_notetaker_transcript_blocking(app: AppHandle, text: String) -> Result
         return Err("This transcript is too long to clean up in one request.".into());
     }
     let settings = state.settings.snapshot()?;
-    let api_key = settings::deepseek_key().ok_or_else(|| {
-        "Add a DeepSeek API key in Settings to enable Clean Up Speech.".to_string()
-    })?;
+    let target = cleanup_provider::resolve(&settings)
+        .map_err(|missing| format!("{missing} to enable Clean Up Speech."))?;
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
         .build()
-        .map_err(|error| format!("DeepSeek cleanup failed: {error}"))?;
-    let cleaned =
-        engine::deepseek_longform_cleanup(&client, &api_key, &transcript, &settings.dictionary)?;
+        .map_err(|error| format!("{} cleanup failed: {error}", target.label()))?;
+    let cleaned = engine::ai_longform_cleanup(&client, &target, &transcript, &settings.dictionary)?;
     Ok(engine::apply_dictionary_public(
         &cleaned,
         &settings.dictionary,

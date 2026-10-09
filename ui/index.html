@@ -252,7 +252,7 @@
                     <select id="language" aria-label="Language"><option value="auto">Auto detect</option><option value="en">English</option><option value="de">German</option><option value="es">Spanish</option><option value="fr">French</option><option value="it">Italian</option><option value="pt">Portuguese</option><option value="nl">Dutch</option><option value="pl">Polish</option></select>
                   </div>
                   <div class="setting-row" data-keywords="type paste auto insert automatic output"><div><strong>Insert automatically</strong><p>Type the result where dictation began.</p></div><label class="toggle"><input type="checkbox" id="auto-insert" /><span></span></label></div>
-                  <div class="setting-row" data-keywords="filler um uh punctuation cleanup polish format deepseek"><div><strong>Clean up speech</strong><p>Remove fillers and false starts, then repair punctuation.</p></div><label class="toggle"><input type="checkbox" id="cleanup-enabled" /><span></span></label></div>
+                  <div class="setting-row" data-keywords="filler um uh punctuation cleanup polish format deepseek openai anthropic claude gemini groq openrouter ollama"><div><strong>Clean up speech</strong><p>Remove fillers and false starts, then repair punctuation.</p></div><label class="toggle"><input type="checkbox" id="cleanup-enabled" /><span></span></label></div>
                 </div>
               </section>
 
@@ -312,7 +312,23 @@
               <section class="settings-section" id="settings-online" aria-labelledby="settings-online-title">
                 <header class="settings-section-head"><h2 id="settings-online-title">Online services</h2><p>Optional. Used only for speech cleanup and voice search answers.</p></header>
                 <div class="settings-card api-card">
-                  <div class="setting-row api-row" data-keywords="deepseek api key token cleanup llm ai credential">
+                  <div class="setting-row" data-keywords="cleanup provider llm ai openai anthropic claude gemini groq openrouter ollama lm studio deepseek">
+                    <div><strong>Cleanup provider</strong><p>Service used for speech cleanup and meeting notes.</p></div>
+                    <select id="cleanup-provider" aria-label="Cleanup provider"></select>
+                  </div>
+                  <div class="setting-row" data-keywords="cleanup model llm ai name">
+                    <div><strong>Cleanup model</strong><p id="cleanup-model-help">Leave blank to use the provider's default.</p></div>
+                    <input type="text" id="cleanup-model" class="setting-text-input" aria-label="Cleanup model" spellcheck="false" autocomplete="off" />
+                  </div>
+                  <div class="setting-row" id="cleanup-endpoint-row" data-keywords="custom endpoint url base openai compatible ollama lm studio local" hidden>
+                    <div><strong>Custom endpoint URL</strong><p>Any OpenAI-compatible server, for example http://localhost:11434/v1 for Ollama.</p></div>
+                    <input type="url" id="cleanup-endpoint" class="setting-text-input" aria-label="Custom endpoint URL" spellcheck="false" placeholder="http://localhost:11434/v1" />
+                  </div>
+                  <div class="setting-row api-row" id="provider-key-row" data-keywords="openai anthropic claude gemini groq openrouter api key token cleanup credential" hidden>
+                    <div><strong id="provider-key-label">API key</strong><p id="provider-key-status">Not configured</p></div>
+                    <div class="api-form"><input type="password" id="provider-key" placeholder="Enter API key" autocomplete="off" aria-label="Cleanup provider API key" /><button id="save-provider-key">Save</button></div>
+                  </div>
+                  <div class="setting-row api-row" data-keywords="deepseek api key token cleanup llm ai credential voice search">
                     <div><strong>DeepSeek API key</strong><p id="api-status">Not configured</p></div>
                     <div class="api-form"><input type="password" id="api-key" placeholder="Enter API key" autocomplete="off" aria-label="DeepSeek API key" /><button id="save-key">Save</button></div>
                   </div>

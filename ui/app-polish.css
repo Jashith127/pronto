@@ -188,7 +188,8 @@
   background: var(--danger-soft);
 }
 
-#search-provider-url {
+#search-provider-url,
+.setting-text-input {
   width: min(320px, 100%);
   flex: 0 1 auto;
   height: 36px;

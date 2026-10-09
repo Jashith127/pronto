@@ -34,7 +34,7 @@ Two editions share one codebase with clearly separated platform paths:
 ### Cleanup and rewriting
 
 * **Local cleanup.** Removes fillers and false starts and repairs punctuation automatically -- no account or key required.
-* **Optional DeepSeek rewrite.** Configure an API key to rewrite transcripts with DeepSeek V4 Flash, using an editable system prompt you control.
+* **Optional AI rewrite.** Pick a cleanup provider (DeepSeek, OpenAI, Anthropic, Google Gemini, Groq, OpenRouter, or any OpenAI-compatible endpoint such as Ollama or LM Studio), add its API key, and optionally override the model. The same provider writes structured meeting notes. Voice search answers still use DeepSeek.
 * **Personal dictionary.** Add names and specialist terms that Pronto must preserve; corrections apply deterministically after recognition.
 
 ### Meeting Note Taker

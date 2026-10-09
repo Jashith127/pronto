@@ -1,12 +1,11 @@
 use crate::audio::Recording;
+use crate::cleanup_provider::{self, CleanupTarget};
 use crate::gpu_memory::{GpuMemoryMonitor, MemoryInfo};
 use crate::settings::{
-    deepseek_key, HistoryEntry, UserSettings, DEFAULT_CLEANUP_PROMPT,
-    DEFAULT_LONGFORM_CLEANUP_PROMPT,
+    HistoryEntry, UserSettings, DEFAULT_CLEANUP_PROMPT, DEFAULT_LONGFORM_CLEANUP_PROMPT,
 };
 use reqwest::blocking::{multipart, Client};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use speech_packs::AsrModel;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -754,16 +753,16 @@ fn process_job(
     let dictionary_fallback = apply_dictionary(&locally_cleaned, &job.settings.dictionary);
     let cleanup_started = Instant::now();
     let (final_text, cleanup_applied, cleanup_warning) = if job.settings.cleanup_enabled {
-        match deepseek_key() {
-            Some(key) => {
+        match cleanup_provider::resolve(&job.settings) {
+            Ok(target) => {
                 let prompt = job
                     .settings
                     .cleanup_prompt
                     .as_deref()
                     .unwrap_or(DEFAULT_CLEANUP_PROMPT);
-                match deepseek_cleanup(
+                match ai_cleanup(
                     client,
-                    &key,
+                    &target,
                     &locally_cleaned,
                     &job.settings.dictionary,
                     prompt,
@@ -776,10 +775,10 @@ fn process_job(
                     Err(error) => (dictionary_fallback, false, Some(error)),
                 }
             }
-            None => (
+            Err(missing) => (
                 dictionary_fallback,
                 false,
-                Some("Add a DeepSeek API key in Settings to enable AI cleanup".into()),
+                Some(format!("{missing} to enable AI cleanup")),
             ),
         }
     } else {
@@ -812,7 +811,7 @@ fn process_search_asr(
     server: &SpeechServer,
     job: SearchAsrJob,
 ) -> Result<CompletedSearchAsr, String> {
-    // Voice search uses ASR + light local cleanup only — never DeepSeek rewrite
+    // Voice search uses ASR + light local cleanup only — never AI rewrite
     // and never the dictation history / insertion path.
     let raw = transcribe_recording(client, server, &job.recording, &job.language)?;
     if raw.is_empty() {
@@ -993,14 +992,14 @@ fn process_meeting_job(
     if transcript.is_empty() {
         return Err("No speech was detected in the meeting".into());
     }
-    let (notes, warning) = match deepseek_key() {
-        Some(key) => match generate_meeting_notes(client, &key, &job.title, &transcript) {
+    let (notes, warning) = match cleanup_provider::resolve(&job.settings) {
+        Ok(target) => match generate_meeting_notes(client, &target, &job.title, &transcript) {
             Ok(notes) => (notes, None),
             Err(error) => (local_meeting_notes(&job.title, &transcript), Some(error)),
         },
-        None => (
+        Err(missing) => (
             local_meeting_notes(&job.title, &transcript),
-            Some("Add a DeepSeek API key for structured AI meeting notes".into()),
+            Some(format!("{missing} for structured AI meeting notes")),
         ),
     };
     Ok(CompletedMeetingTranscription {
@@ -1039,7 +1038,7 @@ fn read_meeting_chunk(
 
 fn generate_meeting_notes(
     client: &Client,
-    key: &str,
+    target: &CleanupTarget,
     title: &str,
     transcript: &str,
 ) -> Result<String, String> {
@@ -1052,16 +1051,8 @@ fn generate_meeting_notes(
         let mut handles = Vec::new();
         for (index, chunk) in text_chunks.iter().enumerate() {
             handles.push(scope.spawn(move || {
-                deepseek_cleanup_at(
-                    client,
-                    "https://api.deepseek.com/chat/completions",
-                    key,
-                    chunk,
-                    &[],
-                    PROMPT,
-                    3000,
-                )
-                .map(|text| (index, text))
+                cleanup_with_dictionary(client, target, chunk, &[], PROMPT, 3000)
+                    .map(|text| (index, text))
             }));
         }
         handles
@@ -1082,15 +1073,7 @@ fn generate_meeting_notes(
         "Meeting: {title}\n\nPARTIAL NOTES:\n{}",
         partials.join("\n\n---\n\n")
     );
-    deepseek_cleanup_at(
-        client,
-        "https://api.deepseek.com/chat/completions",
-        key,
-        &combined,
-        &[],
-        PROMPT,
-        5000,
-    )
+    cleanup_with_dictionary(client, target, &combined, &[], PROMPT, 5000)
 }
 
 fn split_utf8_chunks(text: &str, maximum: usize) -> Vec<&str> {
@@ -1629,42 +1612,19 @@ struct AsrResponse {
     text: String,
 }
 
-#[derive(Deserialize)]
-struct DeepSeekResponse {
-    choices: Vec<DeepSeekChoice>,
-}
-
-#[derive(Deserialize)]
-struct DeepSeekChoice {
-    message: DeepSeekMessage,
-}
-
-#[derive(Deserialize)]
-struct DeepSeekMessage {
-    content: String,
-}
-
-pub(crate) fn deepseek_cleanup(
+pub(crate) fn ai_cleanup(
     client: &Client,
-    api_key: &str,
+    target: &CleanupTarget,
     transcript: &str,
     dictionary: &[String],
     system_prompt: &str,
 ) -> Result<String, String> {
-    deepseek_cleanup_at(
-        client,
-        "https://api.deepseek.com/chat/completions",
-        api_key,
-        transcript,
-        dictionary,
-        system_prompt,
-        768,
-    )
+    cleanup_with_dictionary(client, target, transcript, dictionary, system_prompt, 768)
 }
 
-pub(crate) fn deepseek_longform_cleanup(
+pub(crate) fn ai_longform_cleanup(
     client: &Client,
-    api_key: &str,
+    target: &CleanupTarget,
     transcript: &str,
     dictionary: &[String],
 ) -> Result<String, String> {
@@ -1672,10 +1632,9 @@ pub(crate) fn deepseek_longform_cleanup(
     // length instead of the 768-token cap used for short dictations.
     let words = transcript.split_whitespace().count().max(1);
     let max_tokens = (words * 2 + 500).clamp(1500, 8192) as u32;
-    deepseek_cleanup_at(
+    cleanup_with_dictionary(
         client,
-        "https://api.deepseek.com/chat/completions",
-        api_key,
+        target,
         transcript,
         dictionary,
         DEFAULT_LONGFORM_CLEANUP_PROMPT,
@@ -1683,10 +1642,9 @@ pub(crate) fn deepseek_longform_cleanup(
     )
 }
 
-fn deepseek_cleanup_at(
+fn cleanup_with_dictionary(
     client: &Client,
-    endpoint: &str,
-    api_key: &str,
+    target: &CleanupTarget,
     transcript: &str,
     dictionary: &[String],
     system_prompt: &str,
@@ -1697,44 +1655,13 @@ fn deepseek_cleanup_at(
     } else {
         dictionary.join(", ")
     };
-    let body = json!({
-        "model": "deepseek-v4-flash",
-        "thinking": { "type": "disabled" },
-        "messages": [
-            {
-                "role": "system",
-                "content": system_prompt
-            },
-            {
-                "role": "user",
-                "content": format!("USER DICTIONARY (optional spelling hints):\n{dictionary}\n\nRAW TRANSCRIPT:\n{transcript}")
-            }
-        ],
-        "temperature": 0,
-        "max_tokens": max_tokens,
-        "stream": false
-    });
-    let response = client
-        .post(endpoint)
-        .bearer_auth(api_key)
-        .json(&body)
-        .send()
-        .map_err(|error| format!("DeepSeek cleanup failed: {error}"))?;
-    if !response.status().is_success() {
-        let status = response.status();
-        let detail = response.text().unwrap_or_default();
-        return Err(format!("DeepSeek cleanup returned {status}: {detail}"));
-    }
-    let content = response
-        .json::<DeepSeekResponse>()
-        .map_err(|error| format!("Invalid DeepSeek response: {error}"))?
-        .choices
-        .into_iter()
-        .next()
-        .map(|choice| choice.message.content.trim().to_string())
-        .filter(|content| !content.is_empty())
-        .ok_or_else(|| "DeepSeek returned an empty cleanup".to_string())?;
-    Ok(content)
+    cleanup_provider::complete(
+        client,
+        target,
+        system_prompt,
+        &format!("USER DICTIONARY (optional spelling hints):\n{dictionary}\n\nRAW TRANSCRIPT:\n{transcript}"),
+        max_tokens,
+    )
 }
 
 fn recording_to_wav(recording: &Recording) -> Result<Vec<u8>, String> {
@@ -2302,8 +2229,14 @@ mod tests {
         assert!(!policy.can_load(constrained));
     }
 
-    #[test]
-    fn deepseek_cleanup_uses_fast_model_dictionary_and_parses_response() {
+    /// One-shot HTTP server that records the request and answers `body`.
+    fn mock_llm_server(
+        body: &'static str,
+    ) -> (
+        std::net::SocketAddr,
+        mpsc::Receiver<Vec<u8>>,
+        std::thread::JoinHandle<()>,
+    ) {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("mock server should bind");
         let address = listener.local_addr().unwrap();
         let (request_tx, request_rx) = mpsc::channel();
@@ -2338,7 +2271,6 @@ mod tests {
                 }
             }
             request_tx.send(request).unwrap();
-            let body = r#"{"choices":[{"message":{"content":"Use Pronto with Parakeet."}}]}"#;
             write!(
                 stream,
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -2348,38 +2280,68 @@ mod tests {
             .unwrap();
         });
 
+        (address, request_rx, server)
+    }
+
+    fn split_request(request: &[u8]) -> (String, serde_json::Value) {
+        let header_end = request
+            .windows(4)
+            .position(|part| part == b"\r\n\r\n")
+            .unwrap()
+            + 4;
+        (
+            String::from_utf8_lossy(&request[..header_end]).into_owned(),
+            serde_json::from_slice(&request[header_end..]).unwrap(),
+        )
+    }
+
+    fn mock_target(
+        provider: crate::cleanup_provider::CleanupProvider,
+        address: std::net::SocketAddr,
+        path: &str,
+    ) -> CleanupTarget {
+        CleanupTarget {
+            provider,
+            endpoint: format!("http://{address}{path}"),
+            model: provider.default_model().unwrap().into(),
+            api_key: Some("test-secret".into()),
+        }
+    }
+
+    #[test]
+    fn deepseek_cleanup_uses_fast_model_dictionary_and_parses_response() {
+        let (address, request_rx, server) =
+            mock_llm_server(r#"{"choices":[{"message":{"content":"Use Pronto with Parakeet."}}]}"#);
         let client = Client::builder()
             .timeout(Duration::from_secs(2))
             .build()
             .unwrap();
-        let cleaned = deepseek_cleanup_at(
+        let target = mock_target(
+            crate::cleanup_provider::CleanupProvider::DeepSeek,
+            address,
+            "/chat/completions",
+        );
+        let cleaned = ai_cleanup(
             &client,
-            &format!("http://{address}/chat/completions"),
-            "test-secret",
+            &target,
             "use pronto with parakeet",
             &["Pronto".into(), "Parakeet".into()],
             DEFAULT_CLEANUP_PROMPT,
-            768,
         )
         .expect("mock cleanup should succeed");
         assert_eq!(cleaned, "Use Pronto with Parakeet.");
 
         let request = request_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         server.join().unwrap();
-        let header_end = request
-            .windows(4)
-            .position(|part| part == b"\r\n\r\n")
-            .unwrap()
-            + 4;
-        let headers = String::from_utf8_lossy(&request[..header_end]);
+        let (headers, payload) = split_request(&request);
         assert!(headers
             .lines()
             .any(|line| line.eq_ignore_ascii_case("authorization: Bearer test-secret")));
-        let payload: serde_json::Value = serde_json::from_slice(&request[header_end..]).unwrap();
         assert_eq!(payload["model"], "deepseek-v4-flash");
         assert_eq!(payload["thinking"]["type"], "disabled");
         assert_eq!(payload["stream"], false);
         assert_eq!(payload["temperature"], 0);
+        assert_eq!(payload["max_tokens"], 768);
         assert!(payload["messages"][0]["content"]
             .as_str()
             .unwrap()
@@ -2399,17 +2361,84 @@ mod tests {
     }
 
     #[test]
+    fn openai_cleanup_uses_completion_token_budget() {
+        let (address, request_rx, server) =
+            mock_llm_server(r#"{"choices":[{"message":{"content":"Hello there."}}]}"#);
+        let client = Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let target = mock_target(
+            crate::cleanup_provider::CleanupProvider::OpenAi,
+            address,
+            "/v1/chat/completions",
+        );
+        let cleaned = ai_cleanup(&client, &target, "hello there", &[], DEFAULT_CLEANUP_PROMPT)
+            .expect("mock cleanup should succeed");
+        assert_eq!(cleaned, "Hello there.");
+        let request = request_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        server.join().unwrap();
+        let (_, payload) = split_request(&request);
+        assert_eq!(payload["max_completion_tokens"], 768);
+        assert!(payload.get("max_tokens").is_none());
+        assert!(payload.get("thinking").is_none());
+    }
+
+    #[test]
+    fn anthropic_cleanup_uses_messages_api_and_joins_text_blocks() {
+        let (address, request_rx, server) = mock_llm_server(
+            r#"{"content":[{"type":"thinking","thinking":""},{"type":"text","text":"Use Pronto "},{"type":"text","text":"with Parakeet."}],"stop_reason":"end_turn"}"#,
+        );
+        let client = Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let target = mock_target(
+            crate::cleanup_provider::CleanupProvider::Anthropic,
+            address,
+            "/v1/messages",
+        );
+        let cleaned = ai_cleanup(
+            &client,
+            &target,
+            "use pronto with parakeet",
+            &["Pronto".into()],
+            DEFAULT_CLEANUP_PROMPT,
+        )
+        .expect("mock cleanup should succeed");
+        assert_eq!(cleaned, "Use Pronto with Parakeet.");
+        let request = request_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        server.join().unwrap();
+        let (headers, payload) = split_request(&request);
+        assert!(headers
+            .lines()
+            .any(|line| line.eq_ignore_ascii_case("x-api-key: test-secret")));
+        assert!(headers
+            .lines()
+            .any(|line| line.eq_ignore_ascii_case("anthropic-version: 2023-06-01")));
+        assert_eq!(payload["model"], "claude-opus-5-5");
+        assert_eq!(payload["output_config"]["effort"], "low");
+        assert!(payload["system"]
+            .as_str()
+            .unwrap()
+            .contains("Never use em dashes"));
+        assert_eq!(payload["messages"][0]["role"], "user");
+        assert!(payload.get("temperature").is_none());
+    }
+
+    #[test]
     #[ignore = "requires a DeepSeek key saved by Pronto or DEEPSEEK_API_KEY"]
     fn live_deepseek_cleanup_roundtrip() {
-        let key = deepseek_key().expect("save a DeepSeek key in Pronto Settings first");
+        let target = crate::cleanup_provider::resolve(&UserSettings::default())
+            .expect("save a DeepSeek key in Pronto Settings first");
         let client = Client::builder()
             .timeout(Duration::from_secs(12))
             .build()
             .unwrap();
         let started = Instant::now();
-        let cleaned = deepseek_cleanup(
+        let cleaned = ai_cleanup(
             &client,
-            &key,
+            &target,
             "um please use deep seek deep seek for cleanup",
             &["DeepSeek".into()],
             DEFAULT_CLEANUP_PROMPT,
