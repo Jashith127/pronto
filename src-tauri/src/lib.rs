@@ -2205,6 +2205,11 @@ fn get_preferences(state: tauri::State<'_, AppState>) -> Result<AppPreferences, 
 }
 
 #[tauri::command]
+fn complete_onboarding(state: tauri::State<'_, AppState>) -> Result<UserSettings, String> {
+    state.settings.set_onboarding_completed(true)
+}
+
+#[tauri::command]
 fn save_settings(
     app: AppHandle,
     state: tauri::State<'_, AppState>,
@@ -2224,6 +2229,8 @@ fn save_settings(
     // The speech model changes only through switch_speech_model, after its
     // packs are installed.
     settings.asr_model = previous.asr_model;
+    // The welcome tour flag changes only through complete_onboarding.
+    settings.onboarding_completed = previous.onboarding_completed;
     settings.gpu_memory_management_configured = true;
     if settings.launch_at_startup != previous.launch_at_startup {
         startup::set_enabled(&app, settings.launch_at_startup)?;
@@ -3314,6 +3321,7 @@ pub fn run() {
             reset,
             get_preferences,
             save_settings,
+            complete_onboarding,
             get_microphones,
             set_microphone,
             compact_overlay,

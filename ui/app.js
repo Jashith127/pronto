@@ -361,6 +361,7 @@ function renderHotkey(next) {
   document.querySelector('#settings-paste-hotkey').innerHTML = shortcutMarkup(next.pasteShortcut);
   const searchHotkey = document.querySelector('#settings-search-hotkey');
   if (searchHotkey) searchHotkey.innerHTML = shortcutMarkup(next.searchShortcut);
+  renderOnboardingHotkey();
   if (engineStatus?.phase === 'idle') renderStatus(engineStatus);
   if (next.error) showToast(next.error, true);
   if (next.pasteError) showToast(next.pasteError, true);
@@ -369,8 +370,6 @@ function renderHotkey(next) {
 
 function renderMicrophones() {
   if (!microphoneStatus) return;
-  const select = document.querySelector('#microphone');
-  select.disabled = false;
   document.querySelector('#microphone-retry').hidden = true;
   const defaultDevice = microphoneStatus.devices.find(device => device.isDefault);
   const systemDefault = defaultDevice ? `System default — ${defaultDevice.name}` : 'System default';
@@ -378,11 +377,17 @@ function renderMicrophones() {
   if (microphoneStatus.selectedId && !options.some(option => option.id === microphoneStatus.selectedId)) {
     options.push({ id: microphoneStatus.selectedId, name: `${preferences?.settings?.microphoneName || 'Saved microphone'} — unavailable` });
   }
-  select.innerHTML = options.map(option => `<option value="${escapeAttr(option.id)}">${escapeHtml(option.name)}</option>`).join('');
-  select.value = microphoneStatus.selectedId || '';
-  document.querySelector('#microphone-status').textContent = microphoneStatus.fallback
+  const optionsMarkup = options.map(option => `<option value="${escapeAttr(option.id)}">${escapeHtml(option.name)}</option>`).join('');
+  const statusText = microphoneStatus.fallback
     ? `Saved microphone unavailable — using ${microphoneStatus.activeName}`
     : `Using ${microphoneStatus.activeName}`;
+  for (const [selectId, statusId] of [['#microphone', '#microphone-status'], ['#onboarding-microphone', '#onboarding-microphone-status']]) {
+    const target = document.querySelector(selectId);
+    target.disabled = false;
+    target.innerHTML = optionsMarkup;
+    target.value = microphoneStatus.selectedId || '';
+    document.querySelector(statusId).textContent = statusText;
+  }
 }
 
 async function retryMicrophones() {
@@ -787,7 +792,7 @@ document.querySelectorAll('[data-theme-pref]').forEach(button => button.addEvent
   await persistSettings();
 }));
 listen('theme-changed', event => applyThemePreference(event.payload));
-document.querySelector('#microphone').addEventListener('change', async event => {
+async function changeMicrophone(event) {
   const previousId = microphoneStatus?.selectedId || '';
   event.target.disabled = true;
   try {
@@ -801,7 +806,9 @@ document.querySelector('#microphone').addEventListener('change', async event => 
   } finally {
     event.target.disabled = false;
   }
-});
+}
+document.querySelector('#microphone').addEventListener('change', changeMicrophone);
+document.querySelector('#onboarding-microphone').addEventListener('change', changeMicrophone);
 document.querySelector('#save-key').addEventListener('click', async () => {
   const input = document.querySelector('#api-key');
   if (!input.value.trim()) { showToast('Enter a DeepSeek API key first', true); return; }
@@ -1033,6 +1040,7 @@ listen('meeting-status', event => {
   renderMeetingStatus();
 });
 listen('history-updated', event => {
+  onboardingHeard(event.payload);
   history.unshift(event.payload);
   history = history.slice(0, 100);
   renderHistory();
@@ -1958,6 +1966,92 @@ document.querySelector('#meeting-toggle').addEventListener('click', event => tog
 document.querySelector('#meeting-stop').addEventListener('click', event => toggleMeeting(event.currentTarget));
 setInterval(() => { if (meetingRecording) renderMeetingStatus(); }, 1000);
 
+// First-run welcome tour. Shown once; finishing or skipping marks it done.
+// Every control mirrors a Settings control so the two never disagree.
+const ONBOARDING_STEPS = ['welcome', 'shortcut', 'microphone', 'try', 'done'];
+const onboarding = document.querySelector('#onboarding');
+let onboardingStep = 0;
+let onboardingReturnFocus = null;
+
+function renderOnboardingHotkey() {
+  const shortcut = shortcutMarkup(hotkeyStatus?.shortcut);
+  document.querySelector('#onboarding-hotkey').innerHTML = shortcut;
+  document.querySelector('#onboarding-done-hotkey').innerHTML = shortcut;
+  const hold = preferences?.settings?.activationMode !== 'toggle';
+  document.querySelector('#onboarding-try-lede').innerHTML = hotkeyStatus?.shortcut
+    ? `Click the box below, then ${hold ? 'hold' : 'press'} <span class="shortcut-keys inline">${shortcut}</span> and say a sentence.`
+    : 'Click the box below, then use your shortcut and say a sentence.';
+}
+
+function showOnboardingStep(index) {
+  onboardingStep = Math.max(0, Math.min(ONBOARDING_STEPS.length - 1, index));
+  const name = ONBOARDING_STEPS[onboardingStep];
+  onboarding.querySelectorAll('.onboarding-step').forEach(step => step.classList.toggle('active', step.dataset.step === name));
+  onboarding.querySelectorAll('.onboarding-dots li').forEach((dot, dotIndex) => {
+    dot.classList.toggle('active', dotIndex === onboardingStep);
+    dot.classList.toggle('complete', dotIndex < onboardingStep);
+  });
+  const last = onboardingStep === ONBOARDING_STEPS.length - 1;
+  document.querySelector('#onboarding-back').hidden = onboardingStep === 0;
+  document.querySelector('#onboarding-skip').hidden = last;
+  document.querySelector('#onboarding-next').textContent = onboardingStep === 0 ? 'Get started' : last ? 'Start using Pronto' : 'Continue';
+  renderOnboardingHotkey();
+  if (name === 'microphone' && preferences) {
+    document.querySelector('#onboarding-launch-at-startup').checked = preferences.settings.launchAtStartup;
+    document.querySelector('#onboarding-dictation-sounds').checked = preferences.settings.dictationSounds;
+  }
+  setTimeout(() => (name === 'try' ? document.querySelector('#onboarding-try') : document.querySelector('#onboarding-next')).focus(), 0);
+}
+
+function openOnboarding() {
+  if (!onboarding.hidden) return;
+  onboardingReturnFocus = document.activeElement;
+  onboarding.querySelector('.onboarding-dots').innerHTML = ONBOARDING_STEPS.map(() => '<li></li>').join('');
+  document.querySelector('#onboarding-try').value = '';
+  document.querySelector('#onboarding-result').textContent = '';
+  onboarding.hidden = false;
+  showOnboardingStep(0);
+}
+
+async function closeOnboarding() {
+  if (onboarding.hidden) return;
+  onboarding.hidden = true;
+  onboardingReturnFocus?.focus?.();
+  if (preferences?.settings?.onboardingCompleted) return;
+  try {
+    const settings = await invoke('complete_onboarding');
+    if (preferences) preferences.settings.onboardingCompleted = settings.onboardingCompleted;
+  } catch (_) { /* shown again next launch; nothing else depends on it */ }
+}
+
+function onboardingHeard(entry) {
+  if (onboarding.hidden || ONBOARDING_STEPS[onboardingStep] !== 'try' || !entry?.finalText) return;
+  document.querySelector('#onboarding-result').textContent = `Pronto heard: “${entry.finalText.trim()}”`;
+}
+
+function mirrorOnboardingToggle(sourceId, settingsId) {
+  document.querySelector(sourceId).addEventListener('change', event => {
+    document.querySelector(settingsId).checked = event.target.checked;
+    persistSettings().catch(() => { event.target.checked = !event.target.checked; });
+  });
+}
+mirrorOnboardingToggle('#onboarding-launch-at-startup', '#launch-at-startup');
+mirrorOnboardingToggle('#onboarding-dictation-sounds', '#dictation-sounds');
+document.querySelector('#onboarding-change-hotkey').addEventListener('click', () => openHotkeyDialog('dictation'));
+document.querySelector('#onboarding-skip').addEventListener('click', closeOnboarding);
+document.querySelector('#onboarding-back').addEventListener('click', () => showOnboardingStep(onboardingStep - 1));
+document.querySelector('#onboarding-next').addEventListener('click', () => {
+  if (onboardingStep === ONBOARDING_STEPS.length - 1) closeOnboarding();
+  else showOnboardingStep(onboardingStep + 1);
+});
+document.querySelector('#replay-onboarding').addEventListener('click', openOnboarding);
+onboarding.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && !document.querySelector('#hotkey-dialog').open) {
+    event.preventDefault();
+    closeOnboarding();
+  }
+});
+
 Promise.allSettled([
   call('get_status'),
   call('get_model_status'),
@@ -1970,7 +2064,11 @@ Promise.allSettled([
 ]).then(results => {
   const [engine, model, prefs, items, shortcut, microphones, savedMeetings, currentMeeting] =
     results.map(result => result.status === 'fulfilled' ? result.value : null);
-  if (prefs) { preferences = prefs; renderPreferences(); }
+  if (prefs) {
+    preferences = prefs;
+    renderPreferences();
+    if (!prefs.settings.onboardingCompleted) openOnboarding();
+  }
   if (microphones) { microphoneStatus = microphones; renderMicrophones(); }
   else {
     document.querySelector('#microphone-status').textContent = 'Could not list microphones. Check Microphone access, then retry.';

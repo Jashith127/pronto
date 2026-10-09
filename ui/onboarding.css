@@ -1,0 +1,46 @@
+/* First-run welcome tour. Reuses settings rows, toggles and shortcut keys. */
+.onboarding-layer { position: fixed; inset: 0; z-index: 150; display: grid; place-items: center; padding: 24px; background: var(--search-backdrop, rgba(40, 40, 35, .32)); backdrop-filter: blur(3px); }
+.onboarding-layer[hidden] { display: none; }
+.onboarding { display: flex; flex-direction: column; width: min(560px, 100%); max-height: calc(100vh - 48px); border: 1px solid var(--line); border-radius: var(--radius-xl); color: var(--ink); background: var(--paper); box-shadow: var(--shadow-lg); animation: onboarding-in .22s ease-out; overflow: hidden; }
+@keyframes onboarding-in { from { opacity: 0; transform: translateY(10px) scale(.98); } to { opacity: 1; transform: none; } }
+
+.onboarding-head { display: flex; align-items: center; gap: 14px; padding: 18px 22px 0; }
+.onboarding-dots { display: flex; gap: 6px; flex: 1; justify-content: center; margin: 0; padding: 0; list-style: none; }
+.onboarding-dots li { width: 7px; height: 7px; border-radius: 50%; background: var(--line); transition: width .2s ease, background .2s ease; }
+.onboarding-dots li.complete { background: var(--sage); }
+.onboarding-dots li.active { width: 22px; border-radius: 6px; background: var(--accent); }
+.onboarding-skip { padding: 6px 10px; border: 0; border-radius: var(--radius-sm); color: var(--muted); background: transparent; font-size: 12px; font-weight: 600; }
+.onboarding-skip:hover { color: var(--ink); background: var(--surface-hover); }
+.onboarding-skip[hidden] { visibility: hidden; display: block !important; }
+
+.onboarding-step { display: none; padding: 26px 30px 6px; overflow-y: auto; }
+.onboarding-step.active { display: block; animation: onboarding-step-in .24s ease-out; }
+@keyframes onboarding-step-in { from { opacity: 0; transform: translateX(12px); } to { opacity: 1; transform: none; } }
+.onboarding-step h2 { margin: 0; font-size: 22px; font-weight: 650; letter-spacing: -.02em; }
+.onboarding-lede { margin: 8px 0 0; color: var(--muted); font-size: 13.5px; line-height: 1.55; }
+.onboarding-card { margin-top: 18px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); overflow: hidden; }
+.onboarding-card .setting-row { min-height: 58px; padding: 12px 16px; }
+.onboarding-card .setting-row:last-child { border-bottom: 0; }
+.onboarding-card .setting-row select { max-width: 220px; }
+
+.shortcut-keys.inline { display: inline-flex; vertical-align: middle; justify-content: flex-start; margin: 0 2px; }
+.shortcut-keys.inline kbd { padding: 4px 7px; }
+
+.onboarding-try { display: block; width: 100%; margin-top: 18px; padding: 12px 14px; border: 1px solid var(--input-border); border-radius: var(--radius-md); outline: 0; color: var(--ink); background: var(--input-bg); font: inherit; font-size: 13.5px; line-height: 1.5; resize: none; }
+.onboarding-try::placeholder { color: var(--input-placeholder); }
+.onboarding-try:focus { border-color: var(--focus-color); box-shadow: var(--focus-ring); }
+.onboarding-result { min-height: 19px; margin: 10px 0 0; color: var(--sage); font-size: 12.5px; font-weight: 600; }
+
+.onboarding-tips { display: grid; gap: 8px; margin: 18px 0 0; padding: 0; list-style: none; }
+.onboarding-tips li { padding: 11px 14px; border-radius: var(--radius-sm); color: var(--muted); background: var(--surface-subtle); font-size: 12.5px; line-height: 1.45; }
+.onboarding-tips strong { color: var(--ink); font-weight: 650; }
+
+.onboarding-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 20px 30px 24px; }
+.onboarding-actions #onboarding-back { margin-right: auto; }
+.onboarding-next { min-width: 120px; min-height: 38px; padding: 0 18px; border: 0; border-radius: var(--radius-sm); color: var(--paper); background: var(--btn-primary-bg); font-size: 12.5px; font-weight: 650; transition: background .12s ease, transform .08s ease; }
+.onboarding-next:hover { background: var(--btn-primary-hover); }
+.onboarding-next:active { transform: translateY(1px); }
+
+@media (prefers-reduced-motion: reduce) {
+  .onboarding, .onboarding-step.active { animation: none; }
+}
