@@ -33,7 +33,6 @@ const MODEL_TRANSITION_COOLDOWN: Duration = Duration::from_secs(20);
 /// to count as a new heavy GPU workload (a game starting).
 const GPU_EXTERNAL_GROWTH: u64 = 1536 * MIB;
 const GPU_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
-const DEEPSEEK_MODELS_URL: &str = "https://api.deepseek.com/models";
 /// `recording_to_wav`'s error for audio that is silent after trimming.
 const NO_SPEECH: &str = "No speech was detected";
 const WARM_RETRY_COOLDOWN: Duration = Duration::from_secs(30);
@@ -286,20 +285,17 @@ impl EngineController {
         LiveSegments { stop, thread }
     }
 
-    /// Opens the DeepSeek connection (DNS, TCP, TLS) while the user is still
-    /// speaking, so cleanup reuses it. After a few idle minutes the DNS
-    /// lookup alone took 2.2-2.6 s, beyond the 2 s connect timeout, and
+    /// Opens the cleanup provider's connection (DNS, TCP, TLS) while the user
+    /// is still speaking, so cleanup reuses it. After a few idle minutes the
+    /// DNS lookup alone took 2.2-2.6 s, beyond the 2 s connect timeout, and
     /// cleanup silently fell back to local; a fresh connection otherwise costs
-    /// ~110 ms. Sends only the key, never text, to the same provider.
-    pub fn preconnect_cleanup(&self) {
+    /// ~110 ms. Sends only the key, never text, to the selected provider.
+    pub fn preconnect_cleanup(&self, settings: &UserSettings) {
         let client = self.client.clone();
+        let settings = settings.clone();
         let _ = std::thread::Builder::new()
             .name("pronto-cleanup-connect".into())
-            .spawn(move || {
-                if let Some(key) = deepseek_key() {
-                    let _ = client.get(DEEPSEEK_MODELS_URL).bearer_auth(key).send();
-                }
-            });
+            .spawn(move || cleanup_provider::preconnect(&client, &settings));
     }
 
     #[cfg(target_os = "macos")]
@@ -2289,6 +2285,7 @@ fn emit_model_status(app: &AppHandle, ready: bool, message: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::mpsc;
@@ -2907,7 +2904,7 @@ mod tests {
         let warmups: usize = bench_env("PRONTO_BENCH_WARMUPS", 2);
         if cleanup {
             assert!(
-                deepseek_key().is_some(),
+                crate::cleanup_provider::resolve(&UserSettings::default()).is_ok(),
                 "PRONTO_BENCH_CLEANUP=1 needs a DeepSeek key"
             );
         }
@@ -3054,14 +3051,15 @@ mod tests {
     #[test]
     #[ignore = "benchmark: calls DeepSeek with the user's key; PRONTO_BENCH_OUTPUT optional"]
     fn benchmark_deepseek_connection() {
-        let key = deepseek_key().expect("a DeepSeek key is required");
+        let target = crate::cleanup_provider::resolve(&UserSettings::default())
+            .expect("a DeepSeek key is required");
         let transcript = "He hoped there would be stew for dinner, turnips and carrots and bruised potatoes and fat mutton pieces to be ladled out in thick peppered flour fattened sauce.";
         let iterations: usize = bench_env("PRONTO_BENCH_REPEATS", 6);
         let gap = Duration::from_millis(bench_env("PRONTO_BENCH_GAP_MS", 180_000u64));
         let record = Duration::from_millis(bench_env("PRONTO_BENCH_RECORD_MS", 1_500u64));
         let cleanup = |client: &Client| {
             let started = Instant::now();
-            let result = deepseek_cleanup(client, &key, transcript, &[], DEFAULT_CLEANUP_PROMPT);
+            let result = ai_cleanup(client, &target, transcript, &[], DEFAULT_CLEANUP_PROMPT);
             let ms = started.elapsed().as_secs_f64() * 1000.0;
             match result {
                 Ok(text) => json!({"ms": ms, "text": text}),
@@ -3077,17 +3075,12 @@ mod tests {
             std::thread::sleep(gap);
             let client = engine_client();
             let connect = Instant::now();
-            let status = client
-                .get(DEEPSEEK_MODELS_URL)
-                .bearer_auth(&key)
-                .send()
-                .map(|response| response.status().as_u16())
-                .map_err(|error| error.to_string());
+            crate::cleanup_provider::preconnect(&client, &UserSettings::default());
             let preconnect_ms = connect.elapsed().as_secs_f64() * 1000.0;
             std::thread::sleep(record.saturating_sub(connect.elapsed()));
             let preconnected = cleanup(&client);
             let row = json!({"iteration": iteration, "cold": cold, "reused": reused,
-                "preconnect_ms": preconnect_ms, "preconnect_status": format!("{status:?}"),
+                "preconnect_ms": preconnect_ms,
                 "preconnected": preconnected});
             println!("{row}");
             rows.push(row);
