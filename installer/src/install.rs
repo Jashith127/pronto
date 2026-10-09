@@ -1,7 +1,7 @@
 //! What Pronto Setup actually does: download the chosen speech packs, unpack
 //! the app, and register it. Uninstall reverses the same list.
 use crate::system;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use speech_packs::{AsrModel, InstallPhase};
 use std::fs;
 use std::io::Cursor;
@@ -41,6 +41,19 @@ impl SetupProgress {
             eta_secs: None,
         }
     }
+}
+
+/// What Setup does with an existing install before installing over it.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum InstallKind {
+    /// Replace the app in place, keeping data and downloaded speech engines.
+    #[default]
+    Update,
+    /// Remove the app and speech engines first, keeping history and settings.
+    Reinstall,
+    /// Remove everything first, as if Pronto had never been installed.
+    Fresh,
 }
 
 pub fn has_payload() -> bool {
@@ -236,6 +249,55 @@ const USER_DATA: &[&str] = &[
     "design-system.json",
 ];
 
+/// Delete everything in `dir` except personal data (when `keep_data`) and
+/// `running`, the Setup executable itself if it lives there.
+fn remove_contents(dir: &Path, keep_data: bool, running: Option<&Path>) -> Result<(), String> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Ok(());
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if keep_data && USER_DATA.iter().any(|keep| name == *keep) {
+            continue;
+        }
+        let path = entry.path();
+        if running.is_some_and(|me| same_file(me, &path)) {
+            continue;
+        }
+        let removed = if path.is_dir() {
+            fs::remove_dir_all(&path)
+        } else {
+            fs::remove_file(&path)
+        };
+        if let Err(error) = removed {
+            return Err(format!("Could not remove {}: {error}", path.display()));
+        }
+    }
+    Ok(())
+}
+
+/// Clear an existing install so `install` starts from scratch. Reinstall keeps
+/// history and settings; Fresh removes them too. Speech engines are always
+/// removed, so they are downloaded and verified again.
+pub fn clear_install(
+    dir: &Path,
+    kind: InstallKind,
+    mut emit: impl FnMut(SetupProgress),
+) -> Result<(), String> {
+    if kind == InstallKind::Update {
+        return Ok(());
+    }
+    emit(SetupProgress::simple("files", 0.0, "Closing Pronto"));
+    system::stop_pronto();
+    emit(SetupProgress::simple(
+        "files",
+        0.0,
+        "Removing the old installation",
+    ));
+    let me = std::env::current_exe().ok();
+    remove_contents(dir, kind == InstallKind::Reinstall, me.as_deref())
+}
+
 pub fn uninstall(
     dir: &Path,
     keep_data: bool,
@@ -247,24 +309,7 @@ pub fn uninstall(
     system::remove_shortcuts();
     system::remove_uninstall_entry();
     if keep_data {
-        let Ok(entries) = fs::read_dir(dir) else {
-            return Ok(());
-        };
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            if USER_DATA.iter().any(|keep| name == *keep) {
-                continue;
-            }
-            let path = entry.path();
-            let removed = if path.is_dir() {
-                fs::remove_dir_all(&path)
-            } else {
-                fs::remove_file(&path)
-            };
-            if let Err(error) = removed {
-                return Err(format!("Could not remove {}: {error}", path.display()));
-            }
-        }
+        remove_contents(dir, true, None)?;
     } else if dir.exists() {
         fs::remove_dir_all(dir).map_err(|e| format!("Could not remove {}: {e}", dir.display()))?;
     }
@@ -326,6 +371,33 @@ mod tests {
         assert!(dir.join("settings.json").exists());
         uninstall(&dir, false, |_| {}).unwrap();
         assert!(!dir.exists());
+    }
+
+    #[test]
+    fn clear_install_respects_the_chosen_kind() {
+        let dir = temp_dir("clear");
+        let populate = || {
+            fs::write(dir.join("pronto.exe"), b"x").unwrap();
+            fs::write(dir.join("history.json"), b"[]").unwrap();
+            fs::write(dir.join("settings.json"), b"{}").unwrap();
+            fs::create_dir_all(dir.join("models/phonon-2")).unwrap();
+            fs::write(dir.join("models/phonon-2/config.json"), b"{}").unwrap();
+        };
+        populate();
+        clear_install(&dir, InstallKind::Update, |_| {}).unwrap();
+        assert!(dir.join("pronto.exe").exists() && dir.join("models").exists());
+
+        clear_install(&dir, InstallKind::Reinstall, |_| {}).unwrap();
+        assert!(!dir.join("pronto.exe").exists());
+        assert!(!dir.join("models").exists());
+        assert!(dir.join("history.json").exists());
+        assert!(dir.join("settings.json").exists());
+
+        populate();
+        clear_install(&dir, InstallKind::Fresh, |_| {}).unwrap();
+        assert!(dir.exists());
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

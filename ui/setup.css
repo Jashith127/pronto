@@ -118,6 +118,15 @@ kbd { min-width: 46px; padding: 9px 12px; border: 1px solid var(--line); border-
 .choice:has(#erase-data:checked) { border-color: #b14c3d; box-shadow: 0 0 0 4px rgba(177, 76, 61, .14); }
 .choice:has(#erase-data:checked) .choice-mark { border-color: #b14c3d; background: #b14c3d; }
 .choice:has(input:focus-visible) { box-shadow: var(--focus-ring); }
+.screen[data-screen="kind"] .lede { margin-top: 6px; }
+.screen[data-screen="kind"] .choices { margin-top: 20px; }
+.erase { position: relative; display: flex; align-items: center; gap: 10px; width: 100%; max-width: 440px; margin-top: 14px; padding: 0 4px; color: var(--ink-soft); font-size: 13px; font-weight: 550; cursor: pointer; }
+.erase input { position: absolute; opacity: 0; pointer-events: none; }
+.erase-box { flex: none; width: 18px; height: 18px; border: 1.5px solid var(--faint); border-radius: 5px; transition: border-color .16s ease, background .16s ease; }
+.erase:has(input:checked) { color: #b14c3d; }
+.erase:has(input:checked) .erase-box { border-color: #b14c3d; background: #b14c3d url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 12.5l4 4 8-9'/%3E%3C/svg%3E") center / 12px no-repeat; }
+.erase:has(input:focus-visible) .erase-box { box-shadow: var(--focus-ring); }
+.kind-actions { max-width: 440px; margin-top: 12px; }
 .uninstall-actions { max-width: 440px; justify-content: flex-end; margin-top: 12px; }
 
 @media (prefers-reduced-motion: reduce) {

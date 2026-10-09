@@ -53,7 +53,7 @@ Two editions share one codebase with clearly separated platform paths:
 
 ### Speech engines and setup
 
-* **Pronto Setup.** A custom installer in Pronto's own look. It checks your graphics, recommends Parakeet when an NVIDIA GPU is present and Phonon otherwise, and downloads only the engine you pick, with live size, speed, and time remaining. Downloads resume after a cancel or a dropped connection and are checksum-verified.
+* **Pronto Setup.** A custom installer in Pronto's own look. It checks your graphics, recommends Parakeet when an NVIDIA GPU is present and Phonon otherwise, and downloads only the engine you pick, with live size, speed, and time remaining. Run it on a PC that already has Pronto to update in place or reinstall a clean copy, optionally erasing history and settings. Downloads resume after a cancel or a dropped connection and are checksum-verified.
 * **Switch engines any time.** Settings → Advanced → Speech model downloads the other engine in the app and switches as soon as it is ready.
 * **Parakeet** runs only on NVIDIA GPUs and is the fastest, with 25 languages. **Phonon** runs on any PC's CPU, is considerably slower, and understands English only.
 
@@ -139,7 +139,7 @@ scripts/build-speech-packs.ps1
 scripts/build-installer.ps1
 ```
 
-Silent install: `Pronto_Setup_<version>_x64.exe /S --model=auto|parakeet|phonon`. Silent uninstall: `uninstall.exe --uninstall --silent [--remove-data]`.
+Silent install: `Pronto_Setup_<version>_x64.exe /S --model=auto|parakeet|phonon [--reinstall|--fresh]` (`--reinstall` removes the app and speech engines first but keeps history and settings; `--fresh` removes everything first). Silent uninstall: `uninstall.exe --uninstall --silent [--remove-data]`.
 
 **Legacy NSIS installer.** The ~681 MB speech model is excluded from bundle resources and fetched with hash verification during setup. Run these commands in PowerShell to test and build:
 

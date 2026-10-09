@@ -5,7 +5,7 @@
 mod install;
 mod system;
 
-use install::SetupProgress;
+use install::{InstallKind, SetupProgress};
 use serde::Serialize;
 use speech_packs::AsrModel;
 use std::path::PathBuf;
@@ -22,6 +22,8 @@ struct Args {
     /// `None` means "recommended for this PC".
     model: Option<AsrModel>,
     remove_data: bool,
+    /// What to do with an existing install (`--reinstall` / `--fresh`).
+    kind: InstallKind,
     /// Set on the temporary copy the uninstaller relaunches as.
     from_temp: bool,
 }
@@ -39,6 +41,8 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
             // `/S` keeps NSIS-style silent installs working.
             "--silent" | "/s" => parsed.silent = true,
             "--remove-data" => parsed.remove_data = true,
+            "--reinstall" => parsed.kind = InstallKind::Reinstall,
+            "--fresh" => parsed.kind = InstallKind::Fresh,
             "--from-temp" => parsed.from_temp = true,
             "--model" => {
                 let value = inline
@@ -61,6 +65,9 @@ struct SetupState {
     args: Args,
     dir: PathBuf,
     busy: AtomicBool,
+    /// The old install was already cleared for a reinstall, so a retry after a
+    /// cancelled or failed download resumes instead of starting over.
+    cleared: AtomicBool,
     cancel: Arc<AtomicBool>,
 }
 
@@ -70,6 +77,8 @@ struct ModelChoice {
     id: AsrModel,
     name: &'static str,
     download_bytes: u64,
+    /// Download size after a reinstall or fresh install removes the engines.
+    full_download_bytes: u64,
     recommended: bool,
 }
 
@@ -111,6 +120,9 @@ fn setup_info(state: tauri::State<'_, SetupState>) -> SetupInfo {
                 id: model,
                 name: model.short_name(),
                 download_bytes: install::download_bytes(&state.dir, model),
+                full_download_bytes: speech_packs::packs_for(model)
+                    .map(|pack| pack.display_bytes())
+                    .sum(),
                 recommended: model == recommended,
             })
             .collect(),
@@ -149,10 +161,14 @@ fn run_job(
 }
 
 #[tauri::command]
-fn start_install(app: AppHandle, model: AsrModel) -> Result<(), String> {
+fn start_install(app: AppHandle, model: AsrModel, kind: InstallKind) -> Result<(), String> {
     run_job(app, move |app, cancel| {
-        let dir = app.state::<SetupState>().dir.clone();
-        install::install(&dir, model, cancel, |progress| emit(app, progress))
+        let state = app.state::<SetupState>();
+        if !state.cleared.load(Ordering::Acquire) {
+            install::clear_install(&state.dir, kind, |progress| emit(app, progress))?;
+            state.cleared.store(true, Ordering::Release);
+        }
+        install::install(&state.dir, model, cancel, |progress| emit(app, progress))
     })
 }
 
@@ -233,7 +249,8 @@ fn run_silent(args: &Args, dir: PathBuf) -> i32 {
         let model = args
             .model
             .unwrap_or_else(|| speech_packs::recommended_model(&speech_packs::detect_gpus()));
-        install::install(&dir, model, &AtomicBool::new(false), |_| {})
+        install::clear_install(&dir, args.kind, |_| {})
+            .and_then(|()| install::install(&dir, model, &AtomicBool::new(false), |_| {}))
     };
     if args.from_temp {
         if let Ok(me) = std::env::current_exe() {
@@ -291,6 +308,7 @@ fn main() {
             args,
             dir,
             busy: AtomicBool::new(false),
+            cleared: AtomicBool::new(false),
             cancel: Arc::new(AtomicBool::new(false)),
         })
         .invoke_handler(tauri::generate_handler![
@@ -327,6 +345,16 @@ mod tests {
     fn parses_uninstall_flags() {
         let args = parse(&["--uninstall", "--silent", "--remove-data", "--from-temp"]).unwrap();
         assert!(args.uninstall && args.silent && args.remove_data && args.from_temp);
+    }
+
+    #[test]
+    fn parses_reinstall_kinds() {
+        assert_eq!(parse(&[]).unwrap().kind, InstallKind::Update);
+        assert_eq!(
+            parse(&["/S", "--reinstall"]).unwrap().kind,
+            InstallKind::Reinstall
+        );
+        assert_eq!(parse(&["--fresh"]).unwrap().kind, InstallKind::Fresh);
     }
 
     #[test]

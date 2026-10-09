@@ -5,6 +5,8 @@ const $ = selector => document.querySelector(selector);
 let info = null;
 let selected = null;
 let mode = 'install';
+// update | reinstall | fresh, for a PC that already has Pronto.
+let kind = 'update';
 let current = null;
 let tipTimer = null;
 
@@ -64,11 +66,14 @@ function renderChoices() {
   for (const model of info.models) {
     const card = document.querySelector(`.engine[data-model="${model.id}"]`);
     card.querySelector('.badge').hidden = !model.recommended;
-    card.querySelector('.engine-size').textContent = model.downloadBytes
-      ? `${formatBytes(model.downloadBytes)} download`
-      : 'Already on this PC';
+    // Reinstalling removes the engines, so they download again.
+    const bytes = kind === 'update' ? model.downloadBytes : model.fullDownloadBytes;
+    card.querySelector('.engine-size').textContent = bytes ? `${formatBytes(bytes)} download` : 'Already on this PC';
   }
-  select(info.currentModel || info.recommended);
+  $('#install').textContent = { update: info.upgrade ? 'Update' : 'Install', reinstall: 'Reinstall', fresh: 'Reinstall' }[kind];
+  $('#choose-note').textContent =
+    kind === 'fresh' ? 'Your history and settings will be erased.' : 'You can switch later in Settings.';
+  select(selected || info.currentModel || info.recommended);
 }
 
 function rotateTips() {
@@ -149,7 +154,7 @@ function showDone() {
     $('#done-keys').hidden = true;
     $('#done-lede').textContent = $('#keep-data').checked ? 'Your history and settings were kept.' : 'Thanks for trying Pronto.';
     $('#launch').textContent = 'Close';
-  } else if (info.upgrade) {
+  } else if (info.upgrade && kind === 'update') {
     $('#done-title').textContent = 'Pronto is up to date';
   }
   show('done');
@@ -159,7 +164,7 @@ async function startInstall() {
   mode = 'install';
   beginProgress('Getting ready');
   try {
-    await invoke('start_install', { model: selected });
+    await invoke('start_install', { model: selected, kind });
   } catch (error) {
     onProgress({ payload: { stage: 'error', message: String(error) } });
   }
@@ -170,7 +175,7 @@ async function init() {
   mode = info.mode;
   $('#version').textContent = `Version ${info.version}`;
   if (info.upgrade) {
-    $('#welcome-lede').textContent = `Update to version ${info.version}. Your history and settings stay.`;
+    $('#welcome-lede').textContent = `Version ${info.version} is ready. Update it or reinstall from scratch.`;
     $('#get-started').textContent = 'Continue';
   }
   renderChoices();
@@ -186,7 +191,18 @@ document.querySelector('.engines').addEventListener('keydown', event => {
   select(next);
   document.querySelector(`.engine[data-model="${next}"]`).focus();
 });
-$('#get-started').addEventListener('click', () => show('choose'));
+$('#get-started').addEventListener('click', () => show(info.upgrade ? 'kind' : 'choose'));
+$('#kind-back').addEventListener('click', () => show('welcome'));
+document.querySelectorAll('input[name="kind"]').forEach(input =>
+  input.addEventListener('change', () => {
+    $('#erase-row').hidden = !$('#kind-reinstall').checked;
+  })
+);
+$('#kind-next').addEventListener('click', () => {
+  kind = $('#kind-update').checked ? 'update' : $('#kind-fresh').checked ? 'fresh' : 'reinstall';
+  renderChoices();
+  show('choose');
+});
 $('#install').addEventListener('click', startInstall);
 $('#retry').addEventListener('click', startInstall);
 $('#cancel').addEventListener('click', () => invoke('cancel_install'));

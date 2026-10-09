@@ -33,6 +33,33 @@
           <span class="fineprint" id="version"></span>
         </section>
 
+        <!-- 1b. Already installed: update, reinstall, or start fresh -->
+        <section class="screen" data-screen="kind">
+          <h2>Pronto is already installed</h2>
+          <p class="lede">Choose how to set it up.</p>
+          <div class="choices" role="radiogroup" aria-label="Setup type">
+            <label class="choice">
+              <input type="radio" name="kind" id="kind-update" value="update" checked />
+              <span class="choice-mark" aria-hidden="true"></span>
+              <span class="choice-text"><strong>Update</strong><span>Replace the app and keep everything else.</span></span>
+            </label>
+            <label class="choice">
+              <input type="radio" name="kind" id="kind-reinstall" value="reinstall" />
+              <span class="choice-mark" aria-hidden="true"></span>
+              <span class="choice-text"><strong>Reinstall</strong><span>A clean copy. The speech engine downloads again.</span></span>
+            </label>
+          </div>
+          <label class="erase" id="erase-row" hidden>
+            <input type="checkbox" id="kind-fresh" />
+            <span class="erase-box" aria-hidden="true"></span>
+            <span>Also erase my history and settings</span>
+          </label>
+          <div class="actions kind-actions">
+            <button type="button" class="quiet" id="kind-back">Back</button>
+            <button type="button" class="primary" id="kind-next">Continue</button>
+          </div>
+        </section>
+
         <!-- 2. Choose a speech engine -->
         <section class="screen" data-screen="choose">
           <h2>Choose your speech engine</h2>
@@ -53,7 +80,7 @@
           </div>
           <p class="warning quiet-hint" id="choice-warning"></p>
           <div class="actions">
-            <span class="fineprint">You can switch later in Settings.</span>
+            <span class="fineprint" id="choose-note">You can switch later in Settings.</span>
             <button type="button" class="primary" id="install">Install</button>
           </div>
         </section>
