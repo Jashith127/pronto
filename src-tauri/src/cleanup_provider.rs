@@ -6,7 +6,7 @@
 //! Anthropic Messages API.
 
 use crate::settings::{provider_key, UserSettings};
-use reqwest::blocking::Client;
+use reqwest::blocking::{Client, RequestBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -487,16 +487,8 @@ pub fn list_models(
     if api_key.is_none() && provider.requires_key() {
         return Err(format!("Save your {label} API key to load models"));
     }
-    let mut request = client.get(&url).timeout(Duration::from_secs(10));
-    if let Some(key) = &api_key {
-        request = match provider {
-            CleanupProvider::Anthropic => request
-                .header("x-api-key", key)
-                .header("anthropic-version", "2023-06-01"),
-            _ => request.bearer_auth(key),
-        };
-    }
-    let response = request
+    let request = client.get(&url).timeout(Duration::from_secs(10));
+    let response = authorize(request, provider, api_key.as_deref())
         .send()
         .map_err(|error| format!("Could not load {label} models: {error}"))?;
     if !response.status().is_success() {
@@ -509,6 +501,37 @@ pub fn list_models(
         .json::<Value>()
         .map_err(|error| format!("Invalid {label} model list: {error}"))?;
     Ok(chat_model_ids(&listing))
+}
+
+fn authorize(
+    request: RequestBuilder,
+    provider: CleanupProvider,
+    api_key: Option<&str>,
+) -> RequestBuilder {
+    match (provider, api_key) {
+        (CleanupProvider::Anthropic, Some(key)) => request
+            .header("x-api-key", key)
+            .header("anthropic-version", "2023-06-01"),
+        (_, Some(key)) => request.bearer_auth(key),
+        (_, None) => request,
+    }
+}
+
+/// Opens a pooled connection (DNS, TCP, TLS) to the target's host by asking
+/// for its model list, so the cleanup request that follows skips the
+/// handshake. Sends only the key, never text, to the provider already in
+/// use. The body is read so the connection returns to the pool.
+pub fn preconnect(client: &Client, settings: &UserSettings) {
+    let Ok(target) = resolve(settings) else {
+        return;
+    };
+    let Some(url) = models_url(target.provider, settings.cleanup_endpoint.as_deref()) else {
+        return;
+    };
+    let request = client.get(&url).timeout(Duration::from_secs(10));
+    if let Ok(response) = authorize(request, target.provider, target.api_key.as_deref()).send() {
+        let _ = response.bytes();
+    }
 }
 
 fn chat_model_ids(listing: &Value) -> Vec<String> {
