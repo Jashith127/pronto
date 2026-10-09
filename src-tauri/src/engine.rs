@@ -1216,8 +1216,6 @@ fn transcribe_meeting_chunks(
     let done = AtomicUsize::new(0);
     std::thread::scope(|scope| {
         for worker in 0..workers.min(total.max(1)) {
-            // Fresh shared references per worker: the `move` closure takes
-            // copies of these while the owned values stay put for later use.
             let start = worker;
             let slot_list = &slots;
             let counter = &done;
@@ -1306,7 +1304,7 @@ fn generate_meeting_notes(
     const PROMPT: &str = "Create concise Markdown meeting notes grounded only in the transcript. Use sections: Summary, Decisions, Action items, Open questions, and Key points. Never invent an owner, deadline, decision, or fact. Write 'None captured' when a section has no evidence.";
     // Partial notes resolve concurrently and assemble in order, so long
     // transcripts don't pay one network round-trip per chunk in series.
-    // Any failure still fails the whole step, as before.
+    // Any failure fails the whole step.
     let text_chunks = split_utf8_chunks(transcript, 36_000);
     let mut ordered: Vec<(usize, String)> = std::thread::scope(|scope| {
         let mut handles = Vec::new();
@@ -3042,7 +3040,7 @@ mod tests {
     /// and the user's key. Each case follows its own idle gap
     /// (PRONTO_BENCH_GAP_MS, default 180 s, so DNS and pooled connections
     /// expire as between real dictations): `cold` is a new client (DNS, TCP and
-    /// TLS inside the call, today's behaviour) followed by `reused`, the same
+    /// TLS inside the call) followed by `reused`, the same
     /// client at once; `preconnected` is `preconnect_cleanup`'s request, then
     /// PRONTO_BENCH_RECORD_MS (default 1500) of simulated recording, then the
     /// timed cleanup. Failures are recorded: the app falls back to local cleanup.

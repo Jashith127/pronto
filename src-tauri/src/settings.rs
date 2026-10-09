@@ -57,8 +57,7 @@ pub struct UserSettings {
     pub gpu_memory_management_configured: bool,
     pub dictation_sounds: bool,
     pub cleanup_prompt: Option<String>,
-    /// Service used for AI cleanup and meeting notes. Voice search answers
-    /// always use DeepSeek.
+    /// Service used for AI cleanup, meeting notes, and voice search answers.
     #[serde(default)]
     pub cleanup_provider: CleanupProvider,
     /// Model override; `None` uses the provider's default.
@@ -187,7 +186,7 @@ impl HistoryEntry {
 #[serde(rename_all = "camelCase")]
 pub struct AppPreferences {
     pub settings: UserSettings,
-    /// Whether the DeepSeek key (used by voice search) is configured.
+    /// Whether a DeepSeek key is configured.
     pub api_key_configured: bool,
     pub cleanup_providers: Vec<ProviderInfo>,
     pub default_cleanup_prompt: &'static str,
