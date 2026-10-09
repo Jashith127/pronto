@@ -1191,6 +1191,38 @@ struct SpeechServer {
     _job: ProcessJob,
 }
 
+/// Pronto dictates into other apps, so it and its windowless server are
+/// background processes, and Windows applies EcoQoS to them: E-cores at low
+/// clocks. Phonon's CPU encoder then runs 3-4x slower (measured on an
+/// i5-12450H: median 3.2 s vs 0.74 s, server CPU 31% vs 74%; see
+/// scripts/benchmarks/README.md). Opting out pins nothing; the OS still
+/// schedules freely.
+#[cfg(windows)]
+fn opt_out_of_power_throttling(child: &Child) -> Result<(), String> {
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::Threading::{
+        ProcessPowerThrottling, SetProcessInformation, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+        PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
+        PROCESS_POWER_THROTTLING_STATE,
+    };
+    // Controlled bits with a zero state mean "never throttle", overriding the heuristic.
+    let state = PROCESS_POWER_THROTTLING_STATE {
+        Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+        ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED
+            | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
+        StateMask: 0,
+    };
+    unsafe {
+        SetProcessInformation(
+            HANDLE(child.as_raw_handle()),
+            ProcessPowerThrottling,
+            &state as *const _ as *const core::ffi::c_void,
+            std::mem::size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
+        )
+    }
+    .map_err(|error| error.to_string())
+}
+
 #[cfg(windows)]
 struct ProcessJob(windows::Win32::Foundation::HANDLE);
 
@@ -1295,6 +1327,12 @@ impl SpeechServer {
                 return Err(error);
             }
         };
+        #[cfg(windows)]
+        if runtime.backend == AsrModel::Phonon {
+            if let Err(error) = opt_out_of_power_throttling(&child) {
+                let _ = writeln!(log, "[pronto] could not disable power throttling: {error}");
+            }
+        }
 
         let base_url = format!("http://127.0.0.1:{port}");
         let health_client = Client::builder()
@@ -2496,6 +2534,116 @@ mod tests {
     fn warm_up_clip_survives_silence_trimming() {
         let wav = recording_to_wav(&warm_up_clip()).unwrap();
         assert!(wav.len() > 44 + 16_000 * 2);
+    }
+
+    #[test]
+    #[ignore = "CPU benchmark: requires Phonon pack and PRONTO_BENCH_MANIFEST; run in release mode"]
+    fn benchmark_phonon_warm_pipeline() {
+        let manifest_path = PathBuf::from(std::env::var("PRONTO_BENCH_MANIFEST").unwrap());
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        let clips: Vec<_> = manifest["clips"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|clip| {
+                let path = manifest_path
+                    .parent()
+                    .unwrap()
+                    .join(clip["path"].as_str().unwrap());
+                let recording = recording_from_pcm16_wav(&fs::read(path).unwrap()).unwrap();
+                (clip["id"].as_str().unwrap().to_string(), recording)
+            })
+            .collect();
+        set_desired_backend(AsrModel::Phonon);
+        let runtime = locate_runtime(None, AsrModel::Phonon).unwrap();
+        let start = Instant::now();
+        let mut server = SpeechServer::start(&runtime).unwrap();
+        let load_s = start.elapsed().as_secs_f64();
+        let client = Client::builder().build().unwrap();
+        let health: serde_json::Value = client
+            .get(format!("{}/health", server.base_url))
+            .send()
+            .unwrap()
+            .json()
+            .unwrap();
+        let settings = UserSettings {
+            cleanup_enabled: false,
+            auto_insert: false,
+            ..UserSettings::default()
+        };
+        let repeats: usize = std::env::var("PRONTO_BENCH_REPEATS")
+            .unwrap_or_else(|_| "10".into())
+            .parse()
+            .unwrap();
+        let mut rows = Vec::new();
+        #[cfg(windows)]
+        let server_cpu = |server: &SpeechServer| {
+            use windows::Win32::Foundation::{FILETIME, HANDLE};
+            use windows::Win32::System::Threading::GetProcessTimes;
+            let (mut created, mut exited, mut kernel, mut user) = (
+                FILETIME::default(),
+                FILETIME::default(),
+                FILETIME::default(),
+                FILETIME::default(),
+            );
+            unsafe {
+                GetProcessTimes(
+                    HANDLE(server.child.as_raw_handle()),
+                    &mut created,
+                    &mut exited,
+                    &mut kernel,
+                    &mut user,
+                )
+                .unwrap();
+            }
+            let ticks = |t: FILETIME| ((t.dwHighDateTime as u64) << 32) | t.dwLowDateTime as u64;
+            (ticks(kernel) + ticks(user)) as f64 / 10_000_000.0
+        };
+        for repeat in 0..repeats + 2 {
+            for offset in 0..clips.len() {
+                let (id, recording) = &clips[(offset + repeat) % clips.len()];
+                // Separate preparation probe. The full pipeline below still performs
+                // its own preparation and includes that work in latency_s.
+                let prep = Instant::now();
+                let wav = recording_to_wav(recording).unwrap();
+                let preparation_s = prep.elapsed().as_secs_f64();
+                let input = Recording {
+                    samples: recording.samples.clone(),
+                    sample_rate: recording.sample_rate,
+                    channels: recording.channels,
+                };
+                let job = TranscriptionJob::file_import(input, settings.clone(), false, None);
+                #[cfg(windows)]
+                let cpu_start = server_cpu(&server);
+                let started = Instant::now();
+                let result = process_job(&client, &mut server, job, started).unwrap();
+                let latency_s = started.elapsed().as_secs_f64();
+                #[cfg(windows)]
+                let cpu_s = server_cpu(&server) - cpu_start;
+                #[cfg(not(windows))]
+                let cpu_s = 0.0;
+                if repeat >= 2 {
+                    rows.push(json!({"clip": id, "repeat": repeat - 2, "latency_s": latency_s,
+                        "server_cpu_s": cpu_s,
+                        "server_cpu_percent": 100.0 * cpu_s / latency_s / std::thread::available_parallelism().unwrap().get() as f64,
+                        "preparation_probe_s": preparation_s, "submitted_audio_s": (wav.len()-44) as f64/32000.0,
+                        "asr_ms": result.entry.asr_ms, "raw_text": result.entry.raw_text,
+                        "entry": result.entry}));
+                }
+            }
+        }
+        let stop = Instant::now();
+        server.stop();
+        let stop_s = stop.elapsed().as_secs_f64();
+        let report = json!({"load_including_startup_warmup_s": load_s, "stop_s": stop_s,
+            "health": health, "manifest": manifest, "rows": rows});
+        fs::write(
+            std::env::var("PRONTO_BENCH_OUTPUT").unwrap(),
+            serde_json::to_vec_pretty(&report).unwrap(),
+        )
+        .unwrap();
+        println!("Phonon benchmark complete; load {load_s:.3}s, stop {stop_s:.3}s");
     }
 
     #[test]
