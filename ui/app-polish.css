@@ -245,10 +245,17 @@
   flex-direction: column;
   align-items: flex-end;
   gap: 8px;
-  width: min(320px, 100%);
+  flex: 0 0 auto;
+  /* Same footprint as the other settings dropdowns. */
+  width: min(280px, 44%);
 }
 
 .model-picker select {
   width: 100%;
   max-width: 100%;
+}
+
+/* Wrapped rows put every control on its own full-width line. */
+@media (max-width: 980px) {
+  .model-picker { width: 100%; align-items: stretch; }
 }

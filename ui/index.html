@@ -414,16 +414,18 @@
           </div>
         </section>
 
-        <section class="onboarding-step" data-step="try">
-          <h2>Give it a try</h2>
-          <p class="onboarding-lede" id="onboarding-try-lede">Click the box below, then use your shortcut and say a sentence.</p>
-          <textarea class="onboarding-try" id="onboarding-try" rows="4" placeholder="Your words will appear here…"></textarea>
-          <p class="onboarding-result" id="onboarding-result" aria-live="polite"></p>
-        </section>
-
-        <section class="onboarding-step" data-step="done">
+        <section class="onboarding-step onboarding-done" data-step="done">
+          <div class="onboarding-check" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg></div>
           <h2>You're all set</h2>
-          <p class="onboarding-lede">Use <span class="shortcut-keys inline" id="onboarding-done-hotkey"></span> in any app to dictate.</p>
+          <p class="onboarding-lede">Pronto is ready and listening for your shortcut.</p>
+          <div class="onboarding-try-card">
+            <strong>Try it now</strong>
+            <ol>
+              <li>Open another app, like an email, a document or a chat.</li>
+              <li>Click into a text box.</li>
+              <li id="onboarding-done-step"><span id="onboarding-done-action">Press</span> <span class="shortcut-keys inline" id="onboarding-done-hotkey"></span> and start talking.</li>
+            </ol>
+          </div>
           <ul class="onboarding-tips">
             <li><strong>Dictionary</strong> keeps names and terms spelled right.</li>
             <li><strong>Note Taker</strong> records and transcribes your meetings.</li>

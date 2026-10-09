@@ -1163,7 +1163,6 @@ listen('meeting-status', event => {
   renderMeetingStatus();
 });
 listen('history-updated', event => {
-  onboardingHeard(event.payload);
   history.unshift(event.payload);
   history = history.slice(0, 100);
   renderHistory();
@@ -2091,7 +2090,7 @@ setInterval(() => { if (meetingRecording) renderMeetingStatus(); }, 1000);
 
 // First-run welcome tour. Shown once; finishing or skipping marks it done.
 // Every control mirrors a Settings control so the two never disagree.
-const ONBOARDING_STEPS = ['welcome', 'shortcut', 'microphone', 'try', 'done'];
+const ONBOARDING_STEPS = ['welcome', 'shortcut', 'microphone', 'done'];
 const onboarding = document.querySelector('#onboarding');
 let onboardingStep = 0;
 let onboardingReturnFocus = null;
@@ -2101,9 +2100,10 @@ function renderOnboardingHotkey() {
   document.querySelector('#onboarding-hotkey').innerHTML = shortcut;
   document.querySelector('#onboarding-done-hotkey').innerHTML = shortcut;
   const hold = preferences?.settings?.activationMode !== 'toggle';
-  document.querySelector('#onboarding-try-lede').innerHTML = hotkeyStatus?.shortcut
-    ? `Click the box below, then ${hold ? 'hold' : 'press'} <span class="shortcut-keys inline">${shortcut}</span> and say a sentence.`
-    : 'Click the box below, then use your shortcut and say a sentence.';
+  document.querySelector('#onboarding-done-action').textContent = hold ? 'Hold' : 'Press';
+  document.querySelector('#onboarding-done-step').lastChild.textContent = hold
+    ? ' while you talk, then let go.'
+    : ' and start talking. Press it again when you are done.';
 }
 
 function showOnboardingStep(index) {
@@ -2123,15 +2123,13 @@ function showOnboardingStep(index) {
     document.querySelector('#onboarding-launch-at-startup').checked = preferences.settings.launchAtStartup;
     document.querySelector('#onboarding-dictation-sounds').checked = preferences.settings.dictationSounds;
   }
-  setTimeout(() => (name === 'try' ? document.querySelector('#onboarding-try') : document.querySelector('#onboarding-next')).focus(), 0);
+  setTimeout(() => document.querySelector('#onboarding-next').focus(), 0);
 }
 
 function openOnboarding() {
   if (!onboarding.hidden) return;
   onboardingReturnFocus = document.activeElement;
   onboarding.querySelector('.onboarding-dots').innerHTML = ONBOARDING_STEPS.map(() => '<li></li>').join('');
-  document.querySelector('#onboarding-try').value = '';
-  document.querySelector('#onboarding-result').textContent = '';
   onboarding.hidden = false;
   showOnboardingStep(0);
 }
@@ -2145,11 +2143,6 @@ async function closeOnboarding() {
     const settings = await invoke('complete_onboarding');
     if (preferences) preferences.settings.onboardingCompleted = settings.onboardingCompleted;
   } catch (_) { /* shown again next launch; nothing else depends on it */ }
-}
-
-function onboardingHeard(entry) {
-  if (onboarding.hidden || ONBOARDING_STEPS[onboardingStep] !== 'try' || !entry?.finalText) return;
-  document.querySelector('#onboarding-result').textContent = `Pronto heard: “${entry.finalText.trim()}”`;
 }
 
 function mirrorOnboardingToggle(sourceId, settingsId) {
