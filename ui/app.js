@@ -455,6 +455,73 @@ function selectedCleanupProvider() {
   return (preferences.cleanupProviders || []).find(provider => provider.id === id);
 }
 
+// Live model list for the selected provider, fetched once per
+// provider + endpoint + key state.
+const OTHER_MODEL = '__other';
+const modelList = { key: '', models: [], error: '', loading: false };
+
+function modelListKey(provider) {
+  return `${provider.id}|${preferences.settings.cleanupEndpoint || ''}|${provider.keyConfigured}`;
+}
+
+async function loadProviderModels(provider) {
+  const key = modelListKey(provider);
+  if (modelList.key === key) return;
+  Object.assign(modelList, { key, models: [], error: '', loading: true });
+  renderModelPicker(provider);
+  let models = [];
+  let error = '';
+  try {
+    models = await invoke('list_provider_models', { provider: provider.id, endpoint: preferences.settings.cleanupEndpoint || null });
+  } catch (failure) {
+    error = String(failure);
+  }
+  if (modelList.key !== key) return;
+  Object.assign(modelList, { models, error, loading: false });
+  const current = selectedCleanupProvider();
+  if (current?.id === provider.id) renderModelPicker(current);
+}
+
+function renderModelPicker(provider) {
+  const select = document.querySelector('#cleanup-model');
+  const customInput = document.querySelector('#cleanup-model-custom');
+  const saved = preferences.settings.cleanupModel || '';
+  const isCustom = provider.id === 'custom';
+  const models = [...modelList.models];
+  if (saved && !models.includes(saved)) models.unshift(saved);
+  const options = [];
+  if (provider.defaultModel) options.push(`<option value="">Default (${escapeHtml(provider.defaultModel)})</option>`);
+  else if (!saved && models.length) options.push('<option value="" disabled>Choose a model</option>');
+  for (const model of models) {
+    if (model === provider.defaultModel) continue;
+    options.push(`<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`);
+  }
+  options.push(`<option value="${OTHER_MODEL}">Other…</option>`);
+  // Keep the free-text box open while a name is being typed, but switch to
+  // the list entry once that name has been saved.
+  const typingOther = select.value === OTHER_MODEL && !customInput.hidden && customInput.value.trim() !== saved;
+  select.innerHTML = options.join('');
+  if (typingOther || (!provider.defaultModel && !models.length)) {
+    select.value = OTHER_MODEL;
+  } else {
+    select.value = saved;
+  }
+  customInput.hidden = select.value !== OTHER_MODEL;
+  if (!customInput.hidden && document.activeElement !== customInput && !typingOther) customInput.value = saved;
+  let help;
+  if (modelList.loading) help = `Loading ${provider.label} models…`;
+  else if (modelList.error) help = modelList.error;
+  else if (isCustom) help = 'The model your server should use.';
+  else help = `${modelList.models.length || 'No'} models available. Default uses ${provider.defaultModel}.`;
+  document.querySelector('#cleanup-model-help').textContent = help;
+}
+
+function selectedModelValue() {
+  const value = document.querySelector('#cleanup-model').value;
+  if (value === OTHER_MODEL) return document.querySelector('#cleanup-model-custom').value.trim() || null;
+  return value || null;
+}
+
 function renderCleanupProvider(keyStore) {
   const select = document.querySelector('#cleanup-provider');
   const providers = preferences.cleanupProviders || [];
@@ -465,12 +532,8 @@ function renderCleanupProvider(keyStore) {
   const provider = selectedCleanupProvider();
   if (!provider) return;
   const isCustom = provider.id === 'custom';
-  const modelInput = document.querySelector('#cleanup-model');
-  if (document.activeElement !== modelInput) modelInput.value = preferences.settings.cleanupModel || '';
-  modelInput.placeholder = provider.defaultModel || 'Model name (required)';
-  document.querySelector('#cleanup-model-help').textContent = isCustom
-    ? 'The model name your server expects.'
-    : `Leave blank to use ${provider.defaultModel}.`;
+  renderModelPicker(provider);
+  loadProviderModels(provider);
   document.querySelector('#cleanup-endpoint-row').hidden = !isCustom;
   const endpointInput = document.querySelector('#cleanup-endpoint');
   if (document.activeElement !== endpointInput) endpointInput.value = preferences.settings.cleanupEndpoint || '';
@@ -495,7 +558,7 @@ async function persistSettings() {
     meetingSuggestions: document.querySelector('#meeting-suggestions').checked,
     language: document.querySelector('#language').value,
     cleanupProvider: document.querySelector('#cleanup-provider').value || preferences.settings.cleanupProvider || 'deepseek',
-    cleanupModel: document.querySelector('#cleanup-model').value.trim() || null,
+    cleanupModel: selectedModelValue(),
     cleanupEndpoint: document.querySelector('#cleanup-endpoint').value.trim() || null,
     searchProviderUrl: document.querySelector('#search-provider-url')?.value?.trim()
       || preferences.settings.searchProviderUrl
@@ -852,9 +915,23 @@ document.querySelector('#save-key').addEventListener('click', async () => {
 document.querySelector('#cleanup-provider').addEventListener('change', async () => {
   // A model name belongs to one provider; start the new one on its default.
   document.querySelector('#cleanup-model').value = '';
+  document.querySelector('#cleanup-model-custom').hidden = true;
   await persistSettings();
 });
-document.querySelector('#cleanup-model').addEventListener('change', () => persistSettings());
+document.querySelector('#cleanup-model').addEventListener('change', event => {
+  const customInput = document.querySelector('#cleanup-model-custom');
+  if (event.target.value === OTHER_MODEL) {
+    customInput.hidden = false;
+    customInput.value = '';
+    customInput.focus();
+    return;
+  }
+  customInput.hidden = true;
+  persistSettings();
+});
+document.querySelector('#cleanup-model-custom').addEventListener('change', event => {
+  if (event.target.value.trim()) persistSettings();
+});
 document.querySelector('#cleanup-endpoint').addEventListener('change', () => persistSettings());
 document.querySelector('#cleanup-prompt').addEventListener('input', event => {
   document.querySelector('#cleanup-prompt-status').textContent = 'Unsaved changes';

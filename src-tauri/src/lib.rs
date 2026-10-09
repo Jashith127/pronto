@@ -2925,6 +2925,18 @@ async fn fetch_search_image(app: AppHandle, url: String) -> Result<SearchImagePa
 }
 
 #[tauri::command]
+async fn list_provider_models(
+    provider: cleanup_provider::CleanupProvider,
+    endpoint: Option<String>,
+) -> Result<Vec<String>, String> {
+    off_main_thread(move || {
+        let client = reqwest::blocking::Client::new();
+        cleanup_provider::list_models(&client, provider, endpoint.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
 async fn cleanup_notetaker_transcript(app: AppHandle, text: String) -> Result<String, String> {
     off_main_thread(move || cleanup_notetaker_transcript_blocking(app, text)).await
 }
@@ -3349,6 +3361,7 @@ pub fn run() {
             fetch_search_image,
             get_search_status,
             save_api_key,
+            list_provider_models,
             add_dictionary_term,
             remove_dictionary_term,
             get_history,

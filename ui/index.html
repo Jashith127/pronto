@@ -316,13 +316,16 @@
                     <div><strong>AI provider</strong><p>Used for speech cleanup, meeting notes, and voice search answers. DeepSeek is recommended: fast and inexpensive.</p></div>
                     <select id="cleanup-provider" aria-label="AI provider"></select>
                   </div>
-                  <div class="setting-row" data-keywords="cleanup model llm ai name">
-                    <div><strong>Model</strong><p id="cleanup-model-help">Leave blank to use the provider's default.</p></div>
-                    <input type="text" id="cleanup-model" class="setting-text-input" aria-label="Model" spellcheck="false" autocomplete="off" />
-                  </div>
                   <div class="setting-row" id="cleanup-endpoint-row" data-keywords="custom endpoint url base openai compatible ollama lm studio local" hidden>
                     <div><strong>Custom endpoint URL</strong><p>Any OpenAI-compatible server, for example http://localhost:11434/v1 for Ollama.</p></div>
                     <input type="url" id="cleanup-endpoint" class="setting-text-input" aria-label="Custom endpoint URL" spellcheck="false" placeholder="http://localhost:11434/v1" />
+                  </div>
+                  <div class="setting-row" data-keywords="cleanup model llm ai name">
+                    <div><strong>Model</strong><p id="cleanup-model-help">Uses the provider's default model.</p></div>
+                    <div class="model-picker">
+                      <select id="cleanup-model" aria-label="Model"></select>
+                      <input type="text" id="cleanup-model-custom" class="setting-text-input" aria-label="Model name" placeholder="Model name" spellcheck="false" autocomplete="off" hidden />
+                    </div>
                   </div>
                   <div class="setting-row api-row" data-keywords="deepseek openai anthropic claude gemini groq openrouter api key token cleanup llm ai credential voice search">
                     <div><strong>API key</strong><p id="api-status">Not configured</p></div>

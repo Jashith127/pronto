@@ -457,6 +457,94 @@ fn anthropic_supports_fallbacks(model: &str) -> bool {
     )
 }
 
+/// Models endpoint for a provider: the chat URL with `/chat/completions`
+/// swapped for `/models`, or Anthropic's own listing.
+fn models_url(provider: CleanupProvider, custom_endpoint: Option<&str>) -> Option<String> {
+    if provider == CleanupProvider::Anthropic {
+        return Some("https://api.anthropic.com/v1/models?limit=1000".into());
+    }
+    let chat = match provider.endpoint() {
+        Some(endpoint) => endpoint.to_string(),
+        None => custom_chat_url(custom_endpoint?),
+    };
+    Some(format!(
+        "{}/models",
+        chat.strip_suffix("/chat/completions")?
+    ))
+}
+
+/// Lists the chat models a provider offers, newest-style ids sorted, with
+/// embedding, speech, image, and moderation models filtered out.
+pub fn list_models(
+    client: &Client,
+    provider: CleanupProvider,
+    custom_endpoint: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let label = provider.label();
+    let url = models_url(provider, custom_endpoint)
+        .ok_or_else(|| "Add a custom endpoint URL first".to_string())?;
+    let api_key = provider_key(provider);
+    if api_key.is_none() && provider.requires_key() {
+        return Err(format!("Save your {label} API key to load models"));
+    }
+    let mut request = client.get(&url).timeout(Duration::from_secs(10));
+    if let Some(key) = &api_key {
+        request = match provider {
+            CleanupProvider::Anthropic => request
+                .header("x-api-key", key)
+                .header("anthropic-version", "2023-06-01"),
+            _ => request.bearer_auth(key),
+        };
+    }
+    let response = request
+        .send()
+        .map_err(|error| format!("Could not load {label} models: {error}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Could not load {label} models ({})",
+            response.status()
+        ));
+    }
+    let listing = response
+        .json::<Value>()
+        .map_err(|error| format!("Invalid {label} model list: {error}"))?;
+    Ok(chat_model_ids(&listing))
+}
+
+fn chat_model_ids(listing: &Value) -> Vec<String> {
+    const NOT_CHAT: [&str; 14] = [
+        "embed",
+        "tts",
+        "whisper",
+        "dall-e",
+        "moderation",
+        "audio",
+        "realtime",
+        "transcribe",
+        "image",
+        "imagen",
+        "veo",
+        "rerank",
+        "guard",
+        "aqa",
+    ];
+    let mut ids: Vec<String> = listing["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|model| model["id"].as_str())
+        // Gemini's OpenAI-compatible listing prefixes ids with `models/`.
+        .map(|id| id.strip_prefix("models/").unwrap_or(id).to_string())
+        .filter(|id| {
+            let lower = id.to_ascii_lowercase();
+            !NOT_CHAT.iter().any(|word| lower.contains(word))
+        })
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -499,6 +587,38 @@ mod tests {
             "http://localhost:11434/v1/chat/completions"
         );
         assert_eq!(target.model, "llama3.2");
+    }
+
+    #[test]
+    fn models_url_follows_the_chat_endpoint() {
+        assert_eq!(
+            models_url(CleanupProvider::OpenAi, None).as_deref(),
+            Some("https://api.openai.com/v1/models")
+        );
+        assert_eq!(
+            models_url(CleanupProvider::DeepSeek, None).as_deref(),
+            Some("https://api.deepseek.com/models")
+        );
+        assert_eq!(
+            models_url(CleanupProvider::Custom, Some("http://localhost:11434/v1")).as_deref(),
+            Some("http://localhost:11434/v1/models")
+        );
+        assert!(models_url(CleanupProvider::Custom, None).is_none());
+    }
+
+    #[test]
+    fn model_listing_keeps_chat_models_only() {
+        let listing = json!({ "data": [
+            { "id": "gpt-4.1-mini" },
+            { "id": "text-embedding-3-small" },
+            { "id": "models/gemini-2.5-flash" },
+            { "id": "gpt-4o-mini-tts" },
+            { "id": "gpt-4.1-mini" }
+        ]});
+        assert_eq!(
+            chat_model_ids(&listing),
+            vec!["gemini-2.5-flash", "gpt-4.1-mini"]
+        );
     }
 
     #[test]
