@@ -23,17 +23,11 @@ Pronto is push-to-talk dictation for Windows, with voice search and a meeting no
 
 Also: light and dark mode, a first-run tour (replay it from **Settings → General**), Ctrl + F settings search, tray mode, launch at startup, start/stop sounds, audio ducking, and a speaking-pace dashboard.
 
-### Fast
-
-Pronto transcribes long dictations *while you're still talking*, so releasing the shortcut only leaves the last few seconds to process.
-
-<img alt="Time from release to text on Parakeet: median 0.66 s to 0.34 s, p95 0.94 s to 0.50 s, 44 s clip 0.67 s to 0.23 s, 63 s clip 0.94 s to 0.37 s" src="docs/images/latency.svg" width="640">
-
 ### Voice search
 
 The answer comes first, sources sit behind a disclosure, and "Ask next" chips run follow-up searches. Click away and the answer parks as a small tab for two minutes.
 
-<img width="850" alt="Pronto voice search listening pill and results" src="https://github.com/user-attachments/assets/87585b1a-5156-428a-8a77-9f899858533b" />
+<img alt="Voice search answering 'Who plays Patrick Jane in The Mentalist?' with key facts, a photo and a cited answer" src="docs/images/voice-search.webp" width="850">
 
 > Windows also uses Win + Space to switch keyboard layouts. Remap it in **Settings → Shortcuts** if that gets in the way.
 

@@ -15,6 +15,8 @@ Pronto 1.0 is the first stable release. It adds a choice of AI providers, faster
 - **Phonon runs at full speed in the background.** Windows no longer throttles the CPU speech engine, which made it 3–4× slower on some laptops.
 - **AI cleanup no longer falls back after idle time.** Pronto opens the provider connection when dictation starts, so a slow first lookup no longer times out and drops to local cleanup.
 
+<img alt="Time from releasing the shortcut to text on Parakeet: median 0.66 s to 0.34 s, p95 0.94 s to 0.50 s, 44 s clip 0.67 s to 0.23 s, 63 s clip 0.94 s to 0.37 s" src="docs/images/latency.svg" width="640">
+
 ## Fixed
 
 - **Meetings on Parakeet no longer fail mid-transcription.** Meeting chunks are now sent one at a time, which avoids stalls and dropped connections.
