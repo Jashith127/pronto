@@ -1,9 +1,8 @@
 //! AI providers. Dictation cleanup, long-form Note Taker cleanup, meeting
 //! notes, and voice search answers all go through `complete`, which speaks
-//! either the
-//! OpenAI-compatible chat completions shape (DeepSeek, OpenAI, Gemini, Groq,
-//! OpenRouter, and any custom endpoint such as Ollama or LM Studio) or the
-//! Anthropic Messages API.
+//! either the OpenAI-compatible chat completions shape (DeepSeek, OpenAI,
+//! Gemini, Groq, OpenRouter, and any custom endpoint such as Ollama or
+//! LM Studio) or the Anthropic Messages API.
 
 use crate::settings::{provider_key, UserSettings};
 use reqwest::blocking::{Client, RequestBuilder};

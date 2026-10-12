@@ -64,16 +64,17 @@
           </section>
 
           <section class="transcripts-panel">
-            <div class="import-card" id="import-card">
-              <div class="import-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 3.5h7l4 4V20H7zM14 3.5v4h4"/></svg></div>
-              <div class="import-copy"><h2>Transcribe a file</h2><p>Audio or video is transcribed on this computer with Parakeet.</p>
-                <small class="import-formats">MP3 · WAV · M4A · MP4 · MOV · WebM</small>
-                <small id="import-status" class="import-status" hidden></small>
+            <div class="section-title">
+              <div><h2>Recent transcripts</h2><p>Stored locally on this computer</p></div>
+              <div class="section-actions">
+                <button id="choose-media" class="file-chip" type="button" title="Transcribe an audio or video file on this computer (MP3, WAV, M4A, MP4, MOV, WebM)">
+                  <span class="file-chip-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M9 18V6l10-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/></svg></span>
+                  <span id="import-status" class="file-chip-label" role="status">Transcribe file</span>
+                </button>
+                <button data-view-link="history">View all</button>
               </div>
-              <button id="choose-media" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4m0 0 4 4m-4-4-4 4M5 20h14"/></svg>Choose file</button>
               <input id="media-file" type="file" accept="audio/*,video/*,.m4a,.mkv,.mov,.webm" hidden />
             </div>
-            <div class="section-title"><div><h2>Recent transcripts</h2><p>Stored locally on this computer</p></div><button data-view-link="history">View all</button></div>
             <div id="recent-list" class="history-list compact"></div>
           </section>
         </div>
@@ -331,7 +332,11 @@
                   </div>
                   <div class="setting-row api-row" data-keywords="deepseek openai anthropic claude gemini groq openrouter api key token cleanup llm ai credential voice search">
                     <div><strong>API key</strong><p id="api-status">Not configured</p></div>
-                    <div class="api-form"><input type="password" id="api-key" placeholder="Enter API key" autocomplete="off" aria-label="API key" /><button id="save-key">Save</button></div>
+                    <div class="api-form" id="api-form"><input type="password" id="api-key" placeholder="Enter API key" autocomplete="off" aria-label="API key" /><button id="save-key">Save</button></div>
+                    <div class="api-form api-saved" id="api-saved" hidden>
+                      <div class="api-saved-pill" role="status"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg><span>Key saved</span></div>
+                      <button type="button" class="api-edit" id="edit-key" aria-label="Edit API key" title="Edit API key"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></button>
+                    </div>
                   </div>
                   <details class="setting-disclosure" id="cleanup-prompt-details" data-keywords="cleanup system prompt instructions deepseek custom">
                     <summary>

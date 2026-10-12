@@ -32,6 +32,7 @@ pub fn shortcuts_conflict(first: &Hotkey, second: &Hotkey) -> bool {
 }
 
 /// True when any pair among dictation / paste / search shares a chord.
+#[cfg(test)]
 pub fn shortcuts_conflict_any(dictation: &Hotkey, paste: &Hotkey, search: &Hotkey) -> bool {
     shortcuts_conflict(dictation, paste)
         || shortcuts_conflict(dictation, search)

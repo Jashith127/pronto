@@ -35,7 +35,6 @@
 .stat-primary p { color: #8f9e96; }
 .stat-words { background: var(--surface-inset); }
 
-.import-card,
 .history-list,
 .dictionary-table,
 .settings-card,
@@ -47,26 +46,7 @@
   box-shadow: var(--shadow-sm);
 }
 
-.import-card { background: var(--surface); }
-.import-card p,
-.import-formats,
 .section-title p { color: var(--muted); }
-.import-icon {
-  color: var(--muted);
-  background: var(--surface-subtle);
-}
-.import-card button {
-  color: #fff;
-  background: var(--ink);
-}
-[data-theme="dark"] .import-card button {
-  color: var(--canvas);
-  background: var(--btn-primary-bg);
-}
-.import-card button:hover:not(:disabled) {
-  background: var(--btn-primary-hover);
-  box-shadow: var(--shadow-sm);
-}
 
 .history-item { border-bottom-color: var(--line-soft); }
 .history-time,

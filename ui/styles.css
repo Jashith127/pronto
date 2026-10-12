@@ -94,21 +94,19 @@ nav { display: flex; flex-direction: column; gap: 4px; margin-top: 34px; }
 .stat-words { grid-column: 2 / 4; background: #ebe8de; }
 .stat-words strong { font-size: 33px; }
 .transcripts-panel { margin-top: 28px; }
-.import-card { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; align-items: center; gap: 16px; margin-bottom: 24px; padding: 16px 18px; border: 1px solid #e1ded6; border-radius: var(--radius-lg); background: #fff; box-shadow: var(--shadow-sm); }
-.import-card.busy { opacity: .8; }
-.import-copy { min-width: 0; }
-.import-card h2 { margin: 0; font-size: 14px; font-weight: 650; letter-spacing: -.01em; }
-.import-card p { margin: 4px 0 0; color: #73756e; font-size: 12.5px; line-height: 1.5; }
-.import-formats { display: block; margin-top: 4px; color: #8d8e88; font-size: 11px; }
-.import-status { display: block; margin-top: 8px; color: var(--sage-strong); font-size: 12px; font-weight: 600; }
-.import-status[hidden] { display: none; }
-.import-icon { display: grid; place-items: center; width: 44px; height: 44px; flex: 0 0 44px; border-radius: 12px; color: #575954; background: #f0eee7; }
-.import-icon svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-.import-card button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 40px; padding: 0 18px; border: 0; border-radius: var(--radius-sm); color: #fff; background: var(--ink); font-size: 12.5px; font-weight: 650; line-height: 1; white-space: nowrap; transition: background .12s ease, transform .08s ease, box-shadow .12s ease; }
-.import-card button svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-.import-card button:hover:not(:disabled) { background: #383a34; box-shadow: 0 3px 10px rgba(35, 35, 29, .2); }
-.import-card button:active:not(:disabled) { transform: translateY(1px); }
-.import-card button:disabled { cursor: default; opacity: .55; }
+.section-actions { display: flex; align-items: center; gap: 6px; }
+.section-title .file-chip { position: relative; display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 11px 0 5px; overflow: hidden; border: 1px solid var(--line); border-radius: 999px; color: var(--ink-soft); background: var(--surface); box-shadow: var(--shadow-sm); font-size: 12px; font-weight: 600; white-space: nowrap; transition: border-color .12s ease, background .12s ease; }
+.section-title .file-chip:hover:not(:disabled) { border-color: var(--muted); background: var(--surface); }
+.section-title .file-chip:disabled { cursor: progress; }
+.file-chip-icon { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; color: var(--canvas); background: var(--ink); }
+.file-chip-icon svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.file-chip-label { position: relative; font-variant-numeric: tabular-nums; }
+/* While busy the chip fills left-to-right with the upload/prepare progress. */
+.file-chip::before { content: ""; position: absolute; inset: 0; width: calc(var(--progress, 0) * 100%); background: var(--surface-subtle); transition: width .2s ease; }
+.file-chip.busy .file-chip-icon { width: 16px; height: 16px; margin: 2px; border: 2px solid var(--line); border-top-color: var(--ink); background: transparent; animation: chip-spin .8s linear infinite; }
+.file-chip.busy .file-chip-icon svg { display: none; }
+.file-chip-icon, .file-chip-label { z-index: 1; }
+@keyframes chip-spin { to { transform: rotate(360deg); } }
 .section-title { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; }
 .section-title h2 { margin: 0; font-size: 14px; font-weight: 650; letter-spacing: -.01em; }
 .section-title p { margin: 4px 0 0; color: #94958f; font-size: 12px; }
@@ -205,6 +203,11 @@ nav { display: flex; flex-direction: column; gap: 4px; margin-top: 34px; }
 .toggle input:focus-visible + span { outline: 2px solid #6f8f83; outline-offset: 2px; }
 .api-form { display: flex; gap: 8px; width: min(360px, 100%); }
 .api-form button { min-width: 72px; }
+.api-form[hidden] { display: none; }
+.api-saved-pill { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; height: 40px; padding: 0 13px; border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--ink-soft); background: var(--surface-subtle); font-size: 13px; font-weight: 600; }
+.api-saved-pill svg, .api-edit svg { width: 15px; height: 15px; flex: 0 0 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.api-saved-pill svg { color: var(--muted); }
+.api-form .api-edit { min-width: 40px; width: 40px; padding: 0; }
 
 .setting-disclosure { border-bottom: 1px solid var(--line-soft); }
 .setting-disclosure summary { display: flex; align-items: center; justify-content: space-between; gap: 24px; min-height: 64px; padding: 14px 20px; list-style: none; cursor: pointer; transition: background .12s ease; }
@@ -308,8 +311,6 @@ nav { margin-top: 28px; }
   .brand > span:last-child, .nav span { display: none; }
   .nav { justify-content: center; padding: 0; }
   .view { padding: 24px 20px 32px; }
-  .import-card { grid-template-columns: 44px minmax(0, 1fr); }
-  .import-card button { grid-column: 2; justify-self: start; }
   .setting-row { gap: 12px; }
   .settings-title { flex-direction: column; align-items: stretch; gap: 14px; }
   .settings-search { width: 100%; flex-basis: auto; }

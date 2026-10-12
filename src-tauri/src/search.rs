@@ -1,12 +1,6 @@
 use crate::cleanup_provider::{self, CleanupProvider, CleanupTarget, Task};
-use crate::mcp;
-use crate::settings::deepseek_key;
-use crate::ui_schema::{
-    fallback_document_with_images, parse_and_validate_ui, SearchUiDocument, SourceItem, UiNode,
-};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
@@ -14,7 +8,7 @@ use std::time::{Duration, Instant};
 
 pub const DEFAULT_PROVIDER_URL: &str = "https://html.duckduckgo.com/html/";
 const MAX_RESULTS: usize = 8;
-/// Stored on each hit for the UI — keep full snippets; LLM prompt uses a shorter cap.
+/// Snippet length stored on each hit; the LLM prompt uses a shorter cap.
 const SNIPPET_TRUNCATE_CHARS: usize = 512;
 const SEARCH_CACHE_TTL: Duration = Duration::from_secs(600);
 const SEARCH_CACHE_CAP: usize = 64;
@@ -106,9 +100,7 @@ pub struct SearchHit {
     pub title: String,
     pub url: String,
     pub snippet: String,
-    /// Optional thumbnail extracted from DDG HTML (`<img>` in result block).
-    /// `None` is the common case; favicons are derived separately so this
-    /// stays cheap with no extra backend fetches.
+    /// Thumbnail from the result block's `<img>`, when DuckDuckGo includes one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
 }
@@ -121,9 +113,7 @@ pub enum QueryKind {
     Grounded,
 }
 
-/// Pluggable web search backend. Brave / Tavily / Exa keyed providers, a
-/// future Playwright scraper, or an MCP `web_search` tool can replace the
-/// DuckDuckGo HTML MVP without changing the LLM synthesis code.
+/// Web search backend, separate from answer synthesis.
 pub trait SearchProvider: Send + Sync {
     fn search(&self, query: &str) -> Result<Vec<SearchHit>, String>;
 }
@@ -134,11 +124,6 @@ pub struct DuckDuckGoProvider {
 }
 
 impl DuckDuckGoProvider {
-    #[allow(dead_code)]
-    pub fn new(endpoint: impl Into<String>) -> Self {
-        Self::with_client(endpoint, shared_search_client().clone())
-    }
-
     pub fn with_client(endpoint: impl Into<String>, client: Client) -> Self {
         Self {
             endpoint: endpoint.into(),
@@ -148,7 +133,7 @@ impl DuckDuckGoProvider {
 }
 
 /// Shared blocking client with keep-alive so repeat searches skip TLS + TCP
-/// setup. Built once; 3.5s timeout keeps the pill snappy on slow networks.
+/// setup. The short timeout keeps the pill responsive on slow networks.
 pub fn shared_search_client() -> &'static Client {
     static CLIENT: OnceLock<Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
@@ -241,8 +226,7 @@ pub fn parse_duckduckgo_html(html: &str) -> Vec<SearchHit> {
 }
 
 fn extract_thumb_from_block(block: &str) -> Option<String> {
-    // Cheap: reuse already-downloaded HTML. Looks for <img src="https://...">.
-    // Only keeps direct image files to avoid stuffing HTML pages into <img>.
+    // Only direct image files, so an HTML page never ends up in an <img>.
     let mut search_from = 0;
     while let Some(img_idx) = block[search_from..].find("<img") {
         let abs_idx = search_from + img_idx;
@@ -287,7 +271,6 @@ fn truncate_snippet(raw: &str, max_chars: usize) -> String {
         return trimmed;
     }
     let mut out: String = trimmed.chars().take(max_chars).collect();
-    // Prefer word boundary.
     if let Some(space) = out.rfind(' ') {
         if space > max_chars.saturating_sub(30) {
             out.truncate(space);
@@ -495,10 +478,9 @@ pub fn classify_query(query: &str) -> QueryKind {
     if needs_grounding {
         return QueryKind::Grounded;
     }
-    // Fast-path is ONLY for pure navigation intents where the link list IS
-    // the answer (open / watch). Who/what/define/meaning questions must go
-    // through the LLM — otherwise the card says "check below for sources"
-    // with no actual answer (reported bug: "Who is the president of India?").
+    // The fast path is only for navigation intents (open / watch), where the
+    // link list is the answer. Who/what/define questions go through the LLM
+    // so the card contains an actual answer.
     let navigation_markers = ["open ", "youtube", "watch ", "video of ", "play "];
     if words <= 8 && navigation_markers.iter().any(|m| lower.contains(m)) {
         return QueryKind::Fast;
@@ -506,7 +488,7 @@ pub fn classify_query(query: &str) -> QueryKind {
     QueryKind::Grounded
 }
 
-/// Only chart/table-flavored queries get the paid repair retry.
+/// Chart/table-flavored queries, which get a larger answer budget.
 pub fn needs_visual_repair(query: &str) -> bool {
     let lower = query.to_ascii_lowercase();
     [
@@ -533,18 +515,17 @@ pub fn adaptive_max_tokens(query: &str, kind: QueryKind) -> u32 {
     if needs_visual_repair(query) {
         return 1400;
     }
-    // Enough for a highlighted lead + detail paragraph without ballooning cost.
+    // Enough for a highlighted lead and a detail paragraph.
     920
 }
 
-/// True for tiny site icons — crisp at 14px in the source list, but a
-/// blurry mess when blown up into a 600px banner (reported bug).
+/// True for tiny site icons: crisp at 14px in the source list, but blurry
+/// when stretched into a 600px banner.
 pub fn is_favicon_candidate(src: &str) -> bool {
     src.contains("icons.duckduckgo.com/ip3/") || src.contains("/favicons") || src.ends_with(".ico")
 }
 
 /// `(src, alt)` candidates: real thumbs first, then host favicons.
-/// Kept for allowlist validation + small source-list icons.
 pub fn image_candidates_for_hits(hits: &[SearchHit]) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let mut seen = HashSet::new();
@@ -569,19 +550,13 @@ pub fn image_candidates_for_hits(hits: &[SearchHit]) -> Vec<(String, String)> {
     out
 }
 
-/// Large-banner candidates ONLY: real photos, never favicons.
-/// A 16px favicon stretched to full width is what produced the bloody /
-/// blurry flag banner — those now render as tiny icons in the source list
-/// instead (see `ui/search.js`).
+/// Banner candidates: real photos only. Favicons render as small icons in
+/// the source list instead (see `ui/search.js`).
 pub fn photo_candidates_for_hits(hits: &[SearchHit]) -> Vec<(String, String)> {
     image_candidates_for_hits(hits)
         .into_iter()
         .filter(|(src, _)| !is_favicon_candidate(src))
         .collect()
-}
-
-pub fn expanded_allowed_urls(hits: &[SearchHit]) -> HashSet<String> {
-    expanded_allowed_urls_with_images(hits, &[])
 }
 
 /// Result URLs plus every vetted image URL (thumbnails, DDG proxies, favicons).
@@ -615,10 +590,9 @@ pub fn resolve_banner_images(
     if out.len() >= max {
         return out.into_iter().take(max).collect();
     }
-    // Wikipedia + OpenGraph branches run concurrently and merge in the
-    // same priority order as the old sequential version, so output is
-    // identical — just not summed. DDG image search stays a last resort
-    // so no extra requests fire when earlier branches suffice.
+    // Wikipedia and OpenGraph lookups run concurrently and merge in priority
+    // order. DDG image search stays a last resort so no extra requests fire
+    // when earlier branches suffice.
     let (wiki_query, wiki_hits, og) = std::thread::scope(|scope| {
         let wiki_query = scope.spawn(|| wikipedia_image_for_query(client, query));
         let wiki_hits = scope.spawn(|| wikipedia_image_from_hits(client, hits));
@@ -646,16 +620,6 @@ pub fn resolve_banner_images(
     } else {
         out.into_iter().take(max).collect()
     }
-}
-
-/// Banner photos: result thumbnails first, then DuckDuckGo image search.
-pub fn banner_images_for_search(
-    client: &Client,
-    query: &str,
-    hits: &[SearchHit],
-    max: usize,
-) -> Vec<(String, String)> {
-    resolve_banner_images(client, query, hits, max)
 }
 
 fn push_unique_image(out: &mut Vec<(String, String)>, img: (String, String), max: usize) {
@@ -764,11 +728,6 @@ fn guess_image_mime(url: &str) -> String {
 const IMAGE_FETCH_TIMEOUT: Duration = Duration::from_secs(4);
 const IMAGE_RESULT_CAP: usize = 4;
 
-/// Tiny schema for the LLM prompt — avoids shipping the full design-system JSON
-/// on every search call (lower latency + input-token cost).
-const SEARCH_UI_SCHEMA: &str =
-    "Nodes: text{text}, image_frame{src,alt,caption?}, youtube{url}, button{label,action,value}, source_list{items[{index,title,url,snippet?}]}, table{columns,rows}, chart{chart_type,labels,datasets}, divider. URLs must match SEARCH RESULTS or IMAGE CANDIDATES exactly. No HTML.";
-
 type ImageCacheValue = (Instant, Vec<(String, String)>);
 
 fn image_cache() -> &'static Mutex<HashMap<String, ImageCacheValue>> {
@@ -827,7 +786,7 @@ fn fetch_ddg_images_network(
     max: usize,
 ) -> Vec<(String, String)> {
     let encoded = urlencoding_lite(normalized_query);
-    // Step 1: vqd token embedded in the image-search HTML.
+    // The vqd token is embedded in the image-search HTML.
     let search_url = format!("https://duckduckgo.com/?q={encoded}&iar=images&iax=images&ia=images");
     let html = match client
         .get(&search_url)
@@ -844,8 +803,8 @@ fn fetch_ddg_images_network(
     let Some(vqd) = parse_ddg_vqd(&html) else {
         return Vec::new();
     };
-    // Step 2: JSON results. `thumbnail` is a fast DDG proxy URL; `image` is
-    // the original (often hotlink-protected / slow) — prefer thumbnail.
+    // `thumbnail` is a fast DDG proxy URL; `image` is the original, often
+    // hotlink-protected or slow.
     let json_url =
         format!("https://duckduckgo.com/i.js?l=us-en&o=json&q={encoded}&vqd={vqd}&f=,,,,,&p=1");
     let body = match client
@@ -961,7 +920,7 @@ pub fn cached_hits_for(normalized_query: &str) -> Option<Vec<SearchHit>> {
 pub fn store_hits_cache(normalized_query: String, hits: Vec<SearchHit>) {
     if let Ok(mut cache) = hits_cache().lock() {
         if cache.len() >= SEARCH_CACHE_CAP {
-            // Evict oldest entry (cheap linear scan; cap is tiny).
+            // Linear scan is fine: the cache is tiny.
             if let Some(oldest) = cache
                 .iter()
                 .min_by_key(|(_, (at, _))| *at)
@@ -1076,8 +1035,7 @@ pub struct SearchController {
     listen_generation: Mutex<u64>,
     last_allowed_urls: Mutex<HashSet<String>>,
     resource_dir: Mutex<Option<PathBuf>>,
-    /// Short session memory for follow-ups: last 3 queries, 5min window.
-    /// Purely local, no extra LLM calls — used by `expand_followup`.
+    /// Last 3 queries within 5 minutes, for `expand_followup`.
     history: Mutex<VecDeque<(String, Instant)>>,
 }
 
@@ -1365,7 +1323,7 @@ impl SearchController {
         if let Ok(mut started) = self.started_at.lock() {
             *started = None;
         }
-        // Invalidate any outstanding listen timeout.
+        // Invalidates any outstanding listen timeout.
         if let Ok(mut generation) = self.listen_generation.lock() {
             *generation = generation.wrapping_add(1);
         }
@@ -1412,9 +1370,8 @@ impl SearchController {
     }
 }
 
-/// Markdown answer synthesis — faster and more reliable than JSON UI validation.
-///
-/// `target` is the configured AI provider, or what is missing to use one.
+/// Markdown answer synthesis. `target` is the configured AI provider, or
+/// what is missing to use one.
 pub fn synthesize_search_markdown(
     client: &Client,
     target: &Result<CleanupTarget, String>,
@@ -1874,8 +1831,8 @@ fn parse_followups_line(value: &str) -> Vec<String> {
         .collect()
 }
 
-/// Compact layout guide — full multi-example catalog lives in `infer_answer_layout`.
-/// The model still picks `@layout:` freely; we only hint the likely tag to cut tokens.
+/// Compact layout guide with a hinted tag from `infer_answer_layout`; the
+/// model may still pick another `@layout:`.
 pub fn search_layout_guide_for_query(query: &str) -> String {
     let suggested = infer_answer_layout(query);
     format!(
@@ -2044,292 +2001,6 @@ fn ai_markdown(
     )
 }
 
-pub fn synthesize_search_ui(
-    client: &Client,
-    query: &str,
-    hits: &[SearchHit],
-    resource_dir: Option<&std::path::Path>,
-    images: &[(String, String)],
-) -> Result<(SearchUiDocument, Option<String>), String> {
-    let allowed: HashSet<String> = expanded_allowed_urls_with_images(hits, images);
-    let photos = images;
-    let sources: Vec<(u32, String, String, String)> = hits
-        .iter()
-        .enumerate()
-        .map(|(index, hit)| {
-            (
-                (index + 1) as u32,
-                hit.title.clone(),
-                hit.url.clone(),
-                hit.snippet.clone(),
-            )
-        })
-        .collect();
-
-    if hits.is_empty() {
-        return Ok((
-            fallback_document_with_images(query, &sources, photos),
-            Some("No evidence found in the retrieved sources.".into()),
-        ));
-    }
-
-    let Some(api_key) = deepseek_key() else {
-        return Ok((
-            fallback_document_with_images(query, &sources, photos),
-            Some("Add a DeepSeek API key in Settings to synthesize answers.".into()),
-        ));
-    };
-
-    // Fast-path: navigation queries render instantly with photo + sources, $0.
-    if classify_query(query) == QueryKind::Fast {
-        return Ok((fallback_document_with_images(query, &sources, photos), None));
-    }
-
-    let _ = resource_dir;
-    match deepseek_search_ui(client, &api_key, query, hits, photos) {
-        Ok(raw) => match parse_and_validate_ui(&raw, &allowed) {
-            Ok(mut document) => {
-                ensure_image(&mut document, photos);
-                Ok((document, None))
-            }
-            Err(first_error) => {
-                // Locked policy: only chart/table queries get the paid repair.
-                if !needs_visual_repair(query) {
-                    return Ok((
-                        fallback_document_with_images(query, &sources, photos),
-                        Some(format!("UI synthesis failed validation: {first_error}")),
-                    ));
-                }
-                match deepseek_search_ui_repair(
-                    client,
-                    &api_key,
-                    query,
-                    hits,
-                    photos,
-                    &raw,
-                    &first_error,
-                ) {
-                    Ok(repaired) => match parse_and_validate_ui(&repaired, &allowed) {
-                        Ok(mut document) => {
-                            ensure_image(&mut document, photos);
-                            Ok((document, Some(format!("Repaired UI JSON: {first_error}"))))
-                        }
-                        Err(_) => Ok((
-                            fallback_document_with_images(query, &sources, photos),
-                            Some(format!("UI synthesis failed validation: {first_error}")),
-                        )),
-                    },
-                    Err(error) => Ok((
-                        fallback_document_with_images(query, &sources, photos),
-                        Some(format!("UI synthesis failed: {error}")),
-                    )),
-                }
-            }
-        },
-        Err(error) => Ok((
-            fallback_document_with_images(query, &sources, photos),
-            Some(format!("DeepSeek search UI failed: {error}")),
-        )),
-    }
-}
-
-/// Guarantee frequent visuals: if the model returned text-only, inject the
-/// top vetted image after the first answer paragraph. Zero extra LLM cost.
-pub fn ensure_image(document: &mut SearchUiDocument, images: &[(String, String)]) {
-    if images.is_empty() {
-        return;
-    }
-    let has_visual = document.nodes.iter().any(|node| {
-        matches!(
-            node,
-            UiNode::ImageFrame { .. }
-                | UiNode::Youtube { .. }
-                | UiNode::Chart { .. }
-                | UiNode::Table { .. }
-        )
-    });
-    if has_visual {
-        return;
-    }
-    let (src, alt) = &images[0];
-    let text_positions = document
-        .nodes
-        .iter()
-        .enumerate()
-        .filter(|(_, node)| matches!(node, UiNode::Text { .. }))
-        .map(|(idx, _)| idx)
-        .collect::<Vec<_>>();
-    let insert_at = text_positions
-        .get(1)
-        .or_else(|| text_positions.first())
-        .map(|idx| idx + 1)
-        .unwrap_or(0)
-        .min(document.nodes.len());
-    document.nodes.insert(
-        insert_at,
-        UiNode::ImageFrame {
-            src: src.clone(),
-            alt: alt.clone(),
-            caption: None,
-        },
-    );
-}
-
-pub fn deepseek_search_ui(
-    client: &Client,
-    api_key: &str,
-    query: &str,
-    hits: &[SearchHit],
-    images: &[(String, String)],
-) -> Result<String, String> {
-    deepseek_search_ui_at(
-        client,
-        "https://api.deepseek.com/chat/completions",
-        api_key,
-        query,
-        hits,
-        images,
-        None,
-    )
-}
-
-fn deepseek_search_ui_repair(
-    client: &Client,
-    api_key: &str,
-    query: &str,
-    hits: &[SearchHit],
-    images: &[(String, String)],
-    previous: &str,
-    error: &str,
-) -> Result<String, String> {
-    deepseek_search_ui_at(
-        client,
-        "https://api.deepseek.com/chat/completions",
-        api_key,
-        query,
-        hits,
-        images,
-        Some((previous, error)),
-    )
-}
-
-fn deepseek_search_ui_at(
-    client: &Client,
-    endpoint: &str,
-    api_key: &str,
-    query: &str,
-    hits: &[SearchHit],
-    images: &[(String, String)],
-    repair: Option<(&str, &str)>,
-) -> Result<String, String> {
-    let sources = compact_sources_for_prompt(hits);
-    let image_list = if images.is_empty() {
-        "(none)".to_string()
-    } else {
-        images
-            .iter()
-            .take(3)
-            .enumerate()
-            .map(|(i, (src, alt))| format!("{}. src={src} alt={alt}", i + 1))
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    let system = format!(
-        r#"You are Pronto's grounded voice-search synthesizer. Return ONLY a JSON object with a "nodes" array.
-
-SCHEMA ({uri}):
-{schema}
-
-RULES:
-1. Use only the provided search results. Cite with [1][2] markers matching source_list indexes.
-2. Do NOT include a heading — the query is already shown. Use exactly 2 text nodes when evidence allows:
-   - First text: one crisp direct-answer sentence (the UI highlights this). Add [n] only if needed.
-   - Second text: 3-5 sentences with names, dates, numbers, and useful context. Cite sources.
-3. Then include one image_frame when IMAGE CANDIDATES exist (alt + short caption). Skip only if "(none)".
-4. End with source_list. image_frame.src and URLs must be copied EXACTLY from candidates/results.
-5. If evidence is thin, say so clearly in text nodes but still include source_list.
-6. No raw HTML, Markdown, or unknown fields. Max 24 nodes."#,
-        uri = mcp::DESIGN_SYSTEM_URI,
-        schema = SEARCH_UI_SCHEMA
-    );
-    let user = if let Some((previous, error)) = repair {
-        format!(
-            "QUERY:\n{query}\n\nSEARCH RESULTS:\n{sources}\n\nIMAGE CANDIDATES:\n{image_list}\n\nPREVIOUS INVALID JSON:\n{previous}\n\nVALIDATION ERROR:\n{error}\n\nReturn corrected JSON only."
-        )
-    } else {
-        format!("QUERY:\n{query}\n\nSEARCH RESULTS:\n{sources}\n\nIMAGE CANDIDATES:\n{image_list}\n\nReturn JSON only.")
-    };
-    let max_tokens = adaptive_max_tokens(query, classify_query(query));
-    let body = json!({
-        "model": "deepseek-v4-flash",
-        "thinking": { "type": "disabled" },
-        "messages": [
-            { "role": "system", "content": system },
-            { "role": "user", "content": user }
-        ],
-        "temperature": 0,
-        "max_tokens": max_tokens,
-        "stream": false,
-        "response_format": { "type": "json_object" }
-    });
-    let response = client
-        .post(endpoint)
-        .timeout(std::time::Duration::from_secs(10))
-        .bearer_auth(api_key)
-        .json(&body)
-        .send()
-        .map_err(|error| format!("DeepSeek search UI failed: {error}"))?;
-    if !response.status().is_success() {
-        let status = response.status();
-        let detail = response.text().unwrap_or_default();
-        return Err(format!("DeepSeek search UI returned {status}: {detail}"));
-    }
-    #[derive(Deserialize)]
-    struct DeepSeekResponse {
-        choices: Vec<Choice>,
-    }
-    #[derive(Deserialize)]
-    struct Choice {
-        message: Message,
-    }
-    #[derive(Deserialize)]
-    struct Message {
-        content: String,
-    }
-    response
-        .json::<DeepSeekResponse>()
-        .map_err(|error| format!("Invalid DeepSeek search UI response: {error}"))?
-        .choices
-        .into_iter()
-        .next()
-        .map(|choice| choice.message.content.trim().to_string())
-        .filter(|content| !content.is_empty())
-        .ok_or_else(|| "DeepSeek returned an empty search UI".to_string())
-}
-
-/// Ensure a source_list exists when the model omitted citations.
-pub fn ensure_sources(document: &mut SearchUiDocument, hits: &[SearchHit]) {
-    let has_sources = document
-        .nodes
-        .iter()
-        .any(|node| matches!(node, UiNode::SourceList { .. }));
-    if has_sources || hits.is_empty() {
-        return;
-    }
-    document.nodes.push(UiNode::SourceList {
-        items: hits
-            .iter()
-            .enumerate()
-            .map(|(index, hit)| SourceItem {
-                index: (index + 1) as u32,
-                title: hit.title.clone(),
-                url: hit.url.clone(),
-                snippet: (!hit.snippet.is_empty()).then(|| hit.snippet.clone()),
-            })
-            .collect(),
-    });
-}
-
 #[cfg(windows)]
 pub fn open_url_in_default_browser(url: &str) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
@@ -2380,10 +2051,6 @@ pub fn open_url_in_default_browser(url: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
-    use std::sync::mpsc;
-    use std::time::Duration;
 
     const FIXTURE: &str = r#"
 <html><body>
@@ -2439,85 +2106,9 @@ mod tests {
     }
 
     #[test]
-    fn mock_deepseek_search_ui_returns_json_object() {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let address = listener.local_addr().unwrap();
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut request = Vec::new();
-            let mut chunk = [0u8; 4096];
-            loop {
-                let count = stream.read(&mut chunk).unwrap();
-                if count == 0 {
-                    break;
-                }
-                request.extend_from_slice(&chunk[..count]);
-                if let Some(header_end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
-                    let headers = String::from_utf8_lossy(&request[..header_end + 4]);
-                    let content_length = headers
-                        .lines()
-                        .find_map(|line| {
-                            let (name, value) = line.split_once(':')?;
-                            name.eq_ignore_ascii_case("content-length")
-                                .then(|| value.trim().parse::<usize>().ok())
-                                .flatten()
-                        })
-                        .unwrap_or(0);
-                    while request.len() < header_end + 4 + content_length {
-                        let count = stream.read(&mut chunk).unwrap();
-                        if count == 0 {
-                            break;
-                        }
-                        request.extend_from_slice(&chunk[..count]);
-                    }
-                    let body = String::from_utf8_lossy(&request[header_end + 4..]);
-                    let _ = tx.send(body.into_owned());
-                    break;
-                }
-            }
-            let payload = r#"{"choices":[{"message":{"content":"{\"nodes\":[{\"type\":\"heading\",\"text\":\"Answer\"},{\"type\":\"text\",\"text\":\"See [1].\"},{\"type\":\"source_list\",\"items\":[{\"index\":1,\"title\":\"Alpha\",\"url\":\"https://example.com/alpha\",\"snippet\":\"snip\"}]}] }"}}]}"#;
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                payload.len(),
-                payload
-            );
-            stream.write_all(response.as_bytes()).unwrap();
-        });
-
-        let client = Client::builder()
-            .timeout(Duration::from_secs(2))
-            .build()
-            .unwrap();
-        let hits = vec![SearchHit {
-            title: "Alpha".into(),
-            url: "https://example.com/alpha".into(),
-            snippet: "snip".into(),
-            image: None,
-        }];
-        let content = deepseek_search_ui_at(
-            &client,
-            &format!("http://{address}/chat/completions"),
-            "test-key",
-            "compare alpha vs beta chart",
-            &hits,
-            &[],
-            None,
-        )
-        .unwrap();
-        let request = rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        assert!(request.contains("deepseek-v4-flash"));
-        assert!(request.contains("json_object"));
-        assert!(request.contains("\"temperature\":0"));
-        let allowed = hits.iter().map(|hit| hit.url.clone()).collect();
-        let document = parse_and_validate_ui(&content, &allowed).unwrap();
-        assert_eq!(document.nodes.len(), 3);
-    }
-
-    #[test]
     fn search_does_not_touch_history_store() {
         // SearchController has no SettingsStore handle; completing a search
-        // only mutates SearchStatus. This guards the architectural boundary.
+        // only mutates SearchStatus.
         let controller = SearchController::new();
         let _ = controller.begin_listening(true).unwrap();
         let _ = controller.mark_searching(Some("weather".into())).unwrap();
@@ -2561,11 +2152,10 @@ mod tests {
 
     #[test]
     fn fast_path_only_for_navigation_queries() {
-        // Navigation: link list IS the answer — skip LLM.
+        // Navigation: the link list is the answer.
         assert_eq!(classify_query("open youtube lofi"), QueryKind::Fast);
         assert_eq!(classify_query("watch lofi video"), QueryKind::Fast);
-        // Who/what/define must go through the LLM so the card contains an
-        // actual answer instead of "check below for sources".
+        // Who/what/define must go through the LLM.
         assert_eq!(
             classify_query("what is photosynthesis"),
             QueryKind::Grounded
@@ -2608,8 +2198,7 @@ mod tests {
         let candidates = image_candidates_for_hits(&hits);
         assert!(!candidates.is_empty());
         assert_eq!(candidates[0].0, "https://example.com/a.jpg");
-        // Banner candidates exclude favicons so tiny icons never blow up
-        // into blurry full-width banners.
+        // Banner candidates exclude favicons.
         let photos = photo_candidates_for_hits(&hits);
         assert_eq!(photos.len(), 1);
         assert_eq!(photos[0].0, "https://example.com/a.jpg");
@@ -2620,8 +2209,8 @@ mod tests {
             image: None,
         }];
         assert!(photo_candidates_for_hits(&icon_only).is_empty());
-        // Favicon derived for same host is still allowlisted for validation.
-        let allowed = expanded_allowed_urls(&hits);
+        // The derived favicon is still allowlisted.
+        let allowed = expanded_allowed_urls_with_images(&hits, &[]);
         assert!(allowed.contains("https://example.com/alpha"));
         assert!(allowed.contains("https://example.com/a.jpg"));
         assert!(allowed.iter().any(|u| u.contains("icons.duckduckgo.com")));

@@ -417,9 +417,7 @@ enum AudioCommand {
     ),
 }
 
-/// Owns CPAL on one dedicated thread. CPAL streams are deliberately not `Send`,
-/// and keeping creation/destruction on the same thread also gives WASAPI a clean
-/// home when the capture layer grows COM-specific features.
+/// Owns CPAL on one dedicated thread, since CPAL streams are not `Send`.
 pub struct AudioController {
     commands: mpsc::Sender<AudioCommand>,
 }

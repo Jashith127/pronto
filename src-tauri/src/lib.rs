@@ -12,8 +12,6 @@ mod insert;
 #[cfg(target_os = "macos")]
 #[path = "platform/macos/insert.rs"]
 mod insert;
-#[cfg_attr(target_os = "macos", allow(dead_code))]
-mod mcp;
 mod meeting;
 mod meeting_detector;
 #[cfg(windows)]
@@ -97,8 +95,8 @@ pub(crate) struct AppState {
     /// The current dictation's segments, transcribed while it records.
     live_segments: Mutex<Option<engine::LiveSegments>>,
     settings: SettingsStore,
-    /// Shared HTTP client for search retrieval + answer synthesis.
-    /// Reused across searches for keep-alive (skips TLS+TCP setup).
+    /// Shared HTTP client for search retrieval and answer synthesis, reused
+    /// across searches for keep-alive.
     search_http: reqwest::blocking::Client,
     target_window: Mutex<isize>,
     model_status: Mutex<ModelStatus>,
@@ -1036,8 +1034,8 @@ fn start_meeting_recording_blocking(
             pipeline.status.message = "Dictation stopped for meeting notes".into();
             emit_status(&app, &pipeline.status);
         }
-        // A background transcription finishing up (Phase::Processing) no
-        // longer blocks meeting capture; it completes into history on its own.
+        // A background transcription finishing up (Phase::Processing) does
+        // not block meeting capture; it completes into history on its own.
     }
     let settings = state.settings.snapshot()?;
     let record = state.meetings.start(title, settings.microphone_id)?;
@@ -1511,7 +1509,7 @@ fn apply_search_overlay_stage(window: &tauri::WebviewWindow, stage: SearchOverla
     let Some(monitor) = monitor_for(window) else {
         let (w, h) = match stage {
             SearchOverlayStage::Pill => (120.0, 32.0),
-            // Orb is retired: searching reuses the regular pill loading state.
+            // Searching reuses the regular pill loading state.
             SearchOverlayStage::Orb => (120.0, 32.0),
             SearchOverlayStage::Stage => (920.0, 640.0),
             SearchOverlayStage::Peek => (280.0, 72.0),
@@ -1619,8 +1617,8 @@ fn dismiss_search_overlay_inner(app: &AppHandle) {
 
 /// Click-away from a finished result parks the panel as a small peek tab
 /// at the bottom-left instead of hiding it. Anything else (listening,
-/// searching, idle, error) hides the overlay as before. Returns true when
-/// the result was parked.
+/// searching, idle, error) hides the overlay. Returns true when the result
+/// was parked.
 fn park_search_overlay_inner(app: &AppHandle) -> bool {
     let state = app.state::<AppState>();
     state.search_blur_dismiss.store(false, Ordering::Release);
@@ -1903,8 +1901,8 @@ fn run_text_search_inner(app: &AppHandle, query: String) -> Result<SearchStatus,
         return Err(reason);
     }
     let settings = state.settings.snapshot()?;
-    // Session context, same as voice results: "what about tomorrow?"
-    // expands against the last queries with no extra LLM cost.
+    // Same session context as voice results: "what about tomorrow?"
+    // expands against the last queries.
     let recent = state.search.recent_queries();
     let expanded = search::expand_followup(&query, &recent);
     let status = state.search.begin_text_search(expanded.clone())?;
@@ -1930,8 +1928,8 @@ pub(crate) fn complete_search_asr(app: &AppHandle, result: Result<CompletedSearc
     let state = app.state::<AppState>();
     match result {
         Ok(mut completed) => {
-            // Session context: expand "what about tomorrow?" using last queries.
-            // Local rule-based, no extra LLM cost; expanded query is shown in UI.
+            // Expand "what about tomorrow?" against the last queries; the
+            // expanded query is what the UI shows.
             let recent = state.search.recent_queries();
             let expanded = search::expand_followup(&completed.query, &recent);
             if expanded != completed.query {
@@ -2067,8 +2065,6 @@ fn run_web_search_and_synthesize(
         }
     };
     let synthesis_ms = synthesis_started.elapsed().as_millis();
-    // Surface cache + timing in warning when otherwise silent (observability
-    // without extra IPC): keeps fast-path transparent.
     if warning.is_none() && (cache_hit || retrieval_ms > 0) {
         let mode = if cache_hit { "cached" } else { "live" };
         // Only annotate fast cached answers to avoid noise on grounded cards.
@@ -2081,9 +2077,9 @@ fn run_web_search_and_synthesize(
             let _ = (retrieval_ms, synthesis_ms, retrieved_from_network);
         }
     }
-    // First paint carries text + sources immediately; the banner image
+    // First paint carries text and sources immediately; the banner image
     // resolves on a side thread below so a slow image host never delays
-    // the answer. Final content is identical, just staged.
+    // the answer.
     let payload = SearchResultPayload {
         query: completed.query.clone(),
         markdown: parsed.markdown,
