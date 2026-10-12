@@ -62,6 +62,10 @@ enum FocusCommand {
         root: isize,
         ibeam: bool,
     },
+    /// A dictation started while `root` was in the foreground.
+    RecordingStarted {
+        root: isize,
+    },
     Resolve {
         fallback: isize,
         reply: mpsc::Sender<(isize, isize)>,
@@ -120,10 +124,21 @@ impl InsertionTargetTracker {
         Self { hook_thread }
     }
 
-    /// Windows resolves the target at paste time (the last selected text
-    /// box wins, whenever it was selected), so a dictation needs no
-    /// per-session state. Kept for parity with the macOS tracker.
-    pub fn begin(&self, _initial_target: isize) {}
+    /// A text box that has the focus when a dictation starts counts as
+    /// selected, exactly like a click into it: it becomes the target until
+    /// another text box is clicked. The target itself is resolved at paste
+    /// time, so `initial_target` (kept for parity with macOS) is unused.
+    pub fn begin(&self, _initial_target: isize) {
+        let foreground = unsafe { GetForegroundWindow() };
+        if foreground.0.is_null() || !is_external_application_window(foreground) {
+            return;
+        }
+        if let Some(worker) = FOCUS_WORKER.get() {
+            let _ = worker.send(FocusCommand::RecordingStarted {
+                root: foreground.0 as isize,
+            });
+        }
+    }
 
     pub fn finish(&self, fallback: isize) -> isize {
         fallback
@@ -256,6 +271,16 @@ impl FocusWorker {
                 Some(FocusCommand::Clicked { root, ibeam }) => {
                     pending = Some((root, ibeam, Instant::now() + CLICK_SETTLE));
                 }
+                Some(FocusCommand::RecordingStarted { root }) => {
+                    // Selections are ordered: a click just before the
+                    // shortcut is classified first, so the focused text box
+                    // at the start of the recording wins over it.
+                    if let Some((clicked, ibeam, due)) = pending.take() {
+                        std::thread::sleep(due.saturating_duration_since(Instant::now()));
+                        self.classify_click(clicked, ibeam);
+                    }
+                    self.classify_click(root, false);
+                }
                 Some(FocusCommand::Resolve { fallback, reply }) => {
                     // A click just before the paste still counts: let its
                     // focus settle and classify it first.
@@ -277,9 +302,10 @@ impl FocusWorker {
         }
     }
 
-    /// Remembers the clicked control when the click selected a text box.
-    /// Clicks on anything else (buttons, page backgrounds, title bars) keep
-    /// the previously selected text box as the target.
+    /// Remembers the focused control of `root` when it is a text box, after
+    /// a click into `root` or when a dictation starts there. Anything else
+    /// (buttons, page backgrounds, title bars) keeps the previously selected
+    /// text box as the target.
     fn classify_click(&mut self, root: isize, ibeam: bool) {
         if !window_alive(root) {
             return;
@@ -453,7 +479,8 @@ pub fn copy_and_paste(target: isize, text: &str) -> Result<bool, String> {
 
 /// Pastes into the text box the user selected most recently, whenever that
 /// was: before the dictation, or while it was recording. A text box is
-/// selected by clicking into it; clicks elsewhere keep the previous one.
+/// selected by clicking into it, or by having the focus in it when a
+/// dictation starts; clicks elsewhere keep the previous one.
 /// Its window is brought back to the foreground and, when the focus has
 /// left the text box meanwhile, the text box is focused again. Without any
 /// selected text box, `fallback_root` (then the last clicked window) is used.
