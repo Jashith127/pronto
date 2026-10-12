@@ -5,7 +5,7 @@ Pronto 1.1 makes Phonon ready sooner, pastes into the text box you actually chos
 ## Faster
 
 - **Phonon is ready about 12 seconds sooner every time it starts.** It now prepares its speech model on all of your processor's cores instead of one, and no longer starts a slow system query just to count them. On an 8-core laptop the model load dropped from about 42 s to 30 s, with identical transcripts.
-- **No compile step on Phonon's first start.** The Phonon runtime now ships ready to run, so the first start after installing or updating skips compiling it. Updating with Pronto Setup downloads the new runtime once.
+- **No compile step on Phonon's first start.** The Phonon runtime now ships ready to run, so the first start after installing or updating skips compiling it. Updating with Pronto Setup downloads the new runtime once (about 270 MB).
 
 ## Changed
 
