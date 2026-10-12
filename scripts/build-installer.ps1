@@ -12,6 +12,13 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+# npx and cargo report progress on stderr, which Windows PowerShell 5.1
+# turns into a terminating error under 'Stop'; their exit codes are checked.
+function Invoke-Tauri {
+    $ErrorActionPreference = 'Continue'
+    & npx @tauri
+    if ($LASTEXITCODE -ne 0) { throw "$args build failed" }
+}
 $version = (Get-Content (Join-Path $root 'src-tauri/tauri.conf.json') -Raw | ConvertFrom-Json).version
 $tauri = @('--yes', '@tauri-apps/cli@2', 'build', '--no-bundle')
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
@@ -19,8 +26,7 @@ New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 # 1. The app itself (embedded UI, release profile).
 Push-Location (Join-Path $root 'src-tauri')
 try {
-    & npx @tauri
-    if ($LASTEXITCODE -ne 0) { throw 'Pronto build failed' }
+    Invoke-Tauri 'Pronto'
 } finally { Pop-Location }
 
 # 2. Payload: what used to sit beside pronto.exe in the NSIS install, minus the
@@ -43,8 +49,7 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 $env:PRONTO_PAYLOAD_ZIP = $payload
 Push-Location (Join-Path $root 'installer')
 try {
-    & npx @tauri
-    if ($LASTEXITCODE -ne 0) { throw 'Pronto Setup build failed' }
+    Invoke-Tauri 'Pronto Setup'
 } finally {
     Pop-Location
     Remove-Item Env:PRONTO_PAYLOAD_ZIP

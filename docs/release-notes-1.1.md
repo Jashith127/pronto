@@ -29,5 +29,5 @@ Unchanged from 1.0: Windows 10 or 11 (64-bit), a microphone, and either an NVIDI
 
 ## Download
 
-`Pronto_Setup_1.1.0_x64.exe` (SIZE)
-SHA-256: `PENDING`
+`Pronto_Setup_1.1.0_x64.exe` (13.4 MB)
+SHA-256: `c1b4b2af7f194bcdd9b66c13573dcaa1f3caafff266ff1b18fb8e732ab75efdf`
