@@ -1,8 +1,14 @@
 use std::mem::size_of;
-use std::sync::{mpsc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::{mpsc, OnceLock};
+use std::time::{Duration, Instant};
+use windows::core::Interface;
 use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     DeleteEnhMetaFile, DeleteMetaFile, DeleteObject, HENHMETAFILE, HGDIOBJ,
+};
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
 };
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData,
@@ -15,38 +21,67 @@ use windows::Win32::System::Ole::{OleDuplicateData, CLIPBOARD_FORMAT};
 use windows::Win32::System::Threading::{
     AttachThreadInput, GetCurrentProcessId, GetCurrentThreadId,
 };
+use windows::Win32::System::Variant::VT_BOOL;
+use windows::Win32::UI::Accessibility::{
+    CUIAutomation, IUIAutomation, IUIAutomation2, IUIAutomationElement, IUIAutomationValuePattern,
+    UIA_ComboBoxControlTypeId, UIA_CustomControlTypeId, UIA_DocumentControlTypeId,
+    UIA_EditControlTypeId, UIA_GroupControlTypeId, UIA_IsTextEditPatternAvailablePropertyId,
+    UIA_PaneControlTypeId, UIA_ValuePatternId,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, SendInput, SetActiveWindow, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
-    KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
+    GetAsyncKeyState, SendInput, SetActiveWindow, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD,
+    KEYBDINPUT, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, CallNextHookEx, DispatchMessageW, GetAncestor, GetClassNameW,
-    GetForegroundWindow, GetGUIThreadInfo, GetMessageW, GetWindowThreadProcessId, IsWindow,
-    PostThreadMessageW, SendMessageTimeoutW, SetForegroundWindow, SetWindowsHookExW,
-    TranslateMessage, UnhookWindowsHookEx, WindowFromPoint, GA_ROOT, GUITHREADINFO, MSG,
-    MSLLHOOKSTRUCT, SMTO_ABORTIFHUNG, WH_MOUSE_LL, WM_APP, WM_LBUTTONDOWN, WM_PASTE,
+    BringWindowToTop, CallNextHookEx, DispatchMessageW, GetAncestor, GetClassNameW, GetCursorInfo,
+    GetForegroundWindow, GetGUIThreadInfo, GetMessageW, GetWindowThreadProcessId, IsIconic,
+    IsWindow, LoadCursorW, PostThreadMessageW, SendMessageTimeoutW, SetForegroundWindow,
+    SetWindowsHookExW, ShowWindow, TranslateMessage, UnhookWindowsHookEx, WindowFromPoint,
+    CURSORINFO, GA_ROOT, GUITHREADINFO, IDC_IBEAM, MSG, MSLLHOOKSTRUCT, SMTO_ABORTIFHUNG,
+    SW_RESTORE, WH_MOUSE_LL, WM_APP, WM_LBUTTONDOWN, WM_PASTE,
 };
 
 const STOP_TARGET_HOOK: u32 = WM_APP + 0x565;
+/// How long after a click the focus is given to settle in the clicked
+/// control before Pronto checks whether it is a text box.
+const CLICK_SETTLE: Duration = Duration::from_millis(120);
+/// Upper bound on a UI Automation round trip, so a hung application can
+/// never stall a paste for long.
+const UIA_TIMEOUT_MS: u32 = 800;
+const FOCUS_REPLY_TIMEOUT: Duration = Duration::from_millis(1500);
 
-struct TargetState {
-    active: bool,
-    target: isize,
-    own_process: u32,
-    /// Root window of the most recent click in any external application,
-    /// tracked at all times (not only during dictation) so pasting can
-    /// follow the textbox the user selected most recently.
-    last_focus_root: isize,
-    last_focus_at_ms: u64,
+/// Root window of the most recent click in any external application, text
+/// box or not. A fallback for when no text box was selected yet.
+static LAST_CLICK_ROOT: AtomicIsize = AtomicIsize::new(0);
+static FOCUS_WORKER: OnceLock<mpsc::Sender<FocusCommand>> = OnceLock::new();
+
+/// Requests handled by the focus worker, which owns every UI Automation
+/// object so they are only ever touched from one COM thread.
+enum FocusCommand {
+    Clicked {
+        root: isize,
+        ibeam: bool,
+    },
+    /// A dictation started while `root` was in the foreground.
+    RecordingStarted {
+        root: isize,
+    },
+    Resolve {
+        fallback: isize,
+        reply: mpsc::Sender<(isize, isize)>,
+    },
+    Refocus {
+        root: isize,
+        reply: mpsc::Sender<bool>,
+    },
 }
 
-static TARGET_STATE: OnceLock<Mutex<TargetState>> = OnceLock::new();
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis() as u64)
-        .unwrap_or(0)
+/// The text box the user selected most recently, in any application and at
+/// any time (before or during a dictation).
+struct Textbox {
+    root: isize,
+    control: isize,
+    element: Option<IUIAutomationElement>,
 }
 
 pub struct InsertionTargetTracker {
@@ -55,14 +90,7 @@ pub struct InsertionTargetTracker {
 
 impl InsertionTargetTracker {
     pub fn new() -> Self {
-        let own_process = unsafe { GetCurrentProcessId() };
-        let _ = TARGET_STATE.set(Mutex::new(TargetState {
-            active: false,
-            target: 0,
-            own_process,
-            last_focus_root: 0,
-            last_focus_at_ms: 0,
-        }));
+        start_focus_worker();
         let (ready, response) = mpsc::channel();
         let started = std::thread::Builder::new()
             .name("pronto-insertion-target".into())
@@ -96,39 +124,27 @@ impl InsertionTargetTracker {
         Self { hook_thread }
     }
 
-    pub fn begin(&self, initial_target: isize) {
-        if let Some(state) = TARGET_STATE.get() {
-            if let Ok(mut state) = state.lock() {
-                state.target = initial_target;
-                state.active = true;
-            }
+    /// A text box that has the focus when a dictation starts counts as
+    /// selected, exactly like a click into it: it becomes the target until
+    /// another text box is clicked. The target itself is resolved at paste
+    /// time, so `initial_target` (kept for parity with macOS) is unused.
+    pub fn begin(&self, _initial_target: isize) {
+        let foreground = unsafe { GetForegroundWindow() };
+        if foreground.0.is_null() || !is_external_application_window(foreground) {
+            return;
+        }
+        if let Some(worker) = FOCUS_WORKER.get() {
+            let _ = worker.send(FocusCommand::RecordingStarted {
+                root: foreground.0 as isize,
+            });
         }
     }
 
     pub fn finish(&self, fallback: isize) -> isize {
-        let Some(state) = TARGET_STATE.get() else {
-            return fallback;
-        };
-        state
-            .lock()
-            .map(|mut state| {
-                state.active = false;
-                if state.target == 0 {
-                    fallback
-                } else {
-                    state.target
-                }
-            })
-            .unwrap_or(fallback)
+        fallback
     }
 
-    pub fn cancel(&self) {
-        if let Some(state) = TARGET_STATE.get() {
-            if let Ok(mut state) = state.lock() {
-                state.active = false;
-            }
-        }
-    }
+    pub fn cancel(&self) {}
 }
 
 impl Drop for InsertionTargetTracker {
@@ -145,30 +161,41 @@ unsafe extern "system" fn mouse_hook(code: i32, wparam: WPARAM, lparam: LPARAM) 
         let event = unsafe { &*(lparam.0 as *const MSLLHOOKSTRUCT) };
         let clicked = unsafe { WindowFromPoint(event.pt) };
         let root = unsafe { GetAncestor(clicked, GA_ROOT) };
-        if !root.0.is_null() {
-            if let Some(state) = TARGET_STATE.get() {
-                if let Ok(mut state) = state.lock() {
-                    if is_external_application_window(root, state.own_process) {
-                        // The focused control is resolved lazily at paste
-                        // time: at click-down the focus often has not moved
-                        // to the clicked control yet.
-                        state.last_focus_root = root.0 as isize;
-                        state.last_focus_at_ms = now_ms();
-                        if state.active {
-                            state.target = root.0 as isize;
-                        }
-                    }
-                }
+        if !root.0.is_null() && is_external_application_window(root) {
+            LAST_CLICK_ROOT.store(root.0 as isize, Ordering::Release);
+            // Whether the click selected a text box is decided by the
+            // worker once focus has moved: at click-down it often has not
+            // reached the clicked control yet. The cursor shape is sampled
+            // now, as a fallback for controls UI Automation cannot read.
+            if let Some(worker) = FOCUS_WORKER.get() {
+                let _ = worker.send(FocusCommand::Clicked {
+                    root: root.0 as isize,
+                    ibeam: cursor_is_ibeam(),
+                });
             }
         }
     }
     unsafe { CallNextHookEx(None, code, wparam, lparam) }
 }
 
-fn is_external_application_window(window: HWND, own_process: u32) -> bool {
+fn cursor_is_ibeam() -> bool {
+    static IBEAM: OnceLock<isize> = OnceLock::new();
+    let ibeam = *IBEAM.get_or_init(|| {
+        unsafe { LoadCursorW(None, IDC_IBEAM) }
+            .map(|cursor| cursor.0 as isize)
+            .unwrap_or(0)
+    });
+    let mut info = CURSORINFO {
+        cbSize: size_of::<CURSORINFO>() as u32,
+        ..Default::default()
+    };
+    ibeam != 0 && unsafe { GetCursorInfo(&mut info) }.is_ok() && info.hCursor.0 as isize == ibeam
+}
+
+fn is_external_application_window(window: HWND) -> bool {
     let mut process_id = 0;
     unsafe { GetWindowThreadProcessId(window, Some(&mut process_id)) };
-    if process_id == 0 || process_id == own_process {
+    if process_id == 0 || process_id == unsafe { GetCurrentProcessId() } {
         return false;
     }
     let mut class_name = [0u16; 64];
@@ -177,12 +204,236 @@ fn is_external_application_window(window: HWND, own_process: u32) -> bool {
     !matches!(class_name.as_str(), "Shell_TrayWnd" | "Progman" | "WorkerW")
 }
 
+fn start_focus_worker() {
+    if FOCUS_WORKER.get().is_some() {
+        return;
+    }
+    let (commands, receiver) = mpsc::channel();
+    let started = std::thread::Builder::new()
+        .name("pronto-focus-target".into())
+        .spawn(move || FocusWorker::new().run(receiver));
+    if started.is_ok() {
+        let _ = FOCUS_WORKER.set(commands);
+    }
+}
+
+fn ask_focus_worker<T>(command: impl FnOnce(mpsc::Sender<T>) -> FocusCommand) -> Option<T> {
+    let worker = FOCUS_WORKER.get()?;
+    let (reply, response) = mpsc::channel();
+    worker.send(command(reply)).ok()?;
+    response.recv_timeout(FOCUS_REPLY_TIMEOUT).ok()
+}
+
+struct FocusWorker {
+    automation: Option<IUIAutomation>,
+    textbox: Option<Textbox>,
+}
+
+impl FocusWorker {
+    fn new() -> Self {
+        // UI Automation elements are free-threaded in the MTA, but they are
+        // only ever used from this thread anyway.
+        let automation = unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            CoCreateInstance::<_, IUIAutomation>(&CUIAutomation, None, CLSCTX_INPROC_SERVER).ok()
+        };
+        if let Some(automation) = &automation {
+            if let Ok(automation) = automation.cast::<IUIAutomation2>() {
+                unsafe {
+                    let _ = automation.SetConnectionTimeout(UIA_TIMEOUT_MS);
+                    let _ = automation.SetTransactionTimeout(UIA_TIMEOUT_MS);
+                }
+            }
+        }
+        Self {
+            automation,
+            textbox: None,
+        }
+    }
+
+    fn run(mut self, commands: mpsc::Receiver<FocusCommand>) {
+        let mut pending: Option<(isize, bool, Instant)> = None;
+        loop {
+            let command = match pending {
+                Some((_, _, due)) => {
+                    match commands.recv_timeout(due.saturating_duration_since(Instant::now())) {
+                        Ok(command) => Some(command),
+                        Err(mpsc::RecvTimeoutError::Timeout) => None,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    }
+                }
+                None => match commands.recv() {
+                    Ok(command) => Some(command),
+                    Err(_) => break,
+                },
+            };
+            match command {
+                Some(FocusCommand::Clicked { root, ibeam }) => {
+                    pending = Some((root, ibeam, Instant::now() + CLICK_SETTLE));
+                }
+                Some(FocusCommand::RecordingStarted { root }) => {
+                    // Selections are ordered: a click just before the
+                    // shortcut is classified first, so the focused text box
+                    // at the start of the recording wins over it.
+                    if let Some((clicked, ibeam, due)) = pending.take() {
+                        std::thread::sleep(due.saturating_duration_since(Instant::now()));
+                        self.classify_click(clicked, ibeam);
+                    }
+                    self.classify_click(root, false);
+                }
+                Some(FocusCommand::Resolve { fallback, reply }) => {
+                    // A click just before the paste still counts: let its
+                    // focus settle and classify it first.
+                    if let Some((root, ibeam, due)) = pending.take() {
+                        std::thread::sleep(due.saturating_duration_since(Instant::now()));
+                        self.classify_click(root, ibeam);
+                    }
+                    let _ = reply.send(self.resolve(fallback));
+                }
+                Some(FocusCommand::Refocus { root, reply }) => {
+                    let _ = reply.send(self.refocus(root));
+                }
+                None => {
+                    if let Some((root, ibeam, _)) = pending.take() {
+                        self.classify_click(root, ibeam);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Remembers the focused control of `root` when it is a text box, after
+    /// a click into `root` or when a dictation starts there. Anything else
+    /// (buttons, page backgrounds, title bars) keeps the previously selected
+    /// text box as the target.
+    fn classify_click(&mut self, root: isize, ibeam: bool) {
+        if !window_alive(root) {
+            return;
+        }
+        let info = gui_thread_info(root);
+        // The focused child window is unknown when focus lives in another
+        // process (UWP apps) or never reached the clicked window; UI
+        // Automation and the cursor shape still decide in that case.
+        let focus = Some(info.hwndFocus).filter(|focus| {
+            !focus.0.is_null() && unsafe { GetAncestor(*focus, GA_ROOT) }.0 as isize == root
+        });
+        let element = self.focused_element_in(root);
+        let editable = focus.is_some_and(is_text_control_class)
+            || (focus.is_some() && !info.hwndCaret.0.is_null())
+            || match &element {
+                Some(element) => uia_is_editable(element).unwrap_or(ibeam),
+                None => ibeam,
+            };
+        if editable {
+            self.textbox = Some(Textbox {
+                root,
+                control: focus.map(|focus| focus.0 as isize).unwrap_or(0),
+                element,
+            });
+        }
+    }
+
+    fn resolve(&mut self, fallback: isize) -> (isize, isize) {
+        if let Some(textbox) = &self.textbox {
+            if window_alive(textbox.root) {
+                return (textbox.root, textbox.control);
+            }
+            self.textbox = None;
+        }
+        for root in [fallback, LAST_CLICK_ROOT.load(Ordering::Acquire)] {
+            if root != 0 && window_alive(root) {
+                return (root, focused_control(root).0 as isize);
+            }
+        }
+        (0, 0)
+    }
+
+    /// Puts the keyboard focus back into the remembered text box of the
+    /// (already activated) `root`, unless the user is already in a text box
+    /// there. Returns true when the focus was moved.
+    fn refocus(&mut self, root: isize) -> bool {
+        let Some(textbox) = self.textbox.as_ref().filter(|textbox| textbox.root == root) else {
+            return false;
+        };
+        if let (Some(automation), Some(element)) = (&self.automation, &textbox.element) {
+            if let Ok(focused) = unsafe { automation.GetFocusedElement() } {
+                if element_process(&focused) == window_process(root) {
+                    let same = unsafe { automation.CompareElements(&focused, element) }
+                        .map(|same| same.as_bool())
+                        .unwrap_or(false);
+                    if same || uia_is_editable(&focused).unwrap_or(false) {
+                        return false;
+                    }
+                }
+            }
+            if unsafe { element.SetFocus() }.is_ok() {
+                return true;
+            }
+        }
+        focus_native_control(root, textbox.control)
+    }
+
+    fn focused_element_in(&self, root: isize) -> Option<IUIAutomationElement> {
+        let element = unsafe { self.automation.as_ref()?.GetFocusedElement() }.ok()?;
+        (element_process(&element) == window_process(root)).then_some(element)
+    }
+}
+
+fn uia_is_editable(element: &IUIAutomationElement) -> Option<bool> {
+    let control_type = unsafe { element.CurrentControlType() }.ok()?;
+    let read_only = unsafe {
+        element
+            .GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
+            .and_then(|pattern| pattern.CurrentIsReadOnly())
+    }
+    .ok()
+    .map(|read_only| read_only.as_bool());
+    let text_edit =
+        unsafe { element.GetCurrentPropertyValue(UIA_IsTextEditPatternAvailablePropertyId) }
+            .ok()
+            .map(|value| unsafe {
+                value.Anonymous.Anonymous.vt == VT_BOOL
+                    && value.Anonymous.Anonymous.Anonymous.boolVal.as_bool()
+            })
+            .unwrap_or(false);
+    Some(if control_type == UIA_EditControlTypeId {
+        read_only != Some(true)
+    } else if [
+        UIA_DocumentControlTypeId,
+        UIA_ComboBoxControlTypeId,
+        UIA_GroupControlTypeId,
+        UIA_CustomControlTypeId,
+        UIA_PaneControlTypeId,
+    ]
+    .contains(&control_type)
+    {
+        // Browsers expose whole pages as read-only documents; only
+        // editable regions (contenteditable, rich editors) qualify.
+        read_only == Some(false) || text_edit
+    } else {
+        false
+    })
+}
+
+fn element_process(element: &IUIAutomationElement) -> u32 {
+    unsafe { element.CurrentProcessId() }
+        .map(|process| process as u32)
+        .unwrap_or(0)
+}
+
+fn window_process(root: isize) -> u32 {
+    let mut process_id = 0;
+    unsafe { GetWindowThreadProcessId(HWND(root as *mut _), Some(&mut process_id)) };
+    process_id
+}
+
 pub fn foreground_window() -> isize {
     unsafe { GetForegroundWindow().0 as isize }
 }
 
-/// Window dictation should write into: the foreground window when it starts
-/// (the macOS module tracks the last editor instead).
+/// Window dictation falls back to when no text box was selected yet: the
+/// foreground window when it starts (the macOS module tracks the last
+/// editor instead).
 pub fn preferred_target() -> isize {
     foreground_window()
 }
@@ -198,53 +449,65 @@ pub fn insert_text(target: isize, text: &str) -> Result<(), String> {
     }
 }
 
+/// Dictation pastes into the text box the user selected most recently (see
+/// `copy_and_paste_focus`); `target` is only the fallback.
 pub fn insert_dictation_text(target: isize, text: &str) -> Result<(), String> {
-    insert_text(target, text)
+    if text.is_empty() {
+        return Ok(());
+    }
+    if copy_and_paste_focus(target, text)? {
+        Ok(())
+    } else {
+        Err("Transcript copied, but Windows blocked automatic pasting".into())
+    }
 }
 
 /// Copies a transcript and, when Windows permits foreground activation, pastes
 /// it into the remembered target. `false` means the clipboard fallback worked.
 pub fn copy_and_paste(target: isize, text: &str) -> Result<bool, String> {
-    paste_into(target, focused_control(target), text)
+    paste_into(target, focused_control(target), false, text)
 }
 
-/// Pastes into the textbox the user selected most recently: the window of
-/// the latest external click wins when it is still alive, otherwise the
-/// remembered dictation target is used. Focusing a textbox in a new app
-/// after switching to it therefore redirects the paste there, while
-/// switching without clicking keeps pasting into the original textbox
-/// (which is brought back to the foreground).
+/// Pastes into the text box the user selected most recently, whenever that
+/// was: before the dictation, or while it was recording. A text box is
+/// selected by clicking into it, or by having the focus in it when a
+/// dictation starts; clicks elsewhere keep the previous one.
+/// Its window is brought back to the foreground and, when the focus has
+/// left the text box meanwhile, the text box is focused again. Without any
+/// selected text box, `fallback_root` (then the last clicked window) is used.
 pub fn copy_and_paste_focus(fallback_root: isize, text: &str) -> Result<bool, String> {
     let (root, control) = resolve_focus_target(fallback_root);
-    paste_into(root, control, text)
+    paste_into(root, control, true, text)
 }
 
-fn paste_into(root: isize, control: HWND, text: &str) -> Result<bool, String> {
+fn paste_into(root: isize, control: HWND, refocus: bool, text: &str) -> Result<bool, String> {
     let mut snapshot = ClipboardSnapshot::capture();
     copy_to_clipboard(text)?;
     let transcript_sequence = unsafe { GetClipboardSequenceNumber() };
-    let pasted = paste_current_clipboard(root, control);
+    let pasted = paste_current_clipboard(root, control, refocus);
 
     // Give the receiving application time to consume Ctrl+V before restoring
     // the clipboard. Never overwrite clipboard content copied by the user (or
     // another application) while the paste was in flight.
     if pasted {
-        std::thread::sleep(std::time::Duration::from_millis(180));
+        std::thread::sleep(Duration::from_millis(180));
         snapshot.restore_if_unchanged(transcript_sequence);
     }
     Ok(pasted)
 }
 
-/// Most recent click target wins when alive; the focused control inside it
-/// is resolved now (it is only stable after the click was processed).
-/// Falls back to the remembered dictation target, then to no target.
+/// The last selected text box when its window is alive, otherwise the
+/// fallback window, otherwise no target. The focused control inside a
+/// fallback window is resolved now (it is only stable after the click was
+/// processed).
 fn resolve_focus_target(fallback_root: isize) -> (isize, HWND) {
-    let last_root = TARGET_STATE
-        .get()
-        .and_then(|state| state.lock().ok())
-        .map(|state| state.last_focus_root)
-        .unwrap_or(0);
-    for root in [last_root, fallback_root] {
+    if let Some((root, control)) = ask_focus_worker(|reply| FocusCommand::Resolve {
+        fallback: fallback_root,
+        reply,
+    }) {
+        return (root, HWND(control as *mut _));
+    }
+    for root in [LAST_CLICK_ROOT.load(Ordering::Acquire), fallback_root] {
         if root != 0 && window_alive(root) {
             return (root, focused_control(root));
         }
@@ -256,29 +519,75 @@ fn window_alive(root: isize) -> bool {
     unsafe { IsWindow(Some(HWND(root as *mut _))).as_bool() }
 }
 
-fn focused_control(root: isize) -> HWND {
-    let window = HWND(root as *mut _);
-    let thread = unsafe { GetWindowThreadProcessId(window, None) };
-    if thread == 0 {
-        return HWND::default();
-    }
+fn gui_thread_info(root: isize) -> GUITHREADINFO {
     let mut info = GUITHREADINFO {
         cbSize: size_of::<GUITHREADINFO>() as u32,
         ..Default::default()
     };
-    if unsafe { GetGUIThreadInfo(thread, &mut info) }.is_err() {
-        return HWND::default();
+    let thread = unsafe { GetWindowThreadProcessId(HWND(root as *mut _), None) };
+    if thread == 0 || unsafe { GetGUIThreadInfo(thread, &mut info) }.is_err() {
+        return GUITHREADINFO::default();
     }
-    info.hwndFocus
+    info
 }
 
-fn paste_current_clipboard(root: isize, control: HWND) -> bool {
+fn focused_control(root: isize) -> HWND {
+    gui_thread_info(root).hwndFocus
+}
+
+fn is_text_control_class(control: HWND) -> bool {
+    if control.0.is_null() {
+        return false;
+    }
+    let mut class_name = [0u16; 64];
+    let length = unsafe { GetClassNameW(control, &mut class_name) } as usize;
+    is_text_class_name(&String::from_utf16_lossy(&class_name[..length]))
+}
+
+fn is_text_class_name(class_name: &str) -> bool {
+    let class_name = class_name.to_ascii_lowercase();
+    class_name == "edit" || class_name.starts_with("richedit") || class_name == "scintilla"
+}
+
+/// Native-control fallback for `FocusWorker::refocus`: focuses the
+/// remembered child window unless a text control already has focus.
+fn focus_native_control(root: isize, control: isize) -> bool {
+    let control = HWND(control as *mut _);
+    if control.0.is_null()
+        || !unsafe { IsWindow(Some(control)) }.as_bool()
+        || unsafe { GetAncestor(control, GA_ROOT) }.0 as isize != root
+    {
+        return false;
+    }
+    let focused = focused_control(root);
+    if focused == control || is_text_control_class(focused) {
+        return false;
+    }
+    let current_thread = unsafe { GetCurrentThreadId() };
+    let target_thread = unsafe { GetWindowThreadProcessId(control, None) };
+    if target_thread == 0
+        || target_thread == current_thread
+        || !unsafe { AttachThreadInput(current_thread, target_thread, true) }.as_bool()
+    {
+        return false;
+    }
+    let focused_now = unsafe { SetFocus(Some(control)) }.is_ok();
+    let _ = unsafe { AttachThreadInput(current_thread, target_thread, false) };
+    focused_now
+}
+
+fn paste_current_clipboard(root: isize, control: HWND, refocus: bool) -> bool {
     if root == 0 {
         return false;
     }
     let target = HWND(root as *mut _);
     if !activate_target(target) {
         return paste_to_control(control);
+    }
+    // Highlight the selected text box again when the focus moved off it
+    // (another control in its window was clicked, or the window was left).
+    if refocus && ask_focus_worker(|reply| FocusCommand::Refocus { root, reply }) == Some(true) {
+        std::thread::sleep(Duration::from_millis(40));
     }
 
     // A hold shortcut becomes inactive as soon as its first key is released,
@@ -288,7 +597,7 @@ fn paste_current_clipboard(root: isize, control: HWND) -> bool {
     if !wait_for_modifiers_released() {
         return false;
     }
-    std::thread::sleep(std::time::Duration::from_millis(18));
+    std::thread::sleep(Duration::from_millis(18));
     let v = VIRTUAL_KEY(b'V' as u16);
     let inputs = [
         key_input(VK_CONTROL, 0, Default::default()),
@@ -427,13 +736,7 @@ unsafe fn release_clipboard_handle(format: u32, handle: HANDLE) {
 }
 
 fn paste_to_control(control: HWND) -> bool {
-    if control.0.is_null() {
-        return false;
-    }
-    let mut class_name = [0u16; 64];
-    let length = unsafe { GetClassNameW(control, &mut class_name) } as usize;
-    let class_name = String::from_utf16_lossy(&class_name[..length]).to_ascii_lowercase();
-    if !(class_name == "edit" || class_name.starts_with("richedit") || class_name == "scintilla") {
+    if !is_text_control_class(control) {
         return false;
     }
     unsafe {
@@ -453,6 +756,9 @@ fn paste_to_control(control: HWND) -> bool {
 fn activate_target(target: HWND) -> bool {
     if !unsafe { IsWindow(Some(target)) }.as_bool() {
         return false;
+    }
+    if unsafe { IsIconic(target) }.as_bool() {
+        let _ = unsafe { ShowWindow(target, SW_RESTORE) };
     }
     if unsafe { GetForegroundWindow() } == target {
         return true;
@@ -586,6 +892,16 @@ mod tests {
         GetWindowTextW, GetWindowThreadProcessId, PeekMessageW, SetWindowTextW, ShowWindow,
         TranslateMessage, MSG, PM_REMOVE, SW_SHOW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
     };
+
+    #[test]
+    fn text_control_classes_are_recognised() {
+        assert!(is_text_class_name("Edit"));
+        assert!(is_text_class_name("RichEdit20W"));
+        assert!(is_text_class_name("RichEditD2DPT"));
+        assert!(is_text_class_name("Scintilla"));
+        assert!(!is_text_class_name("Button"));
+        assert!(!is_text_class_name("Chrome_RenderWidgetHostHWND"));
+    }
 
     #[test]
     fn clipboard_sequence_guard_only_accepts_pronto_sequence() {
