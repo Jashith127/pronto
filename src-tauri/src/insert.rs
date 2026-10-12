@@ -341,10 +341,7 @@ impl FocusWorker {
             self.textbox = None;
         }
         for root in [fallback, LAST_CLICK_ROOT.load(Ordering::Acquire)] {
-            if root != 0
-                && window_alive(root)
-                && is_external_application_window(HWND(root as *mut _))
-            {
+            if root != 0 && window_alive(root) {
                 return (root, focused_control(root).0 as isize);
             }
         }
@@ -435,16 +432,10 @@ pub fn foreground_window() -> isize {
 }
 
 /// Window dictation falls back to when no text box was selected yet: the
-/// foreground window when it is another application, otherwise the window
-/// of the last external click. Pronto's own windows (the listening pill,
-/// voice search, Settings) are never a paste target.
+/// foreground window when it starts (the macOS module tracks the last
+/// editor instead).
 pub fn preferred_target() -> isize {
-    let foreground = unsafe { GetForegroundWindow() };
-    if !foreground.0.is_null() && is_external_application_window(foreground) {
-        foreground.0 as isize
-    } else {
-        LAST_CLICK_ROOT.load(Ordering::Acquire)
-    }
+    foreground_window()
 }
 
 pub fn insert_text(target: isize, text: &str) -> Result<(), String> {
