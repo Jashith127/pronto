@@ -2189,7 +2189,13 @@ document.querySelector('#onboarding-next').addEventListener('click', () => {
   if (onboardingStep === ONBOARDING_STEPS.length - 1) closeOnboarding();
   else showOnboardingStep(onboardingStep + 1);
 });
-document.querySelector('#replay-onboarding').addEventListener('click', openOnboarding);
+// Replay from Dictate, where the tour's last step points; closing it returns
+// focus to the Dictate tab, not the now-hidden Settings button.
+document.querySelector('#replay-onboarding').addEventListener('click', () => {
+  setView('home');
+  document.querySelector('.nav[data-view="home"]').focus();
+  openOnboarding();
+});
 onboarding.addEventListener('keydown', event => {
   if (event.key === 'Escape' && !document.querySelector('#hotkey-dialog').open) {
     event.preventDefault();
