@@ -76,13 +76,14 @@ function Build-PhononRuntime {
     if ($hostVersion -ne "$major.$minor") {
         throw "Host Python is $hostVersion; use Python $major.$minor so wheels match the embedded runtime."
     }
-    # CPU-only torch keeps the pack small; everything else comes from PyPI.
+    # CPU-only torch keeps the pack small; everything else comes from PyPI,
+    # held to the versions in phonon-runtime-constraints.txt.
     & python -m pip install --disable-pip-version-check --no-warn-script-location --only-binary=:all: `
         --target $site --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple `
-        torch "fermion-research==$FermionVersion" safetensors soundfile scipy zstandard | Out-Host
+        -c (Join-Path $PSScriptRoot 'phonon-runtime-constraints.txt') torch "fermion-research==$FermionVersion" safetensors soundfile scipy zstandard | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'pip install failed' }
     & python -m pip freeze --path $site | Set-Content -Encoding utf8 (Join-Path $stage 'requirements.lock.txt')
-    & python (Join-Path $PSScriptRoot 'patch-fermion.py') $site $FermionVersion
+    & python (Join-Path $PSScriptRoot 'patch-fermion.py') $site $FermionVersion | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'Patching fermion failed' }
 
     # torch needs the MSVC runtime, which a clean Windows install lacks. Ship
@@ -116,6 +117,10 @@ function Build-PhononRuntime {
 }
 
 function Build-PhononModel([string]$PythonExe) {
+    # fermion reports download progress on stderr, which Windows PowerShell
+    # 5.1 turns into a terminating error under 'Stop'. The exit code and the
+    # model folder are checked below instead.
+    $ErrorActionPreference = 'Continue'
     $cache = Join-Path $work 'fermion-cache'
     $env:FERMION_CACHE_DIR = $cache
     $env:FERMION_DEVICE = 'cpu'
