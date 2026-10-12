@@ -82,6 +82,8 @@ function Build-PhononRuntime {
         torch "fermion-research==$FermionVersion" safetensors soundfile scipy zstandard | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'pip install failed' }
     & python -m pip freeze --path $site | Set-Content -Encoding utf8 (Join-Path $stage 'requirements.lock.txt')
+    & python (Join-Path $PSScriptRoot 'patch-fermion.py') $site $FermionVersion
+    if ($LASTEXITCODE -ne 0) { throw 'Patching fermion failed' }
 
     # torch needs the MSVC runtime, which a clean Windows install lacks. Ship
     # it app-local beside python.exe (as runtime/nemo-speech/bin already does)
@@ -99,6 +101,13 @@ function Build-PhononRuntime {
         if (Test-Path $target) { Remove-Item $target -Recurse -Force }
     }
     Get-ChildItem (Join-Path $site 'torch/lib') -Filter '*.lib' -ErrorAction SilentlyContinue | Remove-Item -Force
+
+    # Ship bytecode so the first start does not compile torch and transformers
+    # (~35 s). Unpacking does not keep source mtimes, so the default
+    # timestamp check would discard every .pyc; unchecked-hash trusts them,
+    # which is safe for a verified, read-only pack.
+    & (Join-Path $python 'python.exe') -I -m compileall -f -q -j 0 --invalidation-mode unchecked-hash $site | Out-Host
+    if ($LASTEXITCODE -ne 0) { Write-Warning 'compileall skipped files it could not compile; they compile on first import instead.' }
 
     $zip = Join-Path $OutDir 'phonon-cpu-runtime-win-x64.zip'
     New-PackZip $stage $zip
