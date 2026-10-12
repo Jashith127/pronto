@@ -527,6 +527,8 @@ function selectedModelValue() {
   return value || null;
 }
 
+let editingKeyFor = null;
+
 function renderCleanupProvider(keyStore) {
   const select = document.querySelector('#cleanup-provider');
   const providers = preferences.cleanupProviders || [];
@@ -549,6 +551,11 @@ function renderCleanupProvider(keyStore) {
     ? keyStore
     : (provider.requiresKey ? 'Not configured — AI cleanup and search answers are off' : 'Optional — most local servers need no key');
   document.querySelector('#api-status').textContent = status;
+  // A saved key collapses to a locked "Key saved" pill; Edit reopens the field.
+  const showSaved = provider.keyConfigured && editingKeyFor !== provider.id;
+  document.querySelector('#api-saved').hidden = !showSaved;
+  document.querySelector('#api-form').hidden = showSaved;
+  document.querySelector('#edit-key').setAttribute('aria-label', `Edit ${provider.label} API key`);
 }
 
 async function persistSettings() {
@@ -821,42 +828,46 @@ async function sendWavForTranscription({ uploadId, fileName, wavBytes, skipHisto
   }
 }
 
+const IMPORT_TITLE = document.querySelector('#choose-media').title;
 async function importMedia(file) {
-  const card = document.querySelector('#import-card');
   const button = document.querySelector('#choose-media');
   const status = document.querySelector('#import-status');
-  card.classList.add('busy'); button.disabled = true;
-  status.hidden = false;
+  // Preparing fills the first half of the chip, uploading the second half.
+  const show = (label, progress) => {
+    status.textContent = label;
+    button.style.setProperty('--progress', progress);
+  };
+  button.classList.add('busy'); button.disabled = true;
+  button.title = file.name;
   try {
-    status.textContent = `Reading ${file.name}…`;
+    show('Reading…', 0);
     const context = new AudioContext();
     let decoded;
     try { decoded = await context.decodeAudioData(await file.arrayBuffer()); }
     finally { await context.close(); }
     if (!decoded.numberOfChannels || !decoded.length) throw new Error('No audio track was found in this file.');
     if (decoded.duration > 90 * 60) throw new Error('Choose a file shorter than 90 minutes.');
-    status.textContent = 'Preparing audio (0%)…';
     const wavBytes = await audioBufferToWavAsync(decoded, fraction => {
-      status.textContent = `Preparing audio (${Math.round(fraction * 100)}%)…`;
+      show(`Preparing ${Math.round(fraction * 100)}%`, fraction / 2);
     });
-    status.textContent = 'Uploading audio (0%)…';
+    show('Uploading 0%', .5);
     // Dictation History imports stay in history; Note Taker uses skipHistory.
     await sendWavForTranscription({
       uploadId: `dict-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       fileName: file.name,
       wavBytes,
       skipHistory: false,
-      onProgress: fraction => { status.textContent = `Uploading audio (${Math.round(fraction * 100)}%)…`; }
+      onProgress: fraction => show(`Uploading ${Math.round(fraction * 100)}%`, .5 + fraction / 2)
     });
-    status.textContent = 'Transcribing locally with Parakeet…';
+    show('Transcribing…', 1);
     showToast(`${file.name} is being transcribed`);
   } catch (error) {
     const detail = String(error).replace(/^Error:\s*/, '');
     showToast(detail.includes('Unable to decode') || detail.includes('EncodingError') ? 'This media format or audio track is not supported.' : detail, true);
   } finally {
-    card.classList.remove('busy'); button.disabled = false;
-    status.textContent = '';
-    status.hidden = true;
+    button.classList.remove('busy'); button.disabled = false;
+    button.title = IMPORT_TITLE;
+    show('Transcribe file', 0);
     document.querySelector('#media-file').value = '';
   }
 }
@@ -916,13 +927,31 @@ document.querySelector('#save-key').addEventListener('click', async () => {
   if (!input.value.trim()) { showToast('Enter an API key first', true); return; }
   preferences = await call('save_api_key', { apiKey: input.value, provider: provider.id });
   input.value = '';
+  editingKeyFor = null;
   renderPreferences();
   showToast(`${provider.label} key saved securely`);
+});
+document.querySelector('#api-key').addEventListener('keydown', event => {
+  if (event.key === 'Enter') { event.preventDefault(); document.querySelector('#save-key').click(); }
+  if (event.key === 'Escape' && editingKeyFor) {
+    editingKeyFor = null;
+    event.target.value = '';
+    renderPreferences();
+    document.querySelector('#edit-key').focus();
+  }
+});
+document.querySelector('#edit-key').addEventListener('click', () => {
+  const provider = selectedCleanupProvider();
+  if (!provider) return;
+  editingKeyFor = provider.id;
+  renderPreferences();
+  document.querySelector('#api-key').focus();
 });
 document.querySelector('#cleanup-provider').addEventListener('change', async () => {
   // A model name belongs to one provider; start the new one on its default.
   document.querySelector('#cleanup-model').value = '';
   document.querySelector('#cleanup-model-custom').hidden = true;
+  editingKeyFor = null;
   await persistSettings();
 });
 document.querySelector('#cleanup-model').addEventListener('change', event => {
