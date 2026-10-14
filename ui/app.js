@@ -451,8 +451,41 @@ function renderPreferences() {
   if (providerInput && document.activeElement !== providerInput) {
     providerInput.value = preferences.settings.searchProviderUrl || 'https://html.duckduckgo.com/html/';
   }
+  renderPillSettings();
   renderMicrophones();
   renderDictionary();
+}
+
+const PILL_PARTS = ['showSearch', 'showDictation', 'showNotetaker', 'showCancel', 'showFinish'];
+function pillSettings() {
+  const saved = preferences?.settings?.overlayPill || {};
+  return Object.fromEntries(PILL_PARTS.map(part => [part, saved[part] !== false]));
+}
+
+// Mirrors overlay.js: hold-to-talk never shows the in-pill ✕/✓.
+function renderPillSettings() {
+  const pill = pillSettings();
+  const hold = preferences?.settings?.activationMode !== 'toggle';
+  document.querySelectorAll('[data-pill-part]').forEach(input => {
+    const part = input.dataset.pillPart;
+    input.checked = pill[part];
+    const buttonPart = part === 'showCancel' || part === 'showFinish';
+    input.disabled = buttonPart && (hold || !pill.showDictation);
+    input.closest('.setting-row').classList.toggle('setting-row--disabled', input.disabled);
+  });
+  document.querySelectorAll('.pill-mode-note').forEach(note => {
+    if (!note.dataset.base) note.dataset.base = note.textContent;
+    note.textContent = hold
+      ? `${note.dataset.base} Hidden with Hold, since letting go of the shortcut finishes.`
+      : note.dataset.base;
+  });
+  const visible = {
+    ...pill,
+    showCancel: pill.showDictation && pill.showCancel && !hold,
+    showFinish: pill.showDictation && pill.showFinish && !hold
+  };
+  document.querySelectorAll('[data-preview]').forEach(node => { node.hidden = !visible[node.dataset.preview]; });
+  document.querySelector('#pill-preview-empty').hidden = pill.showSearch || pill.showDictation || pill.showNotetaker;
 }
 
 function selectedCleanupProvider() {
@@ -568,6 +601,7 @@ async function persistSettings() {
     gpuMemoryManagement: document.querySelector('#gpu-memory-management').checked,
     dictationSounds: document.querySelector('#dictation-sounds').checked,
     meetingSuggestions: document.querySelector('#meeting-suggestions').checked,
+    overlayPill: Object.fromEntries([...document.querySelectorAll('[data-pill-part]')].map(input => [input.dataset.pillPart, input.checked])),
     language: document.querySelector('#language').value,
     cleanupProvider: document.querySelector('#cleanup-provider').value || preferences.settings.cleanupProvider || 'deepseek',
     cleanupModel: selectedModelValue(),
@@ -893,6 +927,7 @@ document.querySelector('#dictionary-list').addEventListener('click', async event
   renderDictionary();
 });
 document.querySelectorAll('#cleanup-enabled,#auto-insert,#duck-audio,#dictation-sounds,#meeting-suggestions,#launch-at-startup,#gpu-memory-management,#language').forEach(input => input.addEventListener('change', persistSettings));
+document.querySelectorAll('[data-pill-part]').forEach(input => input.addEventListener('change', persistSettings));
 document.querySelectorAll('[data-activation]').forEach(button => button.addEventListener('click', async () => {
   preferences.settings.activationMode = button.dataset.activation;
   await persistSettings();

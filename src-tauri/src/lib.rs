@@ -2258,6 +2258,8 @@ fn save_settings(
     let theme_changed = settings.theme != previous.theme;
     let gpu_memory_management_changed =
         settings.gpu_memory_management != previous.gpu_memory_management;
+    let overlay_pill_changed = settings.overlay_pill != previous.overlay_pill
+        || settings.activation_mode != previous.activation_mode;
     settings.hotkey = previous.hotkey;
     settings.paste_hotkey = previous.paste_hotkey;
     settings.search_shortcut = previous.search_shortcut;
@@ -2281,6 +2283,12 @@ fn save_settings(
                     settings::ThemeMode::System => "system",
                 };
                 let _ = app.emit("theme-changed", theme);
+            }
+            if overlay_pill_changed {
+                let _ = app.emit(
+                    "overlay-pill-changed",
+                    overlay_pill_layout(&preferences.settings),
+                );
             }
             if gpu_memory_management_changed {
                 if let Ok(engine) = state.engine.lock() {
@@ -2318,6 +2326,26 @@ fn set_microphone_blocking(
         return Err(error);
     }
     Ok(status)
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OverlayPillLayout {
+    #[serde(flatten)]
+    pill: settings::OverlayPillSettings,
+    hold_to_talk: bool,
+}
+
+fn overlay_pill_layout(settings: &UserSettings) -> OverlayPillLayout {
+    OverlayPillLayout {
+        pill: settings.overlay_pill,
+        hold_to_talk: settings.activation_mode == ActivationMode::Hold,
+    }
+}
+
+#[tauri::command]
+fn get_overlay_pill_layout(state: tauri::State<'_, AppState>) -> Result<OverlayPillLayout, String> {
+    Ok(overlay_pill_layout(&state.settings.snapshot()?))
 }
 
 #[tauri::command]
@@ -3373,6 +3401,7 @@ pub fn run() {
             get_microphones,
             set_microphone,
             compact_overlay,
+            get_overlay_pill_layout,
             overlay_heartbeat,
             resize_microphone_overlay,
             resize_overlay,

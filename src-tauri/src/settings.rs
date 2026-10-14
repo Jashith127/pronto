@@ -77,6 +77,35 @@ pub struct UserSettings {
     /// Set once the first-run welcome tour is finished or skipped.
     #[serde(default)]
     pub onboarding_completed: bool,
+    /// Which parts of the dictation overlay pill are shown.
+    #[serde(default)]
+    pub overlay_pill: OverlayPillSettings,
+}
+
+/// Overlay pill layout. Cancel/finish only apply in toggle mode: a
+/// hold-to-talk pill is always just the waveform, since releasing the
+/// shortcut already finishes the dictation.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[serde(default)]
+pub struct OverlayPillSettings {
+    pub show_search: bool,
+    pub show_dictation: bool,
+    pub show_notetaker: bool,
+    pub show_cancel: bool,
+    pub show_finish: bool,
+}
+
+impl Default for OverlayPillSettings {
+    fn default() -> Self {
+        Self {
+            show_search: true,
+            show_dictation: true,
+            show_notetaker: true,
+            show_cancel: true,
+            show_finish: true,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -135,6 +164,7 @@ impl Default for UserSettings {
             theme: ThemeMode::System,
             asr_model: AsrModel::Parakeet,
             onboarding_completed: false,
+            overlay_pill: OverlayPillSettings::default(),
         }
     }
 }
