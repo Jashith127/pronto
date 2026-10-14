@@ -126,7 +126,12 @@ impl InsertionTargetTracker {
 
     /// A text box that has the focus when a dictation starts counts as
     /// selected, exactly like a click into it: it becomes the target until
-    /// another text box is clicked. The target itself is resolved at paste
+    /// another text box is clicked. Otherwise a text box selected earlier only
+    /// stays the target when it is in the same window; one in another window
+    /// is dropped, so the foreground window is pasted into without switching
+    /// windows (fullscreen games have no text box Pronto can detect). Starting
+    /// from one of Pronto's own windows keeps the previous selection. The
+    /// target itself is resolved at paste
     /// time, so `initial_target` (kept for parity with macOS) is unused.
     pub fn begin(&self, _initial_target: isize) {
         let foreground = unsafe { GetForegroundWindow() };
@@ -280,6 +285,18 @@ impl FocusWorker {
                         self.classify_click(clicked, ibeam);
                     }
                     self.classify_click(root, false);
+                    // The foreground window at the start is where the user is
+                    // working. A text box selected earlier in another window
+                    // must not pull that window forward at paste time: games
+                    // and other apps without a detectable text box would lose
+                    // focus to it (typically a browser).
+                    if self
+                        .textbox
+                        .as_ref()
+                        .is_some_and(|textbox| textbox.root != root)
+                    {
+                        self.textbox = None;
+                    }
                 }
                 Some(FocusCommand::Resolve { fallback, reply }) => {
                     // A click just before the paste still counts: let its
@@ -469,7 +486,8 @@ pub fn copy_and_paste(target: isize, text: &str) -> Result<bool, String> {
 }
 
 /// Pastes into the text box the user selected most recently, whenever that
-/// was: before the dictation, or while it was recording. A text box is
+/// was: before the dictation (in the window it started in), or while it was
+/// recording. A text box is
 /// selected by clicking into it, or by having the focus in it when a
 /// dictation starts; clicks elsewhere keep the previous one.
 /// Its window is brought back to the foreground and, when the focus has
