@@ -128,6 +128,16 @@ async function fitMeetingPrompt() {
   const promptHeight = Math.ceil(meetingPrompt.getBoundingClientRect().height);
   const height = Math.min(180, Math.max(30, promptHeight + 38 + 8));
   await invoke('resize_overlay', { width: 300, height });
+  // Point the card's arrow at the note-taker button wherever the pill
+  // layout put it; without the button it keeps its default spot.
+  await new Promise(requestAnimationFrame);
+  if (notetakerButton.hidden || overlayRow.hidden) {
+    meetingPrompt.style.removeProperty('--prompt-arrow-x');
+  } else {
+    const button = notetakerButton.getBoundingClientRect();
+    const card = meetingPrompt.getBoundingClientRect();
+    meetingPrompt.style.setProperty('--prompt-arrow-x', `${Math.round(button.left + button.width / 2 - card.left)}px`);
+  }
 }
 
 async function showMeetingPrompt(title, question, desc) {
@@ -397,3 +407,23 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') beatAfterPaint();
 });
 syncOverlayStatusOnLoad();
+
+// Pill layout from Settings. Each piece of the row can be hidden; the
+// in-pill X/✓ are never shown for hold-to-talk, where releasing the
+// shortcut is the finish action.
+const dictationPill = document.querySelector('#dictation-pill');
+const cancelButton = document.querySelector('#cancel');
+const finishButton = document.querySelector('#finish');
+function applyPillLayout(layout) {
+  if (!layout) return;
+  const holdToTalk = layout.holdToTalk === true;
+  searchReroute.hidden = layout.showSearch === false;
+  dictationPill.hidden = layout.showDictation === false;
+  notetakerButton.hidden = layout.showNotetaker === false;
+  cancelButton.hidden = holdToTalk || layout.showCancel === false;
+  finishButton.hidden = holdToTalk || layout.showFinish === false;
+  const buttons = Number(!cancelButton.hidden) + Number(!finishButton.hidden);
+  dictationPill.dataset.buttons = String(buttons);
+}
+invoke('get_overlay_pill_layout').then(applyPillLayout).catch(() => {});
+listen('overlay-pill-changed', event => applyPillLayout(event.payload));

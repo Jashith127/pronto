@@ -316,3 +316,27 @@ nav { margin-top: 28px; }
   .settings-search { width: 100%; flex-basis: auto; }
   .settings-nav { top: -24px; margin: 0 -20px 16px; padding: 10px 20px; }
 }
+
+/* Settings → Overlay pill: live preview + mode-locked toggles */
+.pill-preview { display: grid; place-items: center; min-height: 86px; padding: 18px 20px; border-bottom: 1px solid var(--line-soft); background: var(--surface-subtle); }
+.settings-filtering .pill-preview { display: none; }
+.pill-preview-row { display: flex; align-items: center; gap: 6px; }
+.pill-preview-side, .pill-preview-main { display: flex; align-items: center; justify-content: center; height: 30px; border: 1px solid #2e2f2b; border-radius: 999px; color: #f8f8f4; background: rgb(9, 10, 9); }
+.pill-preview-side { width: 30px; }
+.pill-preview-side svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2.7; stroke-linecap: round; stroke-linejoin: round; }
+.pill-preview-side.record svg { width: 16px; height: 16px; stroke-width: 2.4; }
+.pill-preview-side.record .dot { fill: currentColor; stroke: none; }
+.pill-preview-main { gap: 4px; padding: 3px 7px; }
+.pill-preview-btn { display: grid; place-items: center; width: 22px; height: 22px; margin: 0 -3px; border-radius: 50%; color: #fff; background: #4b4c48; }
+.pill-preview-btn.finish { color: #000; background: #fff; }
+.pill-preview-btn svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.pill-preview-signal { display: flex; align-items: center; gap: 2.5px; height: 20px; padding: 0 2px; }
+.pill-preview-signal i { width: 3px; border-radius: 2px; background: linear-gradient(180deg, #ffb03a 0%, #f4337a 45%, #a03cd0 100%); }
+.pill-preview-signal i:nth-child(even) { background: linear-gradient(180deg, #f4337a 0%, #a03cd0 55%, #3b4a8f 100%); }
+.pill-preview-signal i:nth-child(1), .pill-preview-signal i:nth-child(8) { height: 6px; }
+.pill-preview-signal i:nth-child(2), .pill-preview-signal i:nth-child(7) { height: 10px; }
+.pill-preview-signal i:nth-child(3), .pill-preview-signal i:nth-child(6) { height: 14px; }
+.pill-preview-signal i:nth-child(4), .pill-preview-signal i:nth-child(5) { height: 9px; }
+.pill-preview-empty { color: var(--muted); font-size: 12px; }
+.setting-row--disabled strong { color: var(--muted); }
+.toggle input:disabled + span { opacity: .45; cursor: default; }
