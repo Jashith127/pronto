@@ -604,7 +604,7 @@ async function persistSettings() {
     dictationSounds: document.querySelector('#dictation-sounds').checked,
     meetingSuggestions: document.querySelector('#meeting-suggestions').checked,
     overlayPill: Object.fromEntries([...document.querySelectorAll('[data-pill-part]')].map(input => [input.dataset.pillPart, input.checked])),
-    trayHistoryCount: Number(document.querySelector('[data-tray-history].active')?.dataset.trayHistory || preferences.settings.trayHistoryCount || 5),
+    trayHistoryCount: Number(preferences.settings.trayHistoryCount || 5),
     language: document.querySelector('#language').value,
     cleanupProvider: document.querySelector('#cleanup-provider').value || preferences.settings.cleanupProvider || 'deepseek',
     cleanupModel: selectedModelValue(),
