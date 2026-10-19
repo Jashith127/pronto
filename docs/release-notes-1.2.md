@@ -34,5 +34,5 @@ Unchanged from 1.1: Windows 10 or 11 (64-bit), a microphone, and either an NVIDI
 
 ## Download
 
-`Pronto_Setup_1.2.0_x64.exe` (SIZE_PLACEHOLDER MB)
-SHA-256: `HASH_PLACEHOLDER`
+`Pronto_Setup_1.2.0_x64.exe` (13.4 MB)
+SHA-256: `82269e95d87d72cc0449ab00b4a2e27ca89b5126ce395adefbf1889cdb32ddf3`
