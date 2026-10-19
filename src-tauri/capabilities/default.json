@@ -2,6 +2,6 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Default Pronto desktop capability",
-  "windows": ["main", "overlay", "search"],
+  "windows": ["main", "overlay", "search", "tray-menu"],
   "permissions": ["core:default"]
 }

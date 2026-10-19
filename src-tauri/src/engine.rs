@@ -172,6 +172,37 @@ pub struct ModelStatus {
     pub ready: bool,
     pub message: String,
     pub backend: String,
+    /// The model process is starting up. Nothing to load or offload until it
+    /// settles one way or the other.
+    pub loading: bool,
+    /// The model is held in memory. `false` means it is offloaded and the next
+    /// dictation warms it, whether it was released by the user or to free VRAM.
+    pub resident: bool,
+}
+
+/// Where the model sits relative to memory, so callers (the tray menu above
+/// all) can offer the action that actually does something instead of flipping
+/// a saved preference.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModelLoadState {
+    /// The server process is starting.
+    Loading,
+    /// The server is up and answering.
+    Ready,
+    /// No server is running; the next dictation warms one.
+    Released,
+}
+
+impl ModelLoadState {
+    fn status(self, backend: String, message: String) -> ModelStatus {
+        ModelStatus {
+            ready: self == ModelLoadState::Ready,
+            message,
+            backend,
+            loading: self == ModelLoadState::Loading,
+            resident: self == ModelLoadState::Ready,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -238,6 +269,18 @@ impl EngineController {
 
     pub fn warm(&self) {
         let _ = self.commands.send(EngineCommand::Warm);
+    }
+
+    /// An explicit request from the user: warm the model now and ignore the
+    /// backoff left behind by an earlier failed start.
+    pub fn load(&self) {
+        let _ = self.commands.send(EngineCommand::Load);
+    }
+
+    /// Release the model's memory. The next dictation warms it again, so this
+    /// is a state, not a saved preference.
+    pub fn offload(&self) {
+        let _ = self.commands.send(EngineCommand::Offload);
     }
 
     /// Starts transcribing a dictation's finished segments while it records.
@@ -320,6 +363,10 @@ enum EngineCommand {
     TranscribeMeeting(MeetingTranscriptionJob),
     TranscribeSearch(SearchAsrJob),
     Warm,
+    /// The user asked for the model in memory, so skip the retry backoff.
+    Load,
+    /// The user asked for the model's memory back.
+    Offload,
     #[cfg(target_os = "macos")]
     ModelInstalled,
     ConfigureGpuMemory(bool),
@@ -426,7 +473,7 @@ fn engine_worker(
     let before_load = gpu.as_ref().and_then(|gpu| gpu.memory_info().ok());
     emit_model_status(
         &app,
-        false,
+        ModelLoadState::Loading,
         &if cfg!(target_os = "macos") {
             "Checking Parakeet for Metal…".to_string()
         } else {
@@ -451,18 +498,18 @@ fn engine_worker(
                     gpu.as_ref().and_then(|gpu| gpu.memory_info().ok()),
                     Instant::now(),
                 );
-                emit_model_status(&app, true, &ready_message(backend));
+                emit_model_status(&app, ModelLoadState::Ready, &ready_message(backend));
                 Some(server)
             }
             Err(error) => {
                 if error != SUPERSEDED {
-                    emit_model_status(&app, false, &error);
+                    emit_model_status(&app, ModelLoadState::Released, &error);
                 }
                 None
             }
         },
         Err(error) => {
-            emit_model_status(&app, false, error);
+            emit_model_status(&app, ModelLoadState::Released, error);
             None
         }
     };
@@ -490,16 +537,15 @@ fn engine_worker(
                             // would sit on top of the game that caused it.
                             crate::set_model_status(
                                 &app,
-                                ModelStatus {
-                                    ready: false,
-                                    message: if cfg!(target_os = "macos") {
+                                ModelLoadState::Released.status(
+                                    active_backend().backend_label().into(),
+                                    if cfg!(target_os = "macos") {
                                         "Parakeet released under unified-memory pressure"
+                                            .to_string()
                                     } else {
-                                        "Parakeet released to protect GPU memory"
-                                    }
-                                    .into(),
-                                    backend: active_backend().backend_label().into(),
-                                },
+                                        "Parakeet released to protect GPU memory".to_string()
+                                    },
+                                ),
                             );
                         }
                     }
@@ -570,7 +616,7 @@ fn engine_worker(
                     {
                         emit_model_status(
                             &app,
-                            false,
+                            ModelLoadState::Released,
                             &format!(
                                 "{} could not start; retrying shortly…",
                                 backend.short_name()
@@ -593,7 +639,7 @@ fn engine_worker(
                     } else {
                         emit_model_status(
                             &app,
-                            false,
+                            ModelLoadState::Released,
                             if cfg!(target_os = "macos") {
                                 "Waiting for available memory…"
                             } else {
@@ -602,6 +648,42 @@ fn engine_worker(
                         );
                     }
                 }
+            }
+            // An explicit "load it" from the tray menu. Same warm-up as a
+            // dictation's, minus the backoff: the user is watching, and a
+            // failure they already saw should not lock them out for 30s.
+            EngineCommand::Load => {
+                policy.note_activity(Instant::now());
+                last_start_failure = None;
+                if server.is_none() {
+                    server = warm_server(
+                        &app,
+                        runtime.as_ref().map_err(String::as_str),
+                        &mut policy,
+                        gpu.as_ref(),
+                        &mut last_start_failure,
+                    );
+                }
+            }
+            // Offloading is a state, not a preference: the next dictation warms
+            // the model again on its own, exactly as it would after an
+            // automatic release.
+            EngineCommand::Offload => {
+                if let Some(server) = server.as_mut() {
+                    server.stop();
+                }
+                server = None;
+                policy.note_transition(Instant::now());
+                last_start_failure = None;
+                // No overlay notice: nothing is wrong, and a pill reading
+                // "released" while nobody is dictating is just noise.
+                crate::set_model_status(
+                    &app,
+                    ModelLoadState::Released.status(
+                        active_backend().backend_label().into(),
+                        format!("{} offloaded", backend.short_name()),
+                    ),
+                );
             }
             EngineCommand::Transcribe(job) => {
                 let started = Instant::now();
@@ -635,7 +717,7 @@ fn engine_worker(
                         if !waiting_emitted {
                             emit_model_status(
                                 &app,
-                                false,
+                                ModelLoadState::Released,
                                 if cfg!(target_os = "macos") {
                                     "Waiting for available memory…"
                                 } else {
@@ -780,14 +862,14 @@ fn warm_server(
     let runtime = match runtime {
         Ok(runtime) => runtime,
         Err(error) => {
-            emit_model_status(app, false, error);
+            emit_model_status(app, ModelLoadState::Released, error);
             *last_start_failure = Some(Instant::now());
             return None;
         }
     };
     emit_model_status(
         app,
-        false,
+        ModelLoadState::Loading,
         &format!(
             "Warming {} on {}{}…",
             runtime.backend.short_name(),
@@ -804,13 +886,13 @@ fn warm_server(
     match SpeechServer::start(runtime) {
         Ok(server) => {
             policy.note_loaded(before, memory(), Instant::now());
-            emit_model_status(app, true, &ready_message(runtime.backend));
+            emit_model_status(app, ModelLoadState::Ready, &ready_message(runtime.backend));
             *last_start_failure = None;
             Some(server)
         }
         Err(error) if error == SUPERSEDED => None,
         Err(error) => {
-            emit_model_status(app, false, &error);
+            emit_model_status(app, ModelLoadState::Released, &error);
             *last_start_failure = Some(Instant::now());
             None
         }
@@ -2258,23 +2340,26 @@ fn levenshtein(left: &str, right: &str) -> usize {
     costs[right.len()]
 }
 
-fn emit_model_status(app: &AppHandle, ready: bool, message: &str) {
+/// Publish where the model sits. Every state but `Ready` also raises the
+/// overlay notice, which is where "waiting for GPU memory" has to be visible
+/// while someone is mid-dictation. Deliberate user actions publish their own
+/// status instead, so offloading a model nobody asked about stays quiet.
+fn emit_model_status(app: &AppHandle, load: ModelLoadState, message: &str) {
     crate::set_model_status(
         app,
-        ModelStatus {
-            ready,
-            message: message.into(),
-            backend: active_backend().backend_label().into(),
-        },
+        load.status(active_backend().backend_label().into(), message.into()),
     );
-    if !ready {
-        let _ = tauri::Emitter::emit(
-            app,
-            "dictation-notice",
-            serde_json::json!({ "message": message }),
-        );
-    } else if ready {
-        let _ = tauri::Emitter::emit(app, "dictation-notice-clear", ());
+    match load {
+        ModelLoadState::Ready => {
+            let _ = tauri::Emitter::emit(app, "dictation-notice-clear", ());
+        }
+        ModelLoadState::Loading | ModelLoadState::Released => {
+            let _ = tauri::Emitter::emit(
+                app,
+                "dictation-notice",
+                serde_json::json!({ "message": message }),
+            );
+        }
     }
 }
 

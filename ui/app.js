@@ -440,6 +440,8 @@ function renderPreferences() {
   document.querySelector('#meeting-suggestions').checked = preferences.settings.meetingSuggestions !== false;
   document.querySelector('#language').value = preferences.settings.language;
   document.querySelectorAll('[data-activation]').forEach(button => button.classList.toggle('active', button.dataset.activation === preferences.settings.activationMode));
+  const trayHistory = String(preferences.settings.trayHistoryCount ?? 5);
+  document.querySelectorAll('[data-tray-history]').forEach(button => button.classList.toggle('active', button.dataset.trayHistory === trayHistory));
   const keyStore = isMac ? 'Stored securely in macOS Keychain' : 'Stored securely in Windows Credential Manager';
   renderCleanupProvider(keyStore);
   const promptInput = document.querySelector('#cleanup-prompt');
@@ -602,6 +604,7 @@ async function persistSettings() {
     dictationSounds: document.querySelector('#dictation-sounds').checked,
     meetingSuggestions: document.querySelector('#meeting-suggestions').checked,
     overlayPill: Object.fromEntries([...document.querySelectorAll('[data-pill-part]')].map(input => [input.dataset.pillPart, input.checked])),
+    trayHistoryCount: Number(document.querySelector('[data-tray-history].active')?.dataset.trayHistory || preferences.settings.trayHistoryCount || 5),
     language: document.querySelector('#language').value,
     cleanupProvider: document.querySelector('#cleanup-provider').value || preferences.settings.cleanupProvider || 'deepseek',
     cleanupModel: selectedModelValue(),
@@ -937,6 +940,10 @@ document.querySelectorAll('[data-theme-pref]').forEach(button => button.addEvent
   applyThemePreference(button.dataset.themePref);
   await persistSettings();
 }));
+document.querySelectorAll('[data-tray-history]').forEach(button => button.addEventListener('click', async () => {
+  preferences.settings.trayHistoryCount = Number(button.dataset.trayHistory);
+  await persistSettings();
+}));
 listen('theme-changed', event => applyThemePreference(event.payload));
 async function changeMicrophone(event) {
   const previousId = microphoneStatus?.selectedId || '';
@@ -1206,6 +1213,13 @@ listen('model-status', event => renderModel(event.payload));
 listen('hotkey-status', event => renderHotkey(event.payload));
 listen('audio-warning', event => showToast(event.payload, true));
 listen('tray-message', event => showToast(event.payload.message, event.payload.error));
+// The tray menu's flyout can send the window somewhere specific; the page is
+// usually still on whatever view it was left on.
+listen('navigate-view', event => {
+  const view = event.payload?.view;
+  if (!document.querySelector(`.view#${view}`)) return;
+  setView(view);
+});
 listen('meeting-updated', event => {
   meetings = [event.payload, ...meetings.filter(item => item.id !== event.payload.id)];
   meetingProgress = null;
