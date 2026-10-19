@@ -469,7 +469,7 @@ fn paste_transcript(app: &AppHandle, arg: Option<&str>) -> Result<(), String> {
         Ok(())
     } else {
         #[cfg(target_os = "macos")]
-        return Err("That transcript could not be inserted. It is still in History; your clipboard is unchanged.");
+        return Err("That transcript could not be inserted. It is still in History; your clipboard is unchanged.".to_string());
         #[cfg(windows)]
         {
             notify(app, "Transcript copied to the clipboard");
