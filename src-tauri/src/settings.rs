@@ -77,6 +77,57 @@ pub struct UserSettings {
     /// Set once the first-run welcome tour is finished or skipped.
     #[serde(default)]
     pub onboarding_completed: bool,
+    /// Which parts of the dictation overlay pill are shown.
+    #[serde(default)]
+    pub overlay_pill: OverlayPillSettings,
+    /// How many recent transcripts the tray menu's transcript history
+    /// submenu lists. Normalized to one of `TRAY_HISTORY_CHOICES`.
+    #[serde(default = "default_tray_history_count")]
+    pub tray_history_count: u8,
+}
+
+/// Transcript history depths the tray menu offers. A handful keeps the
+/// submenu to one glance; ten is for people who dictate in bursts.
+pub const TRAY_HISTORY_CHOICES: [u8; 3] = [3, 5, 10];
+
+fn default_tray_history_count() -> u8 {
+    5
+}
+
+/// Snap any stored value — including a hand-edited settings file — onto one of
+/// the offered depths.
+pub fn normalize_tray_history_count(value: u8) -> u8 {
+    if TRAY_HISTORY_CHOICES.contains(&value) {
+        value
+    } else {
+        default_tray_history_count()
+    }
+}
+
+/// Overlay pill layout. Cancel/finish only apply in toggle mode: a
+/// hold-to-talk pill is always just the waveform, since releasing the
+/// shortcut already finishes the dictation.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[serde(default)]
+pub struct OverlayPillSettings {
+    pub show_search: bool,
+    pub show_dictation: bool,
+    pub show_notetaker: bool,
+    pub show_cancel: bool,
+    pub show_finish: bool,
+}
+
+impl Default for OverlayPillSettings {
+    fn default() -> Self {
+        Self {
+            show_search: true,
+            show_dictation: true,
+            show_notetaker: true,
+            show_cancel: true,
+            show_finish: true,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -135,6 +186,8 @@ impl Default for UserSettings {
             theme: ThemeMode::System,
             asr_model: AsrModel::Parakeet,
             onboarding_completed: false,
+            overlay_pill: OverlayPillSettings::default(),
+            tray_history_count: default_tray_history_count(),
         }
     }
 }
@@ -223,6 +276,13 @@ impl SettingsStore {
             settings.gpu_memory_management_configured = true;
             let _ = write_json(data_dir.join("settings.json"), &settings);
         }
+        // A tray history depth from an older build, or a hand-edited settings
+        // file, is snapped back onto one of the offered choices.
+        let tray_history_count = normalize_tray_history_count(settings.tray_history_count);
+        if tray_history_count != settings.tray_history_count {
+            settings.tray_history_count = tray_history_count;
+            let _ = write_json(data_dir.join("settings.json"), &settings);
+        }
         let history: Vec<HistoryEntry> =
             read_json(data_dir.join("history.json")).unwrap_or_default();
         // Settings from before the welcome tour existed have no flag. Anyone
@@ -257,6 +317,7 @@ impl SettingsStore {
 
     pub fn replace(&self, mut next: UserSettings) -> Result<AppPreferences, String> {
         next.dictionary = normalize_dictionary(next.dictionary);
+        next.tray_history_count = normalize_tray_history_count(next.tray_history_count);
         next.cleanup_prompt = match next.cleanup_prompt.take() {
             Some(prompt) if prompt.trim().len() > 16_000 => {
                 return Err("The cleanup prompt must be 16,000 characters or fewer".into())
@@ -601,6 +662,21 @@ mod tests {
     }
 
     #[test]
+    fn older_settings_show_the_whole_overlay_pill() {
+        // Settings written before pill customization existed must keep
+        // every part of the pill visible, or 1.2 would silently hide
+        // buttons for everyone upgrading from 1.1.
+        let settings: UserSettings = serde_json::from_str(r#"{"language":"en"}"#).unwrap();
+        assert_eq!(settings.overlay_pill, OverlayPillSettings::default());
+        let partial: OverlayPillSettings = serde_json::from_str(r#"{"showSearch":false}"#).unwrap();
+        assert!(!partial.show_search);
+        assert!(partial.show_dictation);
+        assert!(partial.show_notetaker);
+        assert!(partial.show_cancel);
+        assert!(partial.show_finish);
+    }
+
+    #[test]
     fn older_settings_default_to_deepseek_cleanup() {
         let settings: UserSettings = serde_json::from_str(r#"{"cleanupEnabled":true}"#).unwrap();
         assert_eq!(settings.cleanup_provider, CleanupProvider::DeepSeek);
@@ -612,5 +688,23 @@ mod tests {
         .unwrap();
         assert_eq!(settings.cleanup_provider, CleanupProvider::Anthropic);
         assert_eq!(settings.cleanup_model.as_deref(), Some("claude-haiku-5-5"));
+    }
+
+    #[test]
+    fn tray_history_depth_is_read_and_normalized() {
+        // Settings written before the tray gained a history flyout have no
+        // depth; they get the middle of the three offered.
+        let settings: UserSettings = serde_json::from_str(r#"{"language":"en"}"#).unwrap();
+        assert_eq!(settings.tray_history_count, 5);
+        let chosen: UserSettings = serde_json::from_str(r#"{"trayHistoryCount":10}"#).unwrap();
+        assert_eq!(chosen.tray_history_count, 10);
+        // A hand-edited or out-of-range value lands back on a real choice
+        // instead of listing zero or four hundred transcripts.
+        for stray in [0u8, 4, 7, 255] {
+            assert_eq!(normalize_tray_history_count(stray), 5);
+        }
+        for offered in TRAY_HISTORY_CHOICES {
+            assert_eq!(normalize_tray_history_count(offered), offered);
+        }
     }
 }

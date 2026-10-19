@@ -51,6 +51,7 @@ mod system_audio;
 #[cfg(target_os = "macos")]
 #[path = "platform/macos/system_audio.rs"]
 mod system_audio;
+mod tray;
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 mod ui_schema;
 
@@ -79,8 +80,6 @@ struct PendingUpload {
     file_name: String,
     bytes: Vec<u8>,
 }
-use tauri::menu::{Menu, MenuItem};
-use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition};
 
 pub(crate) struct AppState {
@@ -109,7 +108,15 @@ pub(crate) struct AppState {
     search_hotkey_error: Mutex<Option<String>>,
     show_microphone_once: Mutex<bool>,
     pending_uploads: Mutex<HashMap<String, PendingUpload>>,
-    meeting_tray_item: Mutex<Option<MenuItem<tauri::Wry>>>,
+    /// Where the tray icon was last clicked, so the menu page can be sized and
+    /// placed under the cursor once it knows how tall it drew itself.
+    tray_menu_cursor: Mutex<Option<PhysicalPosition<f64>>>,
+    /// When the menu window was last shown. A focus loss right after that is
+    /// the menu's own activation, not the user clicking away.
+    tray_menu_shown_at: Mutex<Option<Instant>>,
+    /// The menu page has read its state at least once, so a tray click has
+    /// someone listening for the reopen event.
+    tray_menu_loaded: AtomicBool,
     detector_control: Arc<meeting_detector::DetectorControl>,
     dictation_active: Arc<AtomicBool>,
     /// A delayed hide may only close the overlay that scheduled it. New
@@ -125,19 +132,6 @@ pub(crate) struct AppState {
     /// When true, losing focus on the search overlay dismisses it.
     /// Kept false while listening so Win+Space Hold release stays reliable.
     search_blur_dismiss: AtomicBool,
-}
-
-fn sync_meeting_tray_item(app: &AppHandle, recording: bool) {
-    let label = if recording {
-        "Stop taking notes"
-    } else {
-        "Take meeting notes"
-    };
-    if let Ok(guard) = app.state::<AppState>().meeting_tray_item.lock() {
-        if let Some(item) = guard.as_ref() {
-            let _ = item.set_text(label);
-        }
-    }
 }
 
 impl AppState {
@@ -234,6 +228,8 @@ impl AppState {
                 } else {
                     "NVIDIA Parakeet TDT 0.6B v3 · CUDA".into()
                 },
+                loading: true,
+                resident: false,
             }),
             active_shortcut: Mutex::new(active_shortcut),
             paste_shortcut: Mutex::new(paste_shortcut),
@@ -244,7 +240,9 @@ impl AppState {
             search_hotkey_error: Mutex::new(None),
             show_microphone_once: Mutex::new(true),
             pending_uploads: Mutex::new(HashMap::new()),
-            meeting_tray_item: Mutex::new(None),
+            tray_menu_cursor: Mutex::new(None),
+            tray_menu_shown_at: Mutex::new(None),
+            tray_menu_loaded: AtomicBool::new(false),
             detector_control: Arc::new(meeting_detector::DetectorControl::new()),
             dictation_active: Arc::new(AtomicBool::new(false)),
             overlay_generation: AtomicU64::new(0),
@@ -1039,7 +1037,6 @@ fn start_meeting_recording_blocking(
     }
     let settings = state.settings.snapshot()?;
     let record = state.meetings.start(title, settings.microphone_id)?;
-    sync_meeting_tray_item(&app, true);
     let _ = app.emit(
         "meeting-status",
         serde_json::json!({ "recording": true, "meeting": record, "elapsedSeconds": 0 }),
@@ -1053,9 +1050,6 @@ fn finish_meeting_recording(app: &AppHandle) -> Result<meeting::MeetingRecord, S
     // writers, closing ScreenCaptureKit, and mixing happen in the background
     // so the meeting worker remains free for status/list requests.
     let stopped = state.meetings.stop()?;
-    // Recording has ended regardless of what follows, so the tray goes
-    // back to its idle label even on the error paths below.
-    sync_meeting_tray_item(app, false);
     let _ = app.emit(
         "meeting-status",
         serde_json::json!({ "recording": false, "meeting": stopped.record, "elapsedSeconds": 0 }),
@@ -2258,6 +2252,8 @@ fn save_settings(
     let theme_changed = settings.theme != previous.theme;
     let gpu_memory_management_changed =
         settings.gpu_memory_management != previous.gpu_memory_management;
+    let overlay_pill_changed = settings.overlay_pill != previous.overlay_pill
+        || settings.activation_mode != previous.activation_mode;
     settings.hotkey = previous.hotkey;
     settings.paste_hotkey = previous.paste_hotkey;
     settings.search_shortcut = previous.search_shortcut;
@@ -2281,6 +2277,12 @@ fn save_settings(
                     settings::ThemeMode::System => "system",
                 };
                 let _ = app.emit("theme-changed", theme);
+            }
+            if overlay_pill_changed {
+                let _ = app.emit(
+                    "overlay-pill-changed",
+                    overlay_pill_layout(&preferences.settings),
+                );
             }
             if gpu_memory_management_changed {
                 if let Ok(engine) = state.engine.lock() {
@@ -2318,6 +2320,26 @@ fn set_microphone_blocking(
         return Err(error);
     }
     Ok(status)
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OverlayPillLayout {
+    #[serde(flatten)]
+    pill: settings::OverlayPillSettings,
+    hold_to_talk: bool,
+}
+
+fn overlay_pill_layout(settings: &UserSettings) -> OverlayPillLayout {
+    OverlayPillLayout {
+        pill: settings.overlay_pill,
+        hold_to_talk: settings.activation_mode == ActivationMode::Hold,
+    }
+}
+
+#[tauri::command]
+fn get_overlay_pill_layout(state: tauri::State<'_, AppState>) -> Result<OverlayPillLayout, String> {
+    Ok(overlay_pill_layout(&state.settings.snapshot()?))
 }
 
 #[tauri::command]
@@ -3005,137 +3027,6 @@ fn hide_main_window(app: AppHandle) -> Result<(), String> {
     window.hide().map_err(|error| error.to_string())
 }
 
-fn create_tray(app: &tauri::App) -> tauri::Result<()> {
-    let open = MenuItem::with_id(app, "open", "Open Pronto", true, None::<&str>)?;
-    let dictation = MenuItem::with_id(
-        app,
-        "dictation",
-        "Start / Stop Dictation",
-        true,
-        None::<&str>,
-    )?;
-    let meeting = MenuItem::with_id(app, "meeting", "Take meeting notes", true, None::<&str>)?;
-    let paste = MenuItem::with_id(
-        app,
-        "paste-last",
-        "Paste Last Transcript",
-        true,
-        None::<&str>,
-    )?;
-    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open, &dictation, &meeting, &paste, &quit])?;
-    *app.state::<AppState>()
-        .meeting_tray_item
-        .lock()
-        .expect("tray item lock poisoned") = Some(meeting);
-    let mut tray = TrayIconBuilder::new()
-        .tooltip("Pronto dictation")
-        .menu(&menu)
-        .show_menu_on_left_click(false)
-        .on_menu_event(|app, event| match event.id.as_ref() {
-            "open" => {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
-            }
-            "dictation" => {
-                #[cfg(target_os = "macos")]
-                log_dictation_step("menu dictation action");
-                let listening = app
-                    .state::<AppState>()
-                    .pipeline
-                    .lock()
-                    .map(|pipeline| pipeline.status.phase == Phase::Listening)
-                    .unwrap_or(false);
-                let result = if listening {
-                    finish_recording(app)
-                } else {
-                    begin_recording(app)
-                };
-                if let Err(message) = result {
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                    }
-                    let _ = app.emit(
-                        "tray-message",
-                        serde_json::json!({ "message": message, "error": true }),
-                    );
-                }
-            }
-            "meeting" => {
-                let recording = app
-                    .state::<AppState>()
-                    .meetings
-                    .status()
-                    .map(|status| status.recording)
-                    .unwrap_or(false);
-                if recording {
-                    match finish_meeting_recording(app) {
-                        Ok(_) => {
-                            let _ = app.emit(
-                                "tray-message",
-                                serde_json::json!({
-                                    "message": "Meeting saved. Creating notes…",
-                                    "error": false
-                                }),
-                            );
-                        }
-                        Err(message) => {
-                            let _ = app.emit(
-                                "tray-message",
-                                serde_json::json!({
-                                    "message": message,
-                                    "error": true
-                                }),
-                            );
-                        }
-                    }
-                    return;
-                }
-                app.state::<AppState>().claim_overlay();
-                if let Some(overlay) = app.get_webview_window("overlay") {
-                    let _ = overlay.show();
-                }
-                let _ = app.emit(
-                    "meeting-suggestion",
-                    serde_json::json!({ "title": "Untitled meeting" }),
-                );
-            }
-            "paste-last" => {
-                let result = paste_last(app);
-                let (message, error) = match result {
-                    Ok(message) => (message, false),
-                    Err(message) => (message, true),
-                };
-                if error {
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                    }
-                }
-                let _ = app.emit(
-                    "tray-message",
-                    serde_json::json!({
-                        "message": message,
-                        "error": error
-                    }),
-                );
-            }
-            "quit" => {
-                let _ = app.state::<AppState>().system_audio.restore();
-                app.exit(0);
-            }
-            _ => {}
-        });
-    if let Some(icon) = app.default_window_icon() {
-        tray = tray.icon(icon.clone());
-    }
-    tray.build(app)?;
-    Ok(())
-}
-
 #[cfg(target_os = "macos")]
 pub fn diagnose() {
     let permissions = serde_json::to_string_pretty(&permissions::status())
@@ -3284,7 +3175,7 @@ pub fn run() {
                         .expect("shortcut status lock poisoned") = Some(error);
                 }
             }
-            create_tray(app)?;
+            tray::create(app)?;
             if !startup::is_background_launch() {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.show();
@@ -3298,6 +3189,19 @@ pub fn run() {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
                     let _ = window.hide();
+                }
+            } else if window.label() == tray::WINDOW_LABEL {
+                match event {
+                    // The menu is a transient surface: Escape, Alt+F4, and the
+                    // taskbar's close all mean "put it away", not "quit".
+                    tauri::WindowEvent::CloseRequested { api, .. } => {
+                        api.prevent_close();
+                        tray::hide(window.app_handle());
+                    }
+                    tauri::WindowEvent::Focused(false) => {
+                        tray::dismiss_on_blur(window.app_handle());
+                    }
+                    _ => {}
                 }
             } else if window.label() == "search" {
                 match event {
@@ -3373,6 +3277,7 @@ pub fn run() {
             get_microphones,
             set_microphone,
             compact_overlay,
+            get_overlay_pill_layout,
             overlay_heartbeat,
             resize_microphone_overlay,
             resize_overlay,
@@ -3407,7 +3312,11 @@ pub fn run() {
             cleanup_notetaker_transcript,
             minimize_main_window,
             toggle_maximize_main_window,
-            hide_main_window
+            hide_main_window,
+            tray::tray_menu_state,
+            tray::tray_menu_ready,
+            tray::tray_menu_close,
+            tray::tray_menu_action
         ])
         .run(tauri::generate_context!())
         .expect("error while running Pronto");

@@ -8,11 +8,12 @@ Pronto is a Tauri app. The backend is Rust. The frontend is static HTML, CSS and
 
 The backend owns all audio. Audio never goes into the WebView. The frontend sends commands and gets status and result events through Tauri IPC.
 
-Pronto has three windows:
+Pronto has four windows:
 
 * **Main window.** Dictate, History, Note Taker, Dictionary and Settings.
 * **Dictation overlay.** The listening pill, meeting prompts and microphone notices. It does not take the focus.
 * **Search overlay.** The voice search pill and the result panel. It is transparent and always on top.
+* **Tray menu.** The tray icon's own menu, drawn by Pronto rather than by Windows so it matches the rest of the UI and can open a transcript history flyout. The icon carries no native menu; a click opens this window under the cursor instead. It is transparent, always on top, skip-taskbar, and sized to its own content each time it opens.
 
 ## Dictation pipeline (Windows)
 
@@ -171,10 +172,11 @@ The tour uses the same commands as Settings, so the two always agree. Finish or 
 
 ## Windows lifecycle
 
-Tauri owns one opaque main WebView, one opaque dictation overlay that does not activate, and one transparent always-on-top search overlay (skip-taskbar). All windows have no decorations and no shadows. Their web content fills the native window bounds exactly.
+Tauri owns one opaque main WebView, one opaque dictation overlay that does not activate, one transparent always-on-top search overlay (skip-taskbar), and the tray menu window. All windows have no decorations and no shadows. Their web content fills the native window bounds exactly.
 
 * The dictation overlay uses a native rounded window region, so the pill has no larger transparent parent.
 * The search overlay starts as a bottom pill. It expands to a full-monitor transparent stage for the results, and hides when idle.
+* The tray menu window is sized and placed by Rust: the page reports the box it drew and the point in it that belongs under the cursor, Rust flips the menu back inside the monitor's work area, and only then is the window shown. Every label comes from the engine at open time, so the menu can never show a state Pronto has already left. An action runs only after the window is really hidden, because actions that type read the foreground window.
 * Pronto registers application state on the Tauri builder before it makes the WebViews. Thus early IPC or shortcut events cannot race setup.
 * After sleep, Pronto reloads a quiet overlay page, releases a stuck dictation, restores ducked audio, and prepares the microphone again if Windows reset the device.
 

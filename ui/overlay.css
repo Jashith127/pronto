@@ -83,7 +83,7 @@ button svg { shape-rendering: geometricPrecision; }
 @keyframes bar-sweep { 0%, 100% { opacity: .3; transform: scaleY(.7); } 50% { opacity: 1; transform: scaleY(1.4); } }
 @media (prefers-reduced-motion: reduce) { .signal i { animation: none; } #overlay-row.pill-enter, #overlay-row.pill-exit, #overlay-row.meeting-gone { animation: none; } }
 .meeting-prompt { position: absolute; bottom: 38px; left: 50%; display: flex; flex-direction: column; width: 284px; padding: 12px 14px; border: 1px solid #34362f; border-radius: 13px; color: #f8f8f4; background: rgb(17, 18, 16); transform: translateX(-50%); }
-.meeting-prompt::after { content: ""; position: absolute; bottom: -5px; left: calc(50% + 52px); width: 9px; height: 9px; border-right: 1px solid #34362f; border-bottom: 1px solid #34362f; background: #111210; transform: translateX(-50%) rotate(45deg); }
+.meeting-prompt::after { content: ""; position: absolute; bottom: -5px; left: var(--prompt-arrow-x, calc(50% + 52px)); width: 9px; height: 9px; border-right: 1px solid #34362f; border-bottom: 1px solid #34362f; background: #111210; transform: translateX(-50%) rotate(45deg); }
 .meeting-prompt[hidden] { display: none; }
 .meeting-prompt strong { font-size: 12px; font-weight: 650; letter-spacing: -.01em; line-height: 1.35; }
 .meeting-prompt #meeting-prompt-desc { margin-top: 5px; color: #b8bbb4; font-size: 11px; line-height: 1.5; }
@@ -111,3 +111,7 @@ button svg { shape-rendering: geometricPrecision; }
 #overlay-row.meeting-flash #cancel, #overlay-row.meeting-flash #finish { visibility: hidden; }
 #overlay-row.meeting-gone { animation: pill-out .16s ease-in forwards; }
 @media (prefers-reduced-motion: reduce) { #overlay-row.meeting-start #notetaker-open, #overlay-row.meeting-gone { transition: none; } #overlay-row.meeting-gone { animation: none; } .meeting-pill { animation: none; } }
+/* Pill customization (Settings → Overlay pill) */
+#overlay-row > [hidden], #dictation-pill button[hidden] { display: none; }
+#dictation-pill[data-buttons="1"] { width: 76px; }
+#dictation-pill[data-buttons="0"] { width: 58px; padding: 3px 7px; }
